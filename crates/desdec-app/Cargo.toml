@@ -12,5 +12,9 @@ pollster = "0.4"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 
+[dev-dependencies]
+# Same format eframe uses for its native storage file.
+ron = "0.8"
+
 [lints]
 workspace = true

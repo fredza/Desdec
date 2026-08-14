@@ -11,8 +11,12 @@ desdec-core
   formats -> memory -> disassembly -> analysis -> IR -> patching
 ```
 
-The current first milestone implements `formats`: safe header recognition for
-ELF, PE and Mach-O. The following milestone will add structured parsers and
-section/symbol access. Plugins will be designed only after the core data model
-is stable; they must not obtain unrestricted filesystem or process access by
+The current milestone implements `formats`: header recognition plus structured
+reading of the section table, the entry point, printable strings and per-region
+entropy for ELF, PE and Mach-O (`desdec-core::analysis`). Parsing untrusted
+files is bounded and total by construction — every read goes through the
+bounds-checked helpers in `bytes.rs`, table walks are capped, and no input can
+panic. The following milestone will add symbols and imports/exports.
+
+Plugins will be designed only after the core data model is stable; they must not obtain unrestricted filesystem or process access by
 default.

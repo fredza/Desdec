@@ -3,140 +3,79 @@ use serde::{Deserialize, Serialize};
 
 use crate::i18n::{Language, Text, text};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum Command {
-    OpenBinary,
-    CloseBinary,
-    ToggleNavigation,
-    ToggleToolbar,
-    ToggleTooltips,
-    CommandPalette,
-    Preferences,
-    About,
-    Overview,
-    Disassembly,
-    Functions,
-    Strings,
-    Patches,
-    ToggleExpertMode,
-    ThemeSystem,
-    ThemeDark,
-    ThemeLight,
-    ThemeCatppuccin,
-    LanguageFrench,
-    LanguageEnglish,
-    LanguageSpanish,
-    TogglePersistence,
+/// Declares the command registry once.
+///
+/// Each entry names the [`Text`] fragments forming its visible label — several
+/// fragments are joined with `: ` — and its factory-default shortcut. The macro
+/// derives the enum, the ordered [`Command::ALL`] list used by the palette and
+/// the preferences page, and both lookup tables, so a command can never exist
+/// without a label or be missing from the registry.
+macro_rules! commands {
+    ($($variant:ident => [$($label:ident),+], $shortcut:expr),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        #[expect(
+            clippy::enum_variant_names,
+            reason = "variant names are persisted by serde and must stay stable"
+        )]
+        pub enum Command {
+            $($variant,)+
+        }
+
+        impl Command {
+            pub const ALL: &[Self] = &[$(Self::$variant,)+];
+
+            const fn labels(self) -> &'static [Text] {
+                match self {
+                    $(Self::$variant => &[$(Text::$label,)+],)+
+                }
+            }
+
+            #[must_use]
+            pub const fn default_shortcut(self) -> Option<Shortcut> {
+                match self {
+                    $(Self::$variant => $shortcut,)+
+                }
+            }
+        }
+    };
+}
+
+commands! {
+    OpenBinary => [OpenBinary], Some(Shortcut::ctrl(KeyName::O)),
+    CloseBinary => [CloseBinary], Some(Shortcut::ctrl(KeyName::W)),
+    ToggleNavigation => [ToggleMenu], Some(Shortcut::ctrl(KeyName::B)),
+    ToggleToolbar => [ToggleToolbar], Some(Shortcut::ctrl_alt(KeyName::T)),
+    ToggleTooltips => [ToggleTooltips], Some(Shortcut::ctrl_alt(KeyName::I)),
+    CommandPalette => [CommandPalette], Some(Shortcut::ctrl_shift(KeyName::P)),
+    Preferences => [Preferences], Some(Shortcut::ctrl(KeyName::Comma)),
+    About => [About], Some(Shortcut::plain(KeyName::F1)),
+    Overview => [Overview], Some(Shortcut::ctrl(KeyName::Num1)),
+    Disassembly => [Disassembly], Some(Shortcut::ctrl(KeyName::Num2)),
+    Functions => [Functions], Some(Shortcut::ctrl(KeyName::Num3)),
+    Strings => [Strings], Some(Shortcut::ctrl(KeyName::Num4)),
+    Patches => [Patches], Some(Shortcut::ctrl(KeyName::Num5)),
+    ToggleExpertMode => [ToggleExpertMode], Some(Shortcut::ctrl_alt(KeyName::E)),
+    ThemeSystem => [Theme, SystemTheme], None,
+    ThemeDark => [Theme, DarkTheme], None,
+    ThemeLight => [Theme, LightTheme], None,
+    ThemeCatppuccin => [Theme, CatppuccinTheme], None,
+    LanguageFrench => [Language, French], None,
+    LanguageEnglish => [Language, English], None,
+    LanguageSpanish => [Language, Spanish], None,
+    TogglePersistence => [Persistence], None,
 }
 
 impl Command {
-    pub const ALL: &[Self] = &[
-        Self::OpenBinary,
-        Self::CloseBinary,
-        Self::ToggleNavigation,
-        Self::ToggleToolbar,
-        Self::ToggleTooltips,
-        Self::CommandPalette,
-        Self::Preferences,
-        Self::About,
-        Self::Overview,
-        Self::Disassembly,
-        Self::Functions,
-        Self::Strings,
-        Self::Patches,
-        Self::ToggleExpertMode,
-        Self::ThemeSystem,
-        Self::ThemeDark,
-        Self::ThemeLight,
-        Self::ThemeCatppuccin,
-        Self::LanguageFrench,
-        Self::LanguageEnglish,
-        Self::LanguageSpanish,
-        Self::TogglePersistence,
-    ];
-
-    pub const fn default_shortcut(self) -> Option<Shortcut> {
-        match self {
-            Self::OpenBinary => Some(Shortcut::ctrl(KeyName::O)),
-            Self::CloseBinary => Some(Shortcut::ctrl(KeyName::W)),
-            Self::ToggleNavigation => Some(Shortcut::ctrl(KeyName::B)),
-            Self::ToggleToolbar => Some(Shortcut::ctrl_alt(KeyName::T)),
-            Self::ToggleTooltips => Some(Shortcut::ctrl_alt(KeyName::I)),
-            Self::CommandPalette => Some(Shortcut::ctrl_shift(KeyName::P)),
-            Self::Preferences => Some(Shortcut::ctrl(KeyName::Comma)),
-            Self::About => Some(Shortcut::plain(KeyName::F1)),
-            Self::Overview => Some(Shortcut::ctrl(KeyName::Num1)),
-            Self::Disassembly => Some(Shortcut::ctrl(KeyName::Num2)),
-            Self::Functions => Some(Shortcut::ctrl(KeyName::Num3)),
-            Self::Strings => Some(Shortcut::ctrl(KeyName::Num4)),
-            Self::Patches => Some(Shortcut::ctrl(KeyName::Num5)),
-            Self::ToggleExpertMode => Some(Shortcut::ctrl_alt(KeyName::E)),
-            Self::ThemeSystem
-            | Self::ThemeDark
-            | Self::ThemeLight
-            | Self::ThemeCatppuccin
-            | Self::LanguageFrench
-            | Self::LanguageEnglish
-            | Self::LanguageSpanish
-            | Self::TogglePersistence => None,
-        }
-    }
-
+    #[must_use]
     pub fn label(self, language: Language) -> String {
-        match self {
-            Self::OpenBinary => text(language, Text::OpenBinary).to_owned(),
-            Self::CloseBinary => text(language, Text::CloseBinary).to_owned(),
-            Self::ToggleNavigation => text(language, Text::ToggleMenu).to_owned(),
-            Self::ToggleToolbar => text(language, Text::ToggleToolbar).to_owned(),
-            Self::ToggleTooltips => text(language, Text::ToggleTooltips).to_owned(),
-            Self::CommandPalette => text(language, Text::CommandPalette).to_owned(),
-            Self::Preferences => text(language, Text::Preferences).to_owned(),
-            Self::About => text(language, Text::About).to_owned(),
-            Self::Overview => text(language, Text::Overview).to_owned(),
-            Self::Disassembly => text(language, Text::Disassembly).to_owned(),
-            Self::Functions => text(language, Text::Functions).to_owned(),
-            Self::Strings => text(language, Text::Strings).to_owned(),
-            Self::Patches => text(language, Text::Patches).to_owned(),
-            Self::ToggleExpertMode => text(language, Text::ToggleExpertMode).to_owned(),
-            Self::ThemeSystem => format!(
-                "{}: {}",
-                text(language, Text::Theme),
-                text(language, Text::SystemTheme)
-            ),
-            Self::ThemeDark => format!(
-                "{}: {}",
-                text(language, Text::Theme),
-                text(language, Text::DarkTheme)
-            ),
-            Self::ThemeLight => format!(
-                "{}: {}",
-                text(language, Text::Theme),
-                text(language, Text::LightTheme)
-            ),
-            Self::ThemeCatppuccin => format!(
-                "{}: {}",
-                text(language, Text::Theme),
-                text(language, Text::CatppuccinTheme)
-            ),
-            Self::LanguageFrench => format!(
-                "{}: {}",
-                text(language, Text::Language),
-                text(language, Text::French)
-            ),
-            Self::LanguageEnglish => format!(
-                "{}: {}",
-                text(language, Text::Language),
-                text(language, Text::English)
-            ),
-            Self::LanguageSpanish => format!(
-                "{}: {}",
-                text(language, Text::Language),
-                text(language, Text::Spanish)
-            ),
-            Self::TogglePersistence => text(language, Text::Persistence).to_owned(),
-        }
+        self.labels()
+            .iter()
+            .map(|item| text(language, *item))
+            .collect::<Vec<_>>()
+            .join(": ")
     }
 
+    #[must_use]
     pub const fn configurable_shortcut(self) -> bool {
         self.default_shortcut().is_some()
     }
@@ -162,31 +101,26 @@ impl Shortcut {
 
     pub const fn ctrl(key: KeyName) -> Self {
         Self {
-            key,
             ctrl: true,
-            shift: false,
-            alt: false,
+            ..Self::plain(key)
         }
     }
 
     pub const fn ctrl_shift(key: KeyName) -> Self {
         Self {
-            key,
-            ctrl: true,
             shift: true,
-            alt: false,
+            ..Self::ctrl(key)
         }
     }
 
     pub const fn ctrl_alt(key: KeyName) -> Self {
         Self {
-            key,
-            ctrl: true,
-            shift: false,
             alt: true,
+            ..Self::ctrl(key)
         }
     }
 
+    #[must_use]
     pub fn label(self) -> String {
         let mut parts = Vec::new();
         if self.ctrl {
@@ -202,207 +136,77 @@ impl Shortcut {
         parts.join("+")
     }
 
+    /// Reads the first key press of the frame, whatever the combination.
     pub fn capture(ctx: &egui::Context) -> Option<Self> {
-        ctx.input(|input| {
-            input.events.iter().find_map(|event| match event {
-                egui::Event::Key {
-                    key,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } => KeyName::from_egui(*key).map(|key| Self {
-                    key,
-                    ctrl: modifiers.ctrl || modifiers.command,
-                    shift: modifiers.shift,
-                    alt: modifiers.alt,
-                }),
-                _ => None,
-            })
-        })
+        ctx.input(|input| input.events.iter().find_map(Self::from_event))
     }
 
     pub fn pressed(self, ctx: &egui::Context) -> bool {
         ctx.input(|input| {
-            input.events.iter().any(|event| match event {
-                egui::Event::Key {
-                    key,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } => {
-                    KeyName::from_egui(*key) == Some(self.key)
-                        && (modifiers.ctrl || modifiers.command) == self.ctrl
-                        && modifiers.shift == self.shift
-                        && modifiers.alt == self.alt
-                }
-                _ => false,
-            })
+            input
+                .events
+                .iter()
+                .filter_map(Self::from_event)
+                .any(|pressed| pressed == self)
         })
     }
-}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum KeyName {
-    A,
-    B,
-    C,
-    D,
-    E,
-    F,
-    G,
-    H,
-    I,
-    J,
-    K,
-    L,
-    M,
-    N,
-    O,
-    P,
-    Q,
-    R,
-    S,
-    T,
-    U,
-    V,
-    W,
-    X,
-    Y,
-    Z,
-    Num0,
-    Num1,
-    Num2,
-    Num3,
-    Num4,
-    Num5,
-    Num6,
-    Num7,
-    Num8,
-    Num9,
-    Comma,
-    F1,
-    F2,
-    F3,
-    F4,
-    F5,
-    F6,
-    F7,
-    F8,
-    F9,
-    F10,
-    F11,
-    F12,
-}
-
-impl KeyName {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::A => "A",
-            Self::B => "B",
-            Self::C => "C",
-            Self::D => "D",
-            Self::E => "E",
-            Self::F => "F",
-            Self::G => "G",
-            Self::H => "H",
-            Self::I => "I",
-            Self::J => "J",
-            Self::K => "K",
-            Self::L => "L",
-            Self::M => "M",
-            Self::N => "N",
-            Self::O => "O",
-            Self::P => "P",
-            Self::Q => "Q",
-            Self::R => "R",
-            Self::S => "S",
-            Self::T => "T",
-            Self::U => "U",
-            Self::V => "V",
-            Self::W => "W",
-            Self::X => "X",
-            Self::Y => "Y",
-            Self::Z => "Z",
-            Self::Num0 => "0",
-            Self::Num1 => "1",
-            Self::Num2 => "2",
-            Self::Num3 => "3",
-            Self::Num4 => "4",
-            Self::Num5 => "5",
-            Self::Num6 => "6",
-            Self::Num7 => "7",
-            Self::Num8 => "8",
-            Self::Num9 => "9",
-            Self::Comma => ",",
-            Self::F1 => "F1",
-            Self::F2 => "F2",
-            Self::F3 => "F3",
-            Self::F4 => "F4",
-            Self::F5 => "F5",
-            Self::F6 => "F6",
-            Self::F7 => "F7",
-            Self::F8 => "F8",
-            Self::F9 => "F9",
-            Self::F10 => "F10",
-            Self::F11 => "F11",
-            Self::F12 => "F12",
-        }
-    }
-
-    pub const fn from_egui(key: egui::Key) -> Option<Self> {
-        match key {
-            egui::Key::A => Some(Self::A),
-            egui::Key::B => Some(Self::B),
-            egui::Key::C => Some(Self::C),
-            egui::Key::D => Some(Self::D),
-            egui::Key::E => Some(Self::E),
-            egui::Key::F => Some(Self::F),
-            egui::Key::G => Some(Self::G),
-            egui::Key::H => Some(Self::H),
-            egui::Key::I => Some(Self::I),
-            egui::Key::J => Some(Self::J),
-            egui::Key::K => Some(Self::K),
-            egui::Key::L => Some(Self::L),
-            egui::Key::M => Some(Self::M),
-            egui::Key::N => Some(Self::N),
-            egui::Key::O => Some(Self::O),
-            egui::Key::P => Some(Self::P),
-            egui::Key::Q => Some(Self::Q),
-            egui::Key::R => Some(Self::R),
-            egui::Key::S => Some(Self::S),
-            egui::Key::T => Some(Self::T),
-            egui::Key::U => Some(Self::U),
-            egui::Key::V => Some(Self::V),
-            egui::Key::W => Some(Self::W),
-            egui::Key::X => Some(Self::X),
-            egui::Key::Y => Some(Self::Y),
-            egui::Key::Z => Some(Self::Z),
-            egui::Key::Num0 => Some(Self::Num0),
-            egui::Key::Num1 => Some(Self::Num1),
-            egui::Key::Num2 => Some(Self::Num2),
-            egui::Key::Num3 => Some(Self::Num3),
-            egui::Key::Num4 => Some(Self::Num4),
-            egui::Key::Num5 => Some(Self::Num5),
-            egui::Key::Num6 => Some(Self::Num6),
-            egui::Key::Num7 => Some(Self::Num7),
-            egui::Key::Num8 => Some(Self::Num8),
-            egui::Key::Num9 => Some(Self::Num9),
-            egui::Key::Comma => Some(Self::Comma),
-            egui::Key::F1 => Some(Self::F1),
-            egui::Key::F2 => Some(Self::F2),
-            egui::Key::F3 => Some(Self::F3),
-            egui::Key::F4 => Some(Self::F4),
-            egui::Key::F5 => Some(Self::F5),
-            egui::Key::F6 => Some(Self::F6),
-            egui::Key::F7 => Some(Self::F7),
-            egui::Key::F8 => Some(Self::F8),
-            egui::Key::F9 => Some(Self::F9),
-            egui::Key::F10 => Some(Self::F10),
-            egui::Key::F11 => Some(Self::F11),
-            egui::Key::F12 => Some(Self::F12),
+    fn from_event(event: &egui::Event) -> Option<Self> {
+        match event {
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } => KeyName::from_egui(*key).map(|key| Self {
+                key,
+                ctrl: modifiers.ctrl || modifiers.command,
+                shift: modifiers.shift,
+                alt: modifiers.alt,
+            }),
             _ => None,
         }
     }
+}
+
+/// Declares the bindable keys once, reusing the `egui` variant names.
+macro_rules! keys {
+    ($($variant:ident => $label:literal),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        pub enum KeyName {
+            $($variant,)+
+        }
+
+        impl KeyName {
+            #[must_use]
+            pub const fn label(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $label,)+
+                }
+            }
+
+            #[must_use]
+            pub const fn from_egui(key: egui::Key) -> Option<Self> {
+                match key {
+                    $(egui::Key::$variant => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+keys! {
+    A => "A", B => "B", C => "C", D => "D", E => "E", F => "F", G => "G",
+    H => "H", I => "I", J => "J", K => "K", L => "L", M => "M", N => "N",
+    O => "O", P => "P", Q => "Q", R => "R", S => "S", T => "T", U => "U",
+    V => "V", W => "W", X => "X", Y => "Y", Z => "Z",
+    Num0 => "0", Num1 => "1", Num2 => "2", Num3 => "3", Num4 => "4",
+    Num5 => "5", Num6 => "6", Num7 => "7", Num8 => "8", Num9 => "9",
+    Comma => ",",
+    F1 => "F1", F2 => "F2", F3 => "F3", F4 => "F4", F5 => "F5", F6 => "F6",
+    F7 => "F7", F8 => "F8", F9 => "F9", F10 => "F10", F11 => "F11",
+    F12 => "F12",
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -419,14 +223,16 @@ pub struct ShortcutBindings {
 }
 
 impl ShortcutBindings {
+    #[must_use]
     pub fn shortcut_for(&self, command: Command) -> Option<Shortcut> {
         self.overrides
             .iter()
             .find(|binding| binding.command == command)
-            .map(|binding| binding.shortcut)
-            .unwrap_or_else(|| command.default_shortcut())
+            .map_or_else(|| command.default_shortcut(), |binding| binding.shortcut)
     }
 
+    /// Assigns `shortcut` to `command`, explicitly disabling every other
+    /// command that used the same combination.
     pub fn set(&mut self, command: Command, shortcut: Shortcut) {
         let displaced = Command::ALL
             .iter()
@@ -486,5 +292,43 @@ mod tests {
             bindings.shortcut_for(Command::CommandPalette),
             Some(Shortcut::ctrl(KeyName::O))
         );
+    }
+
+    #[test]
+    fn default_shortcuts_are_unique() {
+        for command in Command::ALL {
+            let Some(shortcut) = command.default_shortcut() else {
+                continue;
+            };
+            let owners = Command::ALL
+                .iter()
+                .filter(|other| other.default_shortcut() == Some(shortcut))
+                .count();
+            assert_eq!(owners, 1, "{command:?} shares {}", shortcut.label());
+        }
+    }
+
+    #[test]
+    fn every_command_is_labelled_in_every_language() {
+        for language in Language::ALL {
+            for command in Command::ALL {
+                assert!(!command.label(*language).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn composed_labels_join_their_fragments() {
+        assert_eq!(
+            Command::ThemeDark.label(Language::English),
+            "Theme: Dark".to_owned()
+        );
+    }
+
+    #[test]
+    fn shortcut_constructors_keep_their_modifiers() {
+        assert_eq!(Shortcut::ctrl_shift(KeyName::P).label(), "Ctrl+Shift+P");
+        assert_eq!(Shortcut::ctrl_alt(KeyName::E).label(), "Ctrl+Alt+E");
+        assert_eq!(Shortcut::plain(KeyName::F1).label(), "F1");
     }
 }

@@ -4,6 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub use crate::bytes::Endianness;
+use crate::bytes::{read_u16, read_u32};
+
+/// Bytes read from the start of a file to identify it. Large enough for every
+/// header this module inspects, small enough to stay cheap on huge binaries.
 const HEADER_BYTES: usize = 4096;
 
 /// Processor family inferred from a file header. This is intentionally a hint:
@@ -26,24 +31,6 @@ impl Architecture {
             Self::Arm => "ARM",
             Self::Arm64 => "ARM64",
             Self::Unknown => "Unknown",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Endianness {
-    Little,
-    Big,
-    Unknown,
-}
-
-impl Endianness {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Little => "little-endian",
-            Self::Big => "big-endian",
-            Self::Unknown => "unknown endianness",
         }
     }
 }
@@ -103,93 +90,120 @@ fn read_header(path: &Path) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn inspect_bytes(bytes: &[u8]) -> (BinaryFormat, Architecture) {
-    if bytes.starts_with(b"\x7fELF") {
+pub(crate) fn inspect_bytes(bytes: &[u8]) -> (BinaryFormat, Architecture) {
+    if bytes.starts_with(elf::MAGIC) {
         return inspect_elf(bytes);
     }
-    if bytes.starts_with(b"MZ") {
+    if bytes.starts_with(pe::DOS_MAGIC) {
         return inspect_pe(bytes);
     }
     inspect_mach_o(bytes)
 }
 
+/// Nothing recognisable in the header.
+const UNIDENTIFIED: (BinaryFormat, Architecture) = (BinaryFormat::Unknown, Architecture::Unknown);
+
+mod elf {
+    pub const MAGIC: &[u8] = b"\x7fELF";
+    /// `e_ident[EI_CLASS]`: 1 for 32-bit, 2 for 64-bit.
+    pub const CLASS_OFFSET: usize = 4;
+    /// `e_ident[EI_DATA]`: 1 for little-endian, 2 for big-endian.
+    pub const DATA_OFFSET: usize = 5;
+    /// `e_machine`, the processor family.
+    pub const MACHINE_OFFSET: usize = 18;
+
+    pub const MACHINE_X86: u16 = 3;
+    pub const MACHINE_ARM: u16 = 40;
+    pub const MACHINE_X86_64: u16 = 62;
+    pub const MACHINE_ARM64: u16 = 183;
+}
+
 fn inspect_elf(bytes: &[u8]) -> (BinaryFormat, Architecture) {
-    let bits = match bytes.get(4) {
+    let bits = match bytes.get(elf::CLASS_OFFSET) {
         Some(1) => 32,
         Some(2) => 64,
         _ => 0,
     };
-    let endianness = match bytes.get(5) {
+    let endianness = match bytes.get(elf::DATA_OFFSET) {
         Some(1) => Endianness::Little,
         Some(2) => Endianness::Big,
         _ => Endianness::Unknown,
     };
-    let machine = read_u16(bytes, 18, endianness);
-    let architecture = match machine {
-        Some(3) => Architecture::X86,
-        Some(62) => Architecture::X86_64,
-        Some(40) => Architecture::Arm,
-        Some(183) => Architecture::Arm64,
+    let architecture = match read_u16(bytes, elf::MACHINE_OFFSET, endianness) {
+        Some(elf::MACHINE_X86) => Architecture::X86,
+        Some(elf::MACHINE_X86_64) => Architecture::X86_64,
+        Some(elf::MACHINE_ARM) => Architecture::Arm,
+        Some(elf::MACHINE_ARM64) => Architecture::Arm64,
         _ => Architecture::Unknown,
     };
     (BinaryFormat::Elf { bits, endianness }, architecture)
 }
 
+mod pe {
+    pub const DOS_MAGIC: &[u8] = b"MZ";
+    /// `e_lfanew`: offset of the PE signature inside the DOS header.
+    pub const SIGNATURE_POINTER_OFFSET: usize = 0x3c;
+    pub const SIGNATURE: &[u8] = b"PE\0\0";
+    /// `Machine` field, right after the 4-byte PE signature.
+    pub const MACHINE_OFFSET_FROM_SIGNATURE: usize = 4;
+
+    pub const MACHINE_X86: u16 = 0x014c;
+    pub const MACHINE_ARM: u16 = 0x01c0;
+    pub const MACHINE_X86_64: u16 = 0x8664;
+    pub const MACHINE_ARM64: u16 = 0xaa64;
+}
+
 fn inspect_pe(bytes: &[u8]) -> (BinaryFormat, Architecture) {
-    let Some(offset) = read_u32(bytes, 0x3c, Endianness::Little) else {
-        return (BinaryFormat::Unknown, Architecture::Unknown);
+    let Some(signature) = read_u32(bytes, pe::SIGNATURE_POINTER_OFFSET, Endianness::Little) else {
+        return UNIDENTIFIED;
     };
-    let offset = offset as usize;
-    if bytes.get(offset..offset.saturating_add(4)) != Some(b"PE\0\0") {
-        return (BinaryFormat::Unknown, Architecture::Unknown);
+    let signature = signature as usize;
+    let signature_end = signature.saturating_add(pe::SIGNATURE.len());
+    if bytes.get(signature..signature_end) != Some(pe::SIGNATURE) {
+        return UNIDENTIFIED;
     }
-    let architecture = match read_u16(bytes, offset.saturating_add(4), Endianness::Little) {
-        Some(0x014c) => Architecture::X86,
-        Some(0x8664) => Architecture::X86_64,
-        Some(0x01c0) => Architecture::Arm,
-        Some(0xaa64) => Architecture::Arm64,
+    let machine_offset = signature.saturating_add(pe::MACHINE_OFFSET_FROM_SIGNATURE);
+    let architecture = match read_u16(bytes, machine_offset, Endianness::Little) {
+        Some(pe::MACHINE_X86) => Architecture::X86,
+        Some(pe::MACHINE_X86_64) => Architecture::X86_64,
+        Some(pe::MACHINE_ARM) => Architecture::Arm,
+        Some(pe::MACHINE_ARM64) => Architecture::Arm64,
         _ => Architecture::Unknown,
     };
     (BinaryFormat::Pe, architecture)
 }
 
+mod mach_o {
+    /// `cputype` follows the 4-byte magic.
+    pub const CPU_TYPE_OFFSET: usize = 4;
+    /// Set on `cputype` for the 64-bit variant of a family.
+    pub const CPU_TYPE_64: u32 = 0x0100_0000;
+
+    pub const CPU_TYPE_X86: u32 = 7;
+    pub const CPU_TYPE_ARM: u32 = 12;
+    pub const CPU_TYPE_X86_64: u32 = CPU_TYPE_64 | CPU_TYPE_X86;
+    pub const CPU_TYPE_ARM64: u32 = CPU_TYPE_64 | CPU_TYPE_ARM;
+}
+
 fn inspect_mach_o(bytes: &[u8]) -> (BinaryFormat, Architecture) {
     let Some(magic) = bytes.get(..4) else {
-        return (BinaryFormat::Unknown, Architecture::Unknown);
+        return UNIDENTIFIED;
     };
     let (bits, endianness) = match magic {
         [0xce, 0xfa, 0xed, 0xfe] => (32, Endianness::Little),
         [0xcf, 0xfa, 0xed, 0xfe] => (64, Endianness::Little),
         [0xfe, 0xed, 0xfa, 0xce] => (32, Endianness::Big),
         [0xfe, 0xed, 0xfa, 0xcf] => (64, Endianness::Big),
-        _ => return (BinaryFormat::Unknown, Architecture::Unknown),
+        _ => return UNIDENTIFIED,
     };
-    let architecture = match read_u32(bytes, 4, endianness) {
-        Some(7) => Architecture::X86,
-        Some(0x0100_0007) => Architecture::X86_64,
-        Some(12) => Architecture::Arm,
-        Some(0x0100_000c) => Architecture::Arm64,
+    let architecture = match read_u32(bytes, mach_o::CPU_TYPE_OFFSET, endianness) {
+        Some(mach_o::CPU_TYPE_X86) => Architecture::X86,
+        Some(mach_o::CPU_TYPE_X86_64) => Architecture::X86_64,
+        Some(mach_o::CPU_TYPE_ARM) => Architecture::Arm,
+        Some(mach_o::CPU_TYPE_ARM64) => Architecture::Arm64,
         _ => Architecture::Unknown,
     };
     (BinaryFormat::MachO { bits, endianness }, architecture)
-}
-
-fn read_u16(bytes: &[u8], offset: usize, endianness: Endianness) -> Option<u16> {
-    let input: [u8; 2] = bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?;
-    Some(match endianness {
-        Endianness::Little => u16::from_le_bytes(input),
-        Endianness::Big => u16::from_be_bytes(input),
-        Endianness::Unknown => return None,
-    })
-}
-
-fn read_u32(bytes: &[u8], offset: usize, endianness: Endianness) -> Option<u32> {
-    let input: [u8; 4] = bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?;
-    Some(match endianness {
-        Endianness::Little => u32::from_le_bytes(input),
-        Endianness::Big => u32::from_be_bytes(input),
-        Endianness::Unknown => return None,
-    })
 }
 
 #[cfg(test)]
@@ -199,16 +213,31 @@ mod tests {
 
     static TEMP_FILE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+    fn temporary_path() -> PathBuf {
+        let suffix = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("desdec-header-{}-{suffix}.bin", std::process::id()))
+    }
+
     #[test]
     fn reads_only_the_header_of_a_large_file() {
-        let suffix = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("desdec-header-{}-{suffix}.bin", std::process::id()));
+        let path = temporary_path();
         fs::write(&path, vec![0_u8; HEADER_BYTES * 2]).expect("temporary binary should be written");
 
         let header = read_header(&path).expect("header should be read");
         fs::remove_file(&path).expect("temporary binary should be removed");
         assert_eq!(header.len(), HEADER_BYTES);
+    }
+
+    #[test]
+    fn reports_the_size_of_the_whole_file() {
+        let path = temporary_path();
+        let size = HEADER_BYTES * 3;
+        fs::write(&path, vec![0_u8; size]).expect("temporary binary should be written");
+
+        let summary = inspect_path(&path).expect("file should be inspected");
+        fs::remove_file(&path).expect("temporary binary should be removed");
+        assert_eq!(summary.size, size as u64);
+        assert_eq!(summary.format, BinaryFormat::Unknown);
     }
 
     #[test]
@@ -229,6 +258,23 @@ mod tests {
     }
 
     #[test]
+    fn identifies_32_bit_big_endian_elf() {
+        let bytes = [
+            0x7f, b'E', b'L', b'F', 1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 40,
+        ];
+        assert_eq!(
+            inspect_bytes(&bytes),
+            (
+                BinaryFormat::Elf {
+                    bits: 32,
+                    endianness: Endianness::Big
+                },
+                Architecture::Arm
+            )
+        );
+    }
+
+    #[test]
     fn identifies_pe_machine() {
         let mut bytes = vec![0; 0x80];
         bytes[..2].copy_from_slice(b"MZ");
@@ -239,6 +285,22 @@ mod tests {
             inspect_bytes(&bytes),
             (BinaryFormat::Pe, Architecture::X86_64)
         );
+    }
+
+    #[test]
+    fn rejects_a_dos_stub_without_a_pe_signature() {
+        let mut bytes = vec![0; 0x80];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&(0x40_u32).to_le_bytes());
+        assert_eq!(inspect_bytes(&bytes), UNIDENTIFIED);
+    }
+
+    #[test]
+    fn rejects_a_pe_pointer_beyond_the_header() {
+        let mut bytes = vec![0; 0x80];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(inspect_bytes(&bytes), UNIDENTIFIED);
     }
 
     #[test]
@@ -254,5 +316,11 @@ mod tests {
                 Architecture::Arm64
             )
         );
+    }
+
+    #[test]
+    fn reports_an_unknown_format_for_a_truncated_file() {
+        assert_eq!(inspect_bytes(b"MZ"), UNIDENTIFIED);
+        assert_eq!(inspect_bytes(b""), UNIDENTIFIED);
     }
 }
