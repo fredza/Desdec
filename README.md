@@ -11,12 +11,15 @@ Only analyse and modify binaries you own or are explicitly authorised to study.
 ## Platform binaries
 
 The `Platform binaries` GitHub Actions workflow builds native debug and release
-archives for Windows x86-64 and macOS Apple Silicon (`aarch64`). Run it manually
-from the Actions tab, or push a version tag beginning with `v`. The four
-archives are available as workflow artifacts:
+archives for Windows x86-64 and macOS Apple Silicon (`aarch64`), plus a Linux
+x86-64 release archive. Push a version tag beginning with `v` to publish the
+three release archives and their SHA-256 checksums on GitHub; the debug archives
+remain available as workflow artifacts. Run the workflow manually from the
+Actions tab to build artifacts without publishing a release.
 
 - `desdec-windows-x86_64-debug` and `desdec-windows-x86_64-release`
 - `desdec-macos-aarch64-debug` and `desdec-macos-aarch64-release`
+- `desdec-linux-x86_64-release`
 
 ## Run
 
