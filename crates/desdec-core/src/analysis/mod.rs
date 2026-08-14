@@ -1,0 +1,625 @@
+//! Deep analysis of a loaded binary.
+//!
+//! Where [`crate::inspect_path`] answers "what is this file?" from its first
+//! few bytes, this module answers "what is inside it?": the section table, the
+//! entry point, the printable strings, and how dense each region looks.
+//!
+//! Three properties are deliberate:
+//!
+//! - **Bounded.** Reading stops at [`ANALYSIS_BYTE_LIMIT`], section tables at
+//!   4096 entries, strings at 20 000. A hostile header cannot make the analysis
+//!   allocate without limit or loop forever.
+//! - **Total.** No input panics. Unreadable structures produce empty lists, and
+//!   [`Analysis::truncated`] states plainly when the file was only read in part.
+//! - **Read-only.** The file is opened for reading and never written to.
+
+use std::{
+    fs,
+    io::{self, Read},
+    path::Path,
+};
+
+pub mod details;
+pub mod entropy;
+pub mod hash;
+pub mod sections;
+pub mod strings;
+
+pub use details::{BinaryDetails, FileKind, Hardening, Relro, Segment};
+pub use sections::{Permissions, Section};
+pub use strings::{ExtractedString, StringEncoding};
+
+use crate::binary::{BinarySummary, inspect_bytes};
+
+/// Most bytes read from one file. Beyond this the analysis reports what it saw
+/// and marks the result truncated, rather than mapping a multi-gigabyte image
+/// into memory.
+pub const ANALYSIS_BYTE_LIMIT: u64 = 256 * 1024 * 1024;
+
+/// Everything the current milestone can tell about a binary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Analysis {
+    pub summary: BinarySummary,
+    /// Virtual address execution starts at, when the format states one.
+    pub entry_point: Option<u64>,
+    pub sections: Vec<Section>,
+    pub strings: Vec<ExtractedString>,
+    /// Loader-level facts: file kind, mapping, dependencies, hardening.
+    pub details: BinaryDetails,
+    /// SHA-256 of the file, and `None` when only part of it was read — a
+    /// digest of a prefix would be mistaken for the file's identity.
+    pub sha256: Option<[u8; 32]>,
+    /// Entropy of the analysed bytes as a whole.
+    pub entropy: Option<f32>,
+    /// How many bytes were actually read and analysed.
+    pub analysed_bytes: u64,
+    /// Set when the file is larger than [`ANALYSIS_BYTE_LIMIT`], meaning
+    /// sections and strings past that point were not examined.
+    pub truncated: bool,
+}
+
+impl Analysis {
+    /// Sections carrying executable code.
+    pub fn executable_sections(&self) -> impl Iterator<Item = &Section> {
+        self.sections
+            .iter()
+            .filter(|section| section.permissions.execute)
+    }
+
+    /// Sections dense enough to suggest compressed or encrypted content.
+    ///
+    /// This is a lead to follow, not a conclusion: packers produce such
+    /// sections, and so do embedded archives and media.
+    pub fn dense_sections(&self) -> impl Iterator<Item = &Section> {
+        self.sections
+            .iter()
+            .filter(|section| section.entropy.is_some_and(entropy::suggests_packing))
+    }
+
+    /// Whether an executable section is dense enough to warrant a closer look —
+    /// the usual signature of a packed binary.
+    #[must_use]
+    pub fn suggests_packing(&self) -> bool {
+        self.executable_sections()
+            .any(|section| section.entropy.is_some_and(entropy::suggests_packing))
+    }
+
+    /// Section containing a given virtual address, for locating an entry point
+    /// or a cross-reference. Only mapped sections are considered.
+    #[must_use]
+    pub fn section_at(&self, address: u64) -> Option<&Section> {
+        self.sections.iter().find(|section| {
+            let end = section
+                .virtual_address
+                .saturating_add(section.virtual_size.max(section.file_size));
+            section.is_mapped() && (section.virtual_address..end).contains(&address)
+        })
+    }
+}
+
+/// Reads a binary and analyses it in depth.
+///
+/// # Errors
+///
+/// Returns an error if the file metadata cannot be read, or if the file cannot
+/// be opened or read.
+pub fn analyse_path(path: impl AsRef<Path>) -> io::Result<Analysis> {
+    let path = path.as_ref();
+    let size = fs::metadata(path)?.len();
+
+    let mut bytes = Vec::with_capacity(usize::try_from(size.min(ANALYSIS_BYTE_LIMIT)).unwrap_or(0));
+    fs::File::open(path)?
+        .take(ANALYSIS_BYTE_LIMIT)
+        .read_to_end(&mut bytes)?;
+
+    Ok(analyse_bytes(path, size, &bytes))
+}
+
+/// Analyses bytes already in memory, where `size` is the size of the whole
+/// file even when `bytes` holds only its beginning.
+#[must_use]
+pub fn analyse_bytes(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
+    let (format, architecture) = inspect_bytes(bytes);
+    let truncated = size > bytes.len() as u64;
+
+    let strings = strings::extract(bytes);
+    let mut details = details::parse(bytes, format);
+    details::note_stack_canary(&mut details, &strings);
+
+    Analysis {
+        summary: BinarySummary {
+            path: path.to_path_buf(),
+            size,
+            format,
+            architecture,
+        },
+        entry_point: sections::entry_point(bytes, format),
+        sections: sections::parse(bytes, format),
+        strings,
+        details,
+        sha256: (!truncated).then(|| hash::sha256(bytes)),
+        entropy: entropy::shannon(bytes),
+        analysed_bytes: bytes.len() as u64,
+        truncated,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Architecture, BinaryFormat, Endianness};
+    use std::path::PathBuf;
+
+    fn analyse(bytes: &[u8]) -> Analysis {
+        analyse_bytes(Path::new("test.bin"), bytes.len() as u64, bytes)
+    }
+
+    /// Ordinary machine code: a function prologue and a return.
+    const PLAIN_CODE: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x10, 0x31, 0xc0, 0xc9, 0xc3, 0x00, 0x00, 0x00,
+        0x00,
+    ];
+
+    fn elf_fixture() -> Vec<u8> {
+        elf_fixture_with_text(PLAIN_CODE)
+    }
+
+    /// A minimal but structurally valid 64-bit little-endian ELF holding a
+    /// section table of three entries — the mandatory null entry, `.text` with
+    /// the given bytes, and the name table.
+    fn elf_fixture_with_text(text: &[u8]) -> Vec<u8> {
+        const HEADER: usize = 64;
+        const ENTRY_SIZE: usize = 64;
+        let names = b"\0.text\0.bss\0.shstrtab\0";
+        let table = HEADER;
+        let name_table_offset = table + ENTRY_SIZE * 3;
+        let text_offset = name_table_offset + names.len();
+
+        let mut file = vec![0_u8; text_offset + text.len()];
+        file[..4].copy_from_slice(b"\x7fELF");
+        file[4] = 2; // 64-bit
+        file[5] = 1; // little-endian
+        file[18..20].copy_from_slice(&62_u16.to_le_bytes()); // x86-64
+        file[24..32].copy_from_slice(&0x40_1000_u64.to_le_bytes()); // e_entry
+        file[40..48].copy_from_slice(&(table as u64).to_le_bytes()); // e_shoff
+        file[58..60].copy_from_slice(&u16::try_from(ENTRY_SIZE).unwrap().to_le_bytes());
+        file[60..62].copy_from_slice(&3_u16.to_le_bytes()); // e_shnum
+        file[62..64].copy_from_slice(&2_u16.to_le_bytes()); // e_shstrndx
+
+        // Entry 0 is the mandatory null section, left zeroed.
+        // Entry 1: .text, allocated and executable.
+        let header = table + ENTRY_SIZE;
+        file[header..header + 4].copy_from_slice(&1_u32.to_le_bytes()); // sh_name -> ".text"
+        file[header + 4..header + 8].copy_from_slice(&1_u32.to_le_bytes()); // SHT_PROGBITS
+        file[header + 8..header + 16].copy_from_slice(&0x6_u64.to_le_bytes()); // ALLOC | EXECINSTR
+        file[header + 16..header + 24].copy_from_slice(&0x40_1000_u64.to_le_bytes());
+        file[header + 24..header + 32].copy_from_slice(&(text_offset as u64).to_le_bytes());
+        file[header + 32..header + 40].copy_from_slice(&(text.len() as u64).to_le_bytes());
+
+        // Entry 2: .shstrtab itself.
+        let strtab = table + ENTRY_SIZE * 2;
+        file[strtab..strtab + 4].copy_from_slice(&12_u32.to_le_bytes()); // ".shstrtab"
+        file[strtab + 4..strtab + 8].copy_from_slice(&3_u32.to_le_bytes()); // SHT_STRTAB
+        file[strtab + 24..strtab + 32].copy_from_slice(&(name_table_offset as u64).to_le_bytes());
+        file[strtab + 32..strtab + 40].copy_from_slice(&(names.len() as u64).to_le_bytes());
+
+        file[name_table_offset..text_offset].copy_from_slice(names);
+        file[text_offset..].copy_from_slice(text);
+        file
+    }
+
+    #[test]
+    fn elf_sections_carry_their_name_address_and_rights() {
+        let analysis = analyse(&elf_fixture());
+
+        assert_eq!(
+            analysis.summary.format,
+            BinaryFormat::Elf {
+                bits: 64,
+                endianness: Endianness::Little
+            }
+        );
+        assert_eq!(analysis.summary.architecture, Architecture::X86_64);
+        assert_eq!(analysis.entry_point, Some(0x40_1000));
+
+        let text = analysis
+            .sections
+            .iter()
+            .find(|section| section.name == ".text")
+            .expect("the fixture defines .text");
+        assert_eq!(text.virtual_address, 0x40_1000);
+        assert_eq!(text.file_size, PLAIN_CODE.len() as u64);
+        assert_eq!(text.permissions.label(), "r-x");
+        assert_eq!(text.bytes_in(&elf_fixture()), Some(PLAIN_CODE));
+        assert!(text.entropy.is_some());
+        assert!(text.is_mapped());
+
+        assert_eq!(analysis.executable_sections().count(), 1);
+        assert!(!analysis.suggests_packing());
+    }
+
+    #[test]
+    fn an_address_is_traced_back_to_its_section() {
+        let analysis = analyse(&elf_fixture());
+        let entry = analysis
+            .entry_point
+            .expect("the fixture has an entry point");
+
+        assert_eq!(
+            analysis
+                .section_at(entry)
+                .map(|section| section.name.clone()),
+            Some(".text".to_owned())
+        );
+        assert!(
+            analysis.section_at(0).is_none(),
+            "unmapped sections such as .shstrtab sit at address 0 and must not match"
+        );
+        assert!(analysis.section_at(entry - 1).is_none());
+    }
+
+    /// A PE with one section header, an image base and an entry point.
+    fn pe_fixture() -> Vec<u8> {
+        const SIGNATURE: usize = 0x80;
+        const OPTIONAL: usize = SIGNATURE + 24;
+        const OPTIONAL_SIZE: usize = 0xf0;
+        let table = OPTIONAL + OPTIONAL_SIZE;
+
+        let mut file = vec![0_u8; table + 40 + 64];
+        file[..2].copy_from_slice(b"MZ");
+        file[0x3c..0x40].copy_from_slice(&u32::try_from(SIGNATURE).unwrap().to_le_bytes());
+        file[SIGNATURE..SIGNATURE + 4].copy_from_slice(b"PE\0\0");
+        file[SIGNATURE + 4..SIGNATURE + 6].copy_from_slice(&0x8664_u16.to_le_bytes());
+        file[SIGNATURE + 6..SIGNATURE + 8].copy_from_slice(&1_u16.to_le_bytes()); // one section
+        file[SIGNATURE + 20..SIGNATURE + 22]
+            .copy_from_slice(&u16::try_from(OPTIONAL_SIZE).unwrap().to_le_bytes());
+
+        file[OPTIONAL..OPTIONAL + 2].copy_from_slice(&0x20b_u16.to_le_bytes()); // PE32+
+        file[OPTIONAL + 16..OPTIONAL + 20].copy_from_slice(&0x1000_u32.to_le_bytes()); // entry RVA
+        file[OPTIONAL + 24..OPTIONAL + 32].copy_from_slice(&0x1_4000_0000_u64.to_le_bytes());
+        file[OPTIONAL + 68..OPTIONAL + 70].copy_from_slice(&3_u16.to_le_bytes()); // console
+        // DYNAMIC_BASE | NX_COMPAT | GUARD_CF
+        file[OPTIONAL + 70..OPTIONAL + 72].copy_from_slice(&0x4140_u16.to_le_bytes());
+        file[SIGNATURE + 8..SIGNATURE + 12].copy_from_slice(&0x6000_0000_u32.to_le_bytes());
+        file[SIGNATURE + 22..SIGNATURE + 24].copy_from_slice(&0x0002_u16.to_le_bytes()); // EXE
+
+        file[table..table + 8].copy_from_slice(b".text\0\0\0");
+        file[table + 8..table + 12].copy_from_slice(&0x200_u32.to_le_bytes()); // virtual size
+        file[table + 12..table + 16].copy_from_slice(&0x1000_u32.to_le_bytes()); // RVA
+        file[table + 16..table + 20].copy_from_slice(&0x40_u32.to_le_bytes()); // raw size
+        file[table + 20..table + 24]
+            .copy_from_slice(&(u32::try_from(table).unwrap() + 40).to_le_bytes());
+        file[table + 36..table + 40].copy_from_slice(&0x6000_0020_u32.to_le_bytes());
+        file
+    }
+
+    #[test]
+    fn pe_sections_are_placed_relative_to_the_image_base() {
+        let analysis = analyse(&pe_fixture());
+
+        assert_eq!(analysis.summary.format, BinaryFormat::Pe);
+        assert_eq!(analysis.entry_point, Some(0x1_4000_1000));
+        assert_eq!(analysis.sections.len(), 1);
+
+        let text = &analysis.sections[0];
+        assert_eq!(text.name, ".text");
+        assert_eq!(text.virtual_address, 0x1_4000_1000);
+        assert_eq!(text.permissions.label(), "r-x");
+    }
+
+    /// A 64-bit little-endian Mach-O with one `LC_SEGMENT_64` holding one
+    /// section, followed by an `LC_MAIN`.
+    fn mach_o_fixture() -> Vec<u8> {
+        const HEADER: usize = 32;
+        const SEGMENT_SIZE: usize = 72 + 80;
+        const MAIN_SIZE: usize = 24;
+        const DYLIB_SIZE: usize = 32;
+        const SIGNATURE_SIZE: usize = 16;
+        let segment = HEADER;
+        let section = segment + 72;
+        let main = segment + SEGMENT_SIZE;
+        let dylib = main + MAIN_SIZE;
+        let signature = dylib + DYLIB_SIZE;
+
+        let mut file = vec![0_u8; signature + SIGNATURE_SIZE];
+        file[..4].copy_from_slice(&[0xcf, 0xfa, 0xed, 0xfe]); // 64-bit little-endian
+        file[4..8].copy_from_slice(&0x0100_0007_u32.to_le_bytes()); // x86-64
+        file[16..20].copy_from_slice(&4_u32.to_le_bytes()); // ncmds
+        file[24..28].copy_from_slice(&0x0020_0000_u32.to_le_bytes()); // MH_PIE
+        file[12..16].copy_from_slice(&2_u32.to_le_bytes()); // MH_EXECUTE
+
+        file[segment..segment + 4].copy_from_slice(&0x19_u32.to_le_bytes()); // LC_SEGMENT_64
+        file[segment + 4..segment + 8]
+            .copy_from_slice(&u32::try_from(SEGMENT_SIZE).unwrap().to_le_bytes());
+        file[segment + 8..segment + 16].copy_from_slice(b"__TEXT\0\0");
+        file[segment + 24..segment + 32].copy_from_slice(&0x1_0000_0000_u64.to_le_bytes()); // vmaddr
+        file[segment + 32..segment + 40].copy_from_slice(&0x1000_u64.to_le_bytes()); // vmsize
+        file[segment + 40..segment + 48].copy_from_slice(&0_u64.to_le_bytes()); // fileoff
+        file[segment + 48..segment + 56].copy_from_slice(&0x1000_u64.to_le_bytes()); // filesize
+        file[segment + 60..segment + 64].copy_from_slice(&5_u32.to_le_bytes()); // initprot r-x
+        file[segment + 64..segment + 68].copy_from_slice(&1_u32.to_le_bytes()); // nsects
+
+        file[section..section + 16].copy_from_slice(b"__text\0\0\0\0\0\0\0\0\0\0");
+        file[section + 16..section + 32].copy_from_slice(b"__TEXT\0\0\0\0\0\0\0\0\0\0");
+        file[section + 32..section + 40].copy_from_slice(&0x1_0000_1000_u64.to_le_bytes()); // addr
+        file[section + 40..section + 48].copy_from_slice(&0x20_u64.to_le_bytes()); // size
+        file[section + 48..section + 52].copy_from_slice(&0_u32.to_le_bytes()); // offset
+
+        file[main..main + 4].copy_from_slice(&0x8000_0028_u32.to_le_bytes()); // LC_MAIN
+        file[main + 4..main + 8].copy_from_slice(&u32::try_from(MAIN_SIZE).unwrap().to_le_bytes());
+        file[main + 8..main + 16].copy_from_slice(&0x1000_u64.to_le_bytes()); // entryoff
+
+        file[dylib..dylib + 4].copy_from_slice(&0xc_u32.to_le_bytes()); // LC_LOAD_DYLIB
+        file[dylib + 4..dylib + 8]
+            .copy_from_slice(&u32::try_from(DYLIB_SIZE).unwrap().to_le_bytes());
+        file[dylib + 8..dylib + 12].copy_from_slice(&24_u32.to_le_bytes()); // name offset
+        file[dylib + 24..dylib + 32].copy_from_slice(b"/lib.dy\0");
+
+        file[signature..signature + 4].copy_from_slice(&0x1d_u32.to_le_bytes()); // LC_CODE_SIGNATURE
+        file[signature + 4..signature + 8]
+            .copy_from_slice(&u32::try_from(SIGNATURE_SIZE).unwrap().to_le_bytes());
+        file
+    }
+
+    #[test]
+    fn mach_o_sections_are_named_after_their_segment() {
+        let analysis = analyse(&mach_o_fixture());
+
+        assert_eq!(
+            analysis.summary.format,
+            BinaryFormat::MachO {
+                bits: 64,
+                endianness: Endianness::Little
+            }
+        );
+        assert_eq!(analysis.sections.len(), 1);
+
+        let text = &analysis.sections[0];
+        assert_eq!(text.name, "__TEXT,__text");
+        assert_eq!(text.virtual_address, 0x1_0000_1000);
+        assert_eq!(text.permissions.label(), "r-x");
+
+        // `entryoff` counts from the start of the file, so the address is the
+        // __TEXT *segment* base (0x1_0000_0000) plus that offset — not the base
+        // of its first section.
+        assert_eq!(analysis.entry_point, Some(0x1_0000_1000));
+        assert_eq!(
+            analysis
+                .section_at(0x1_0000_1000)
+                .map(|section| section.name.clone()),
+            Some("__TEXT,__text".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_load_command_that_never_advances_is_rejected() {
+        let mut file = mach_o_fixture();
+        // A command size of zero would loop forever if it were trusted.
+        file[36..40].copy_from_slice(&0_u32.to_le_bytes());
+
+        let analysis = analyse(&file);
+        assert!(analysis.sections.is_empty());
+    }
+
+    #[test]
+    fn pe_details_report_subsystem_and_mitigations() {
+        let analysis = analyse(&pe_fixture());
+        let details = &analysis.details;
+
+        assert_eq!(details.file_kind, FileKind::Executable);
+        assert_eq!(details.bits, 64);
+        assert_eq!(details.subsystem, Some("Windows console"));
+        assert_eq!(details.timestamp, Some(0x6000_0000));
+        assert_eq!(details.hardening.address_space_randomisation, Some(true));
+        assert_eq!(details.hardening.data_execution_prevention, Some(true));
+        assert_eq!(details.hardening.control_flow_guard, Some(true));
+        assert_eq!(details.hardening.signed, Some(false));
+        // PE has no separate program headers: its sections are the mapping.
+        assert!(details.segments.is_empty());
+        // ELF-only notions must stay unknown rather than be reported absent.
+        assert_eq!(details.hardening.relro, None);
+        assert_eq!(details.hardening.non_executable_stack, None);
+    }
+
+    #[test]
+    fn mach_o_details_report_dylibs_and_signature() {
+        let analysis = analyse(&mach_o_fixture());
+        let details = &analysis.details;
+
+        assert_eq!(details.file_kind, FileKind::Executable);
+        assert_eq!(details.hardening.position_independent, Some(true));
+        assert_eq!(details.hardening.signed, Some(true));
+        assert_eq!(details.linked_libraries, vec!["/lib.dy".to_owned()]);
+        assert_eq!(details.segments.len(), 1);
+        assert_eq!(details.segments[0].kind, "__TEXT");
+        assert_eq!(details.segments[0].permissions.label(), "r-x");
+        assert_eq!(details.hardening.control_flow_guard, None);
+    }
+
+    #[test]
+    fn a_digest_is_withheld_when_only_part_of_the_file_was_read() {
+        let bytes = elf_fixture();
+        let whole = analyse(&bytes);
+        assert_eq!(whole.sha256, Some(hash::sha256(&bytes)));
+
+        let partial = analyse_bytes(Path::new("big.bin"), ANALYSIS_BYTE_LIMIT * 2, &bytes);
+        assert_eq!(
+            partial.sha256, None,
+            "a digest of a prefix would be mistaken for the file's identity"
+        );
+    }
+
+    #[test]
+    fn details_of_an_unreadable_file_claim_nothing() {
+        for bytes in [&b""[..], &b"MZ"[..], &b"not a binary"[..]] {
+            let details = analyse(bytes).details;
+            assert_eq!(details.file_kind, FileKind::Unknown);
+            assert!(details.segments.is_empty());
+            assert!(details.linked_libraries.is_empty());
+            assert_eq!(details.hardening.position_independent, None);
+            assert_eq!(details.hardening.relro, None);
+        }
+    }
+
+    #[test]
+    fn strings_are_collected_from_the_whole_file() {
+        let mut file = elf_fixture();
+        file.extend_from_slice(b"https://example.invalid/licence\0");
+
+        let analysis = analyse(&file);
+        assert!(
+            analysis
+                .strings
+                .iter()
+                .any(|string| string.value == "https://example.invalid/licence"),
+            "got {:?}",
+            analysis.strings
+        );
+    }
+
+    #[test]
+    fn a_partially_read_file_says_so() {
+        let bytes = elf_fixture();
+        let analysis = analyse_bytes(Path::new("big.bin"), ANALYSIS_BYTE_LIMIT * 2, &bytes);
+
+        assert!(analysis.truncated);
+        assert_eq!(analysis.analysed_bytes, bytes.len() as u64);
+        assert_eq!(analysis.summary.size, ANALYSIS_BYTE_LIMIT * 2);
+    }
+
+    #[test]
+    fn ordinary_code_is_not_mistaken_for_packed_content() {
+        let analysis = analyse(&elf_fixture());
+
+        assert!(!analysis.suggests_packing());
+        assert_eq!(analysis.dense_sections().count(), 0);
+    }
+
+    #[test]
+    fn a_dense_executable_section_is_flagged() {
+        // Every byte value exactly once: maximum entropy, the signature of
+        // compressed or encrypted content in a section meant to hold code.
+        let packed: Vec<u8> = (0..=255).collect();
+        let analysis = analyse(&elf_fixture_with_text(&packed));
+
+        let text = analysis
+            .sections
+            .iter()
+            .find(|section| section.name == ".text")
+            .expect("the fixture defines .text");
+        assert_eq!(text.entropy, Some(entropy::MAXIMUM));
+        assert!(analysis.suggests_packing());
+        assert_eq!(analysis.dense_sections().count(), 1);
+    }
+
+    /// Fixtures are hand-built and can encode the same misunderstanding twice.
+    /// The test binary is a real executable produced by a real linker, in the
+    /// native format of whichever platform this runs on.
+    #[test]
+    fn a_real_executable_parses_end_to_end() {
+        let path = std::env::current_exe().expect("the test binary has a path");
+        let analysis = analyse_path(&path).expect("the test binary should be analysed");
+
+        assert_ne!(
+            analysis.summary.format,
+            BinaryFormat::Unknown,
+            "the running executable must be a recognised format"
+        );
+        assert!(
+            !analysis.sections.is_empty(),
+            "a linked executable always has sections"
+        );
+        assert!(
+            analysis.executable_sections().next().is_some(),
+            "a linked executable always has executable code"
+        );
+
+        assert_eq!(
+            analysis.details.file_kind,
+            FileKind::Executable,
+            "the test binary is an executable, not a library"
+        );
+        assert!(
+            !analysis.details.linked_libraries.is_empty(),
+            "a test binary links against at least the system C library"
+        );
+        assert_eq!(
+            analysis.sha256,
+            Some(hash::sha256(
+                &fs::read(&path).expect("the test binary is readable")
+            )),
+            "the reported digest must cover the whole file"
+        );
+
+        if matches!(analysis.summary.format, BinaryFormat::Elf { .. }) {
+            let details = &analysis.details;
+            assert!(
+                !details.segments.is_empty(),
+                "an ELF executable is mapped through program headers"
+            );
+            assert!(
+                details.interpreter.is_some(),
+                "a dynamically linked executable names its loader"
+            );
+            assert!(details.hardening.relro.is_some());
+            assert!(details.hardening.non_executable_stack.is_some());
+        }
+
+        let entry = analysis
+            .entry_point
+            .expect("an executable has an entry point");
+        let section = analysis
+            .section_at(entry)
+            .expect("the entry point falls inside a mapped section");
+        assert!(
+            section.permissions.execute,
+            "the entry point lands in {} which is not executable",
+            section.name
+        );
+        assert!(
+            analysis
+                .strings
+                .iter()
+                .any(|string| string.value.contains('/') || string.value.contains('\\')),
+            "a test binary embeds at least one path-like string"
+        );
+    }
+
+    #[test]
+    fn unreadable_input_yields_an_empty_analysis_instead_of_failing() {
+        for bytes in [&b""[..], &b"MZ"[..], &b"not a binary at all"[..]] {
+            let analysis = analyse(bytes);
+            assert!(analysis.sections.is_empty());
+            assert_eq!(analysis.entry_point, None);
+            assert!(!analysis.suggests_packing());
+        }
+    }
+
+    #[test]
+    fn a_corrupted_section_count_cannot_run_away() {
+        let mut file = elf_fixture();
+        // Claim 65 535 sections in a file that holds three.
+        file[60..62].copy_from_slice(&u16::MAX.to_le_bytes());
+
+        let analysis = analyse(&file);
+        assert!(analysis.sections.len() <= 4096);
+    }
+
+    #[test]
+    fn analysing_a_real_file_reads_it_from_disk() {
+        let path = std::env::temp_dir().join(format!("desdec-analysis-{}.bin", std::process::id()));
+        fs::write(&path, elf_fixture()).expect("fixture should be written");
+
+        let analysis = analyse_path(&path).expect("fixture should be analysed");
+        fs::remove_file(&path).expect("fixture should be removed");
+
+        assert_eq!(analysis.summary.path, PathBuf::from(&path));
+        assert!(!analysis.truncated);
+        assert!(
+            analysis
+                .sections
+                .iter()
+                .any(|section| section.name == ".text")
+        );
+    }
+}

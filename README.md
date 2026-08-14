@@ -3,8 +3,9 @@
 Desdec is a lightweight, open-source and educational binary explorer.
 
 The first milestone targets safe, local inspection of ELF, PE and Mach-O
-binaries. It starts with format detection, then will grow toward x86-64
-disassembly, control-flow analysis, explainable pseudo-code and patch export.
+binaries: format detection, section tables, entry points, printable strings and
+per-region entropy. It will grow toward x86-64 disassembly, control-flow
+analysis, explainable pseudo-code and patch export.
 
 Only analyse and modify binaries you own or are explicitly authorised to study.
 
@@ -25,9 +26,11 @@ Actions tab to build artifacts without publishing a release.
 
 ```sh
 cargo run -p desdec-app
+cargo run -p desdec-app -- /path/to/binary
 ```
 
-Drag a binary into the window or choose **Open binary**.
+Drag a binary into the window, choose **Open binary**, or pass one on the
+command line.
 
 ## Project layout
 
