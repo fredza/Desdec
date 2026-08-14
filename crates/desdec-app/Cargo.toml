@@ -1,0 +1,16 @@
+[package]
+name = "desdec-app"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+desdec-core = { path = "../desdec-core" }
+eframe = { version = "0.31", features = ["persistence"] }
+pollster = "0.4"
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

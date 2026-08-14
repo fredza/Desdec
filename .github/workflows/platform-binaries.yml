@@ -1,0 +1,65 @@
+name: Platform binaries
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x86_64:
+    name: Windows x86_64
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - run: cargo test --locked
+      - run: cargo build --locked -p desdec-app --target x86_64-pc-windows-msvc
+      - name: Archive debug executable
+        shell: pwsh
+        run: Compress-Archive -Path target\x86_64-pc-windows-msvc\debug\desdec-app.exe -DestinationPath desdec-windows-x86_64-debug.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desdec-windows-x86_64-debug
+          path: desdec-windows-x86_64-debug.zip
+          if-no-files-found: error
+      - run: cargo build --locked --release -p desdec-app --target x86_64-pc-windows-msvc
+      - name: Archive release executable
+        shell: pwsh
+        run: Compress-Archive -Path target\x86_64-pc-windows-msvc\release\desdec-app.exe -DestinationPath desdec-windows-x86_64-release.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desdec-windows-x86_64-release
+          path: desdec-windows-x86_64-release.zip
+          if-no-files-found: error
+
+  macos-arm64:
+    name: macOS ARM64
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - run: cargo test --locked
+      - run: cargo build --locked -p desdec-app --target aarch64-apple-darwin
+      - name: Archive debug executable
+        run: ditto -c -k --sequesterRsrc --keepParent target/aarch64-apple-darwin/debug/desdec-app desdec-macos-aarch64-debug.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desdec-macos-aarch64-debug
+          path: desdec-macos-aarch64-debug.zip
+          if-no-files-found: error
+      - run: cargo build --locked --release -p desdec-app --target aarch64-apple-darwin
+      - name: Archive release executable
+        run: ditto -c -k --sequesterRsrc --keepParent target/aarch64-apple-darwin/release/desdec-app desdec-macos-aarch64-release.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desdec-macos-aarch64-release
+          path: desdec-macos-aarch64-release.zip
+          if-no-files-found: error
