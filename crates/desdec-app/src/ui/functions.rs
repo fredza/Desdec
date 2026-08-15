@@ -10,7 +10,7 @@ use eframe::egui;
 
 use crate::{
     i18n::{Language, Text, text},
-    ui::{MUTED, card, format_size},
+    ui::{MUTED, card, format_size, syntax},
 };
 
 const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(230.0, 42.0);
@@ -243,18 +243,22 @@ fn control_flow_graph(
 fn block_details(ui: &mut egui::Ui, function: &Function<'_>, block: &BasicBlock) {
     ui.strong(format!("Bloc {:#x}", block.start));
     ui.separator();
+    let transparent = egui::Color32::TRANSPARENT;
     for instruction in &function.instructions[block.instructions.clone()] {
         ui.horizontal(|ui| {
-            ui.monospace(format!("{:#018x}", instruction.address));
-            ui.monospace(
-                instruction
-                    .bytes
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            );
-            ui.monospace(&instruction.text);
+            ui.label(syntax::dim(
+                ui,
+                &format!("{:#018x}", instruction.address),
+                transparent,
+            ));
+            let bytes = instruction
+                .bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            ui.label(syntax::dim(ui, &bytes, transparent));
+            ui.label(syntax::assembly(ui, &instruction.text, transparent));
         });
     }
 }
@@ -288,26 +292,29 @@ fn pseudocode(
             .id_salt(("function_pseudocode", function.start))
             .max_height(available_height)
             .show(ui, |ui| {
-                ui.monospace(format!("void {}(void) {{", function.symbol.name));
+                let signature = format!("void {}(void) {{", function.symbol.name);
+                ui.label(syntax::pseudo_code(
+                    ui,
+                    &signature,
+                    egui::Color32::TRANSPARENT,
+                ));
                 for (index, instruction) in function.instructions.iter().enumerate() {
                     let highlighted = highlighted_instructions
                         .as_ref()
                         .is_some_and(|range| range.contains(&index));
                     ui.horizontal(|ui| {
-                        let style = highlighted.then_some(ui.style().visuals.selection.bg_fill);
-                        ui.label(
-                            egui::RichText::new(format!("{:#018x}", instruction.address))
-                                .monospace()
-                                .background_color(style.unwrap_or(egui::Color32::TRANSPARENT)),
-                        );
-                        let response = ui.label(
-                            egui::RichText::new(format!(
-                                "    {}",
-                                super::decompile::pseudo_c(&instruction.text)
-                            ))
-                            .monospace()
-                            .background_color(style.unwrap_or(egui::Color32::TRANSPARENT)),
-                        );
+                        let fill = if highlighted {
+                            ui.style().visuals.selection.bg_fill
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        };
+                        ui.label(syntax::dim(
+                            ui,
+                            &format!("{:#018x}", instruction.address),
+                            fill,
+                        ));
+                        let code = format!("    {}", super::decompile::pseudo_c(&instruction.text));
+                        let response = ui.label(syntax::pseudo_code(ui, &code, fill));
                         if highlighted
                             && highlighted_instructions
                                 .as_ref()
@@ -317,7 +324,7 @@ fn pseudocode(
                         }
                     });
                 }
-                ui.monospace("}");
+                ui.label(syntax::pseudo_code(ui, "}", egui::Color32::TRANSPARENT));
             });
     });
 }

@@ -1,5 +1,5 @@
 //! Detailed x86/x86-64 decoding, synchronised with the local pseudo-code.
-use crate::{ui::MUTED, ui::decompile};
+use crate::{ui::MUTED, ui::decompile, ui::syntax};
 use desdec_core::Analysis;
 use eframe::egui;
 
@@ -78,30 +78,33 @@ fn instructions(
                         );
                         let address = ui
                             .add(
-                                egui::Label::new(
-                                    egui::RichText::new(format!("{:#018x}", instruction.address))
-                                        .monospace()
-                                        .background_color(selected_fill),
-                                )
+                                egui::Label::new(syntax::dim(
+                                    ui,
+                                    &format!("{:#018x}", instruction.address),
+                                    selected_fill,
+                                ))
                                 .sense(egui::Sense::click()),
                             )
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
-                        ui.monospace(
-                            instruction
-                                .bytes
-                                .iter()
-                                .map(|byte| format!("{byte:02x}"))
-                                .collect::<Vec<_>>()
-                                .join(" "),
-                        );
-                        ui.monospace(&instruction.section);
+                        let bytes = instruction
+                            .bytes
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        ui.label(syntax::dim(ui, &bytes, egui::Color32::TRANSPARENT));
+                        ui.label(syntax::dim(
+                            ui,
+                            &instruction.section,
+                            egui::Color32::TRANSPARENT,
+                        ));
                         let assembly = ui
                             .add(
-                                egui::Label::new(
-                                    egui::RichText::new(&instruction.text)
-                                        .monospace()
-                                        .background_color(selected_fill),
-                                )
+                                egui::Label::new(syntax::assembly(
+                                    ui,
+                                    &instruction.text,
+                                    selected_fill,
+                                ))
                                 .sense(egui::Sense::click()),
                             )
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
