@@ -4,6 +4,7 @@ mod analysis;
 mod binary;
 mod bytes;
 pub mod decompiler;
+pub mod parallel;
 pub mod patch;
 
 pub use analysis::{
