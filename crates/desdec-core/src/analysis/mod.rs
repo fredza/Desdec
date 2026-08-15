@@ -121,10 +121,38 @@ pub fn analyse_path(path: impl AsRef<Path>) -> io::Result<Analysis> {
     Ok(analyse_bytes(path, size, &bytes))
 }
 
+/// Above this, spreading the analysis across cores pays for itself.
+///
+/// Below it the threads cost more than they save — measured, not assumed: at
+/// 1.5 MB the parallel path was consistently slower than the sequential one,
+/// and from 3 MB up it was consistently faster. Small binaries take a few
+/// milliseconds either way, so they keep the sequential path rather than
+/// trade their latency for nothing.
+const PARALLEL_THRESHOLD: usize = 2 * 1024 * 1024;
+
 /// Analyses bytes already in memory, where `size` is the size of the whole
 /// file even when `bytes` holds only its beginning.
+///
+/// Above [`PARALLEL_THRESHOLD`], the independent parts run on separate
+/// threads, so a large binary takes about as long as its slowest part instead
+/// of the sum of all of them. The digest is usually that slowest part —
+/// SHA-256 is sequential by construction and cannot be split — so everything
+/// else is arranged to proceed alongside it.
+///
+/// Only the scheduling differs between the two paths. Each part computes
+/// exactly what it computed before, and the assembled [`Analysis`] is
+/// identical whichever path ran, which
+/// [`tests::both_paths_produce_the_same_analysis`] holds.
 #[must_use]
 pub fn analyse_bytes(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
+    if bytes.len() < PARALLEL_THRESHOLD {
+        return sequentially(path, size, bytes);
+    }
+    concurrently(path, size, bytes)
+}
+
+/// One thread, in the order the analysis has always run in.
+fn sequentially(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
     let (format, architecture) = inspect_bytes(bytes);
     let truncated = size > bytes.len() as u64;
 
@@ -136,12 +164,7 @@ pub fn analyse_bytes(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
     details::note_stack_canary(&mut details, &strings);
 
     Analysis {
-        summary: BinarySummary {
-            path: path.to_path_buf(),
-            size,
-            format,
-            architecture,
-        },
+        summary: summary(path, size, bytes),
         entry_point: sections::entry_point(bytes, format),
         sections,
         strings,
@@ -155,6 +178,69 @@ pub fn analyse_bytes(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
     }
 }
 
+/// The same work, spread over the machine's cores.
+fn concurrently(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
+    let (format, architecture) = inspect_bytes(bytes);
+    let truncated = size > bytes.len() as u64;
+
+    std::thread::scope(|scope| {
+        // Spawned first: the longest pole, so the rest fills the time it takes
+        // instead of queueing behind it.
+        let digest = scope.spawn(move || (!truncated).then(|| hash::sha256(bytes)));
+        let entropy = scope.spawn(move || entropy::shannon(bytes));
+        // The canary check reads the extracted strings, so these two stay on
+        // one thread rather than synchronising for a single boolean.
+        let described = scope.spawn(move || {
+            let strings = strings::extract(bytes);
+            let mut details = details::parse(bytes, format);
+            details::note_stack_canary(&mut details, &strings);
+            (strings, details)
+        });
+        let symbols = scope.spawn(move || symbols::extract(bytes, format));
+        let entry_point = scope.spawn(move || sections::entry_point(bytes, format));
+        // Decoding needs the section table, so it follows it on this thread.
+        let code = scope.spawn(move || {
+            let sections = sections::parse(bytes, format);
+            let instructions = disassembly::decode(bytes, format, architecture, &sections);
+            (sections, instructions)
+        });
+
+        let (strings, details) = join(described);
+        let (sections, instructions) = join(code);
+        Analysis {
+            summary: summary(path, size, bytes),
+            entry_point: join(entry_point),
+            sections,
+            strings,
+            symbols: join(symbols),
+            instructions,
+            details,
+            sha256: join(digest),
+            entropy: join(entropy),
+            analysed_bytes: bytes.len() as u64,
+            truncated,
+        }
+    })
+}
+
+fn summary(path: &Path, size: u64, bytes: &[u8]) -> BinarySummary {
+    let (format, architecture) = inspect_bytes(bytes);
+    BinarySummary {
+        path: path.to_path_buf(),
+        size,
+        format,
+        architecture,
+    }
+}
+
+/// Waits for one part of the analysis, letting a panic keep its original
+/// backtrace instead of being reported as a mysterious failure.
+fn join<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    handle
+        .join()
+        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +249,70 @@ mod tests {
 
     fn analyse(bytes: &[u8]) -> Analysis {
         analyse_bytes(Path::new("test.bin"), bytes.len() as u64, bytes)
+    }
+
+    /// The threaded path must answer exactly what the sequential one does.
+    ///
+    /// This is the property the whole parallel arrangement rests on: which
+    /// path ran is an implementation detail of the machine, and a report that
+    /// changed with the core count could not be compared against another run.
+    /// Both are called directly, so the test does not depend on where
+    /// [`PARALLEL_THRESHOLD`] happens to sit.
+    #[test]
+    fn both_paths_produce_the_same_analysis() {
+        // A real binary as well as the fixtures: the fixtures carry no symbols
+        // and few strings, so on their own they would let a whole part of the
+        // analysis differ between the paths unnoticed.
+        let real = std::fs::read(std::env::current_exe().expect("the test binary has a path"))
+            .expect("the test binary is readable");
+        assert!(
+            !analyse(&real).symbols.is_empty(),
+            "the reference binary must exercise every part of the analysis"
+        );
+
+        let path = Path::new("test.bin");
+        for bytes in [
+            real,
+            elf_fixture(),
+            elf_fixture_with_text(&[0x90; 4096]),
+            pe_fixture(),
+            Vec::new(),
+            vec![0_u8; 8192],
+        ] {
+            let size = bytes.len() as u64;
+            assert_eq!(
+                sequentially(path, size, &bytes),
+                concurrently(path, size, &bytes),
+                "the two paths disagreed on a {} byte input",
+                bytes.len()
+            );
+        }
+    }
+
+    /// A truncated file has no digest on either path: a digest of a prefix
+    /// would be taken for the file's identity.
+    #[test]
+    fn both_paths_agree_on_a_truncated_file() {
+        let path = Path::new("test.bin");
+        let bytes = elf_fixture();
+        // A size larger than the bytes on hand is what marks it truncated.
+        let size = bytes.len() as u64 * 4;
+
+        let sequential = sequentially(path, size, &bytes);
+        let concurrent = concurrently(path, size, &bytes);
+
+        assert!(sequential.truncated);
+        assert_eq!(sequential.sha256, None);
+        assert_eq!(sequential, concurrent);
+    }
+
+    /// Both paths stay reachable in practice, whichever way the threshold is
+    /// later tuned: too low and a small binary pays for threads it does not
+    /// need, too high and no binary ever uses the cores.
+    #[test]
+    fn the_threshold_sits_between_a_small_and_a_large_binary() {
+        let limit = usize::try_from(ANALYSIS_BYTE_LIMIT).unwrap_or(usize::MAX);
+        assert!((64 * 1024..limit).contains(&PARALLEL_THRESHOLD));
     }
 
     /// Ordinary machine code: a function prologue and a return.
