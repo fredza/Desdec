@@ -9,4 +9,5 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+capstone = { version = "0.14", default-features = false, features = ["std", "full", "arch_arm64"] }
 iced-x86 = { version = "1.21", features = ["decoder", "gas"] }

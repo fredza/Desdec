@@ -56,7 +56,6 @@ commands! {
     Functions => [Functions], Some(Shortcut::ctrl(KeyName::Num3)),
     Strings => [Strings], Some(Shortcut::ctrl(KeyName::Num4)),
     Patches => [Patches], Some(Shortcut::ctrl(KeyName::Num5)),
-    ToggleExpertMode => [ToggleExpertMode], Some(Shortcut::ctrl_alt(KeyName::E)),
     ThemeSystem => [Theme, SystemTheme], None,
     ThemeDark => [Theme, DarkTheme], None,
     ThemeLight => [Theme, LightTheme], None,
@@ -279,7 +278,6 @@ mod tests {
             Command::Functions,
             Command::Strings,
             Command::Patches,
-            Command::ToggleExpertMode,
         ] {
             assert!(command.default_shortcut().is_some());
         }

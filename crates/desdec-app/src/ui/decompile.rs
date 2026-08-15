@@ -1,27 +1,132 @@
 use crate::ui::{MUTED, card};
 use desdec_core::Analysis;
 use eframe::egui;
-pub fn show(ui: &mut egui::Ui, analysis: &Analysis, expert: bool) {
+use std::time::Duration;
+pub fn show(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    selected_instruction: &mut Option<u64>,
+    pending_scroll: &mut Option<u64>,
+    instruction_attention: &mut Option<(u64, f64)>,
+) {
     card(ui, "Pseudo-code local", |ui| {
         ui.small("Le flot observé est expliqué, sans prétendre reconstituer le code source.");
         if analysis.instructions.is_empty() {
-            ui.label(egui::RichText::new("Aucune instruction x86/x86-64 disponible.").color(MUTED));
+            ui.label(egui::RichText::new("Aucune instruction décodable disponible.").color(MUTED));
             return;
         }
-        panel(ui, analysis, expert);
+        let scroll_target = *pending_scroll;
+        let attention = active_attention(ui.ctx(), instruction_attention);
+        panel(
+            ui,
+            analysis,
+            selected_instruction,
+            scroll_target,
+            pending_scroll,
+            attention,
+        );
+        if *pending_scroll == scroll_target {
+            *pending_scroll = None;
+        }
     });
 }
-pub fn panel(ui: &mut egui::Ui, analysis: &Analysis, expert: bool) {
+
+/// Returns the address to flash until its deadline, clearing it afterwards.
+/// A short repaint cadence makes the mark blink without disturbing scrolling.
+pub fn active_attention(
+    ctx: &egui::Context,
+    instruction_attention: &mut Option<(u64, f64)>,
+) -> Option<u64> {
+    let now = ctx.input(|input| input.time);
+    match *instruction_attention {
+        Some((address, until)) if now < until => {
+            ctx.request_repaint_after(Duration::from_millis(180));
+            Some(address)
+        }
+        Some(_) => {
+            *instruction_attention = None;
+            None
+        }
+        None => None,
+    }
+}
+
+pub fn instruction_fill(
+    ui: &egui::Ui,
+    address: u64,
+    selected_instruction: Option<u64>,
+    attention: Option<u64>,
+) -> egui::Color32 {
+    let flashes_now = attention == Some(address)
+        && (ui.ctx().input(|input| input.time * 5.0).floor() as u64) % 2 == 0;
+    if flashes_now {
+        egui::Color32::from_rgb(241, 169, 75)
+    } else if selected_instruction == Some(address) {
+        ui.style().visuals.selection.bg_fill
+    } else {
+        egui::Color32::TRANSPARENT
+    }
+}
+
+pub fn ensure_selected_instruction(analysis: &Analysis, selected_instruction: &mut Option<u64>) {
+    if !selected_instruction.is_some_and(|address| {
+        analysis
+            .instructions
+            .iter()
+            .any(|instruction| instruction.address == address)
+    }) {
+        *selected_instruction = analysis
+            .instructions
+            .first()
+            .map(|instruction| instruction.address);
+    }
+}
+
+pub fn panel(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    selected_instruction: &mut Option<u64>,
+    scroll_target: Option<u64>,
+    pending_scroll: &mut Option<u64>,
+    attention: Option<u64>,
+) {
+    ensure_selected_instruction(analysis, selected_instruction);
     egui::ScrollArea::both()
         .id_salt("pseudo_code")
         .show(ui, |ui| {
             ui.monospace("void decompiled_entry(void) {");
             for instruction in &analysis.instructions {
                 ui.horizontal(|ui| {
-                    if expert {
-                        ui.monospace(format!("{:#018x}", instruction.address));
+                    let selected_fill =
+                        instruction_fill(ui, instruction.address, *selected_instruction, attention);
+                    let address = ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("{:#018x}", instruction.address))
+                                    .monospace()
+                                    .background_color(selected_fill),
+                            )
+                            .sense(egui::Sense::click()),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let code = ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("    {}", pseudo_c(&instruction.text)))
+                                    .monospace()
+                                    .background_color(selected_fill),
+                            )
+                            .sense(egui::Sense::click()),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if address.clicked() || code.clicked() {
+                        *selected_instruction = Some(instruction.address);
+                        *pending_scroll = Some(instruction.address);
+                        ui.ctx().request_repaint();
                     }
-                    ui.monospace(format!("    {}", pseudo_c(&instruction.text)));
+                    if scroll_target == Some(instruction.address) {
+                        ui.scroll_to_rect(code.rect, Some(egui::Align::Center));
+                    }
                 });
             }
             ui.monospace("}");
@@ -30,7 +135,7 @@ pub fn panel(ui: &mut egui::Ui, analysis: &Analysis, expert: bool) {
 /// Conservative AT&T-to-C presentation. The decoder remains authoritative;
 /// this layer deliberately keeps unknown semantics as comments instead of
 /// inventing types, variable names, or source-level control structures.
-fn pseudo_c(asm: &str) -> String {
+pub(crate) fn pseudo_c(asm: &str) -> String {
     let mut fields = asm.splitn(2, char::is_whitespace);
     let opcode = fields.next().unwrap_or_default();
     let operands = fields.next().unwrap_or_default().trim();

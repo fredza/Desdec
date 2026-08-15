@@ -1,11 +1,12 @@
 //! Printable strings extracted from the loaded binary.
 
-use desdec_core::{Analysis, ExtractedString};
+use desdec_core::{Analysis, ExtractedString, Instruction};
 use eframe::egui;
 
 use crate::{
+    app::WorkspaceView,
     i18n::{Language, Text, text},
-    ui::MUTED,
+    ui::{MUTED, card},
 };
 
 /// Height of one row, needed up front so the list can be virtualised: only the
@@ -16,7 +17,11 @@ pub fn show(
     ui: &mut egui::Ui,
     analysis: &Analysis,
     filter: &mut String,
-    expert_mode: bool,
+    selected_string: &mut Option<u64>,
+    selected_instruction: &mut Option<u64>,
+    pending_instruction_scroll: &mut Option<u64>,
+    instruction_attention: &mut Option<(u64, f64)>,
+    active_view: &mut WorkspaceView,
     language: Language,
 ) {
     if analysis.strings.is_empty() {
@@ -24,14 +29,28 @@ pub fn show(
         return;
     }
 
-    if !expert_mode {
-        ui.small(text(language, Text::StringsHelp));
-        ui.add_space(8.0);
-    }
-
     let matches = matching(analysis, filter);
     header(ui, filter, matches.len(), analysis.strings.len(), language);
     ui.add_space(8.0);
+
+    if let Some(string) = selected_string.and_then(|offset| {
+        analysis
+            .strings
+            .iter()
+            .find(|string| string.file_offset == offset)
+    }) {
+        references(
+            ui,
+            analysis,
+            string,
+            selected_instruction,
+            pending_instruction_scroll,
+            instruction_attention,
+            active_view,
+            language,
+        );
+        ui.add_space(8.0);
+    }
 
     egui::ScrollArea::both()
         .auto_shrink([false, false])
@@ -43,7 +62,9 @@ pub fn show(
                 .min_row_height(ROW_HEIGHT)
                 .show(ui, |ui| {
                     for string in &matches[range] {
-                        row(ui, string);
+                        if row(ui, string, *selected_string == Some(string.file_offset)) {
+                            *selected_string = Some(string.file_offset);
+                        }
                         ui.end_row();
                     }
                 });
@@ -86,7 +107,7 @@ fn matching<'a>(analysis: &'a Analysis, filter: &str) -> Vec<&'a ExtractedString
         .collect()
 }
 
-fn row(ui: &mut egui::Ui, string: &ExtractedString) {
+fn row(ui: &mut egui::Ui, string: &ExtractedString, selected: bool) -> bool {
     ui.monospace(format!("{:#010x}", string.file_offset));
     ui.label(egui::RichText::new(string.encoding.label()).color(MUTED));
 
@@ -95,5 +116,169 @@ fn row(ui: &mut egui::Ui, string: &ExtractedString) {
     } else {
         string.value.clone()
     };
-    ui.monospace(value);
+    let response = ui
+        .add(
+            egui::Label::new(
+                egui::RichText::new(value).monospace().background_color(
+                    selected
+                        .then_some(ui.style().visuals.selection.bg_fill)
+                        .unwrap_or(egui::Color32::TRANSPARENT),
+                ),
+            )
+            .sense(egui::Sense::click()),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.hovered() {
+        ui.painter().rect_stroke(
+            response.rect.expand(1.0),
+            2.0,
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(241, 169, 75)),
+            egui::StrokeKind::Outside,
+        );
+    }
+    response.clicked()
+}
+
+fn references(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    string: &ExtractedString,
+    selected_instruction: &mut Option<u64>,
+    pending_instruction_scroll: &mut Option<u64>,
+    instruction_attention: &mut Option<(u64, f64)>,
+    active_view: &mut WorkspaceView,
+    language: Language,
+) {
+    card(ui, text(language, Text::StringReferences), |ui| {
+        ui.monospace(&string.value);
+        let Some(address) = string_address(analysis, string) else {
+            ui.small(text(language, Text::StringAddressUnavailable));
+            return;
+        };
+        ui.small(format!("{address:#018x}"));
+
+        let references = direct_references(analysis, address);
+        if references.is_empty() {
+            ui.small(text(language, Text::NoStringReferences));
+            return;
+        }
+        for instruction in references {
+            ui.horizontal(|ui| {
+                ui.monospace(format!(
+                    "{:#018x}  {}",
+                    instruction.address, instruction.text
+                ));
+                if ui.button(text(language, Text::GoToDisassembly)).clicked() {
+                    *selected_instruction = Some(instruction.address);
+                    *pending_instruction_scroll = Some(instruction.address);
+                    *instruction_attention = Some((
+                        instruction.address,
+                        ui.ctx().input(|input| input.time) + 3.0,
+                    ));
+                    *active_view = WorkspaceView::Disassembly;
+                    ui.ctx().request_repaint();
+                }
+            });
+        }
+    });
+}
+
+/// Translates a file offset from the string extractor to its memory address.
+fn string_address(analysis: &Analysis, string: &ExtractedString) -> Option<u64> {
+    analysis.sections.iter().find_map(|section| {
+        let end = section.file_offset.saturating_add(section.file_size);
+        (section.is_mapped() && (section.file_offset..end).contains(&string.file_offset)).then(
+            || {
+                section
+                    .virtual_address
+                    .saturating_add(string.file_offset.saturating_sub(section.file_offset))
+            },
+        )
+    })
+}
+
+/// Finds direct and RIP-relative operands in the decoded x86 text. Indirect
+/// references need full instruction-semantic analysis and are left out rather
+/// than reported as false positives.
+fn direct_references<'a>(analysis: &'a Analysis, address: u64) -> Vec<&'a Instruction> {
+    analysis
+        .instructions
+        .iter()
+        .filter(|instruction| instruction_addresses(instruction).contains(&address))
+        .collect()
+}
+
+fn instruction_addresses(instruction: &Instruction) -> Vec<u64> {
+    if let Some(target) = rip_relative_target(instruction) {
+        return vec![target];
+    }
+
+    instruction
+        .text
+        .split(|character: char| {
+            !character.is_ascii_hexdigit() && !matches!(character, 'x' | 'X' | 'h' | 'H')
+        })
+        .filter_map(|candidate| {
+            let hexadecimal = candidate
+                .strip_prefix("0x")
+                .or_else(|| candidate.strip_prefix("0X"))
+                .or_else(|| candidate.strip_suffix(['h', 'H']))?;
+            u64::from_str_radix(hexadecimal, 16).ok()
+        })
+        .collect()
+}
+
+/// x86-64 string literals are commonly addressed relative to `%rip`. The
+/// formatter preserves that displacement, so recover the target from the next
+/// instruction address instead of treating the displacement as an absolute.
+fn rip_relative_target(instruction: &Instruction) -> Option<u64> {
+    let operand = instruction
+        .text
+        .split_whitespace()
+        .skip(1)
+        .find(|part| part.contains("%rip"))?;
+    let displacement = operand.split('(').next()?.trim_start_matches('$');
+    let (negative, hexadecimal) = match displacement.strip_prefix('-') {
+        Some(value) => (true, value),
+        None => (false, displacement),
+    };
+    let hexadecimal = hexadecimal
+        .strip_prefix("0x")
+        .or_else(|| hexadecimal.strip_prefix("0X"))
+        .or_else(|| hexadecimal.strip_suffix(['h', 'H']))?;
+    let magnitude = i64::try_from(u64::from_str_radix(hexadecimal, 16).ok()?).ok()?;
+    let signed_displacement = if negative { -magnitude } else { magnitude };
+    instruction
+        .address
+        .saturating_add(instruction.bytes.len() as u64)
+        .checked_add_signed(signed_displacement)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_direct_gas_hex_operands_for_string_references() {
+        let instruction = Instruction {
+            address: 0x401000,
+            bytes: vec![0x48, 0x8d, 0x05],
+            text: "mov $402000h,%rax".to_owned(),
+            section: ".text".to_owned(),
+        };
+
+        assert_eq!(instruction_addresses(&instruction), [0x402000]);
+    }
+
+    #[test]
+    fn resolves_rip_relative_string_references() {
+        let instruction = Instruction {
+            address: 0x400ff0,
+            bytes: vec![0x48, 0x8d, 0x05, 0x09, 0x10, 0x00, 0x00],
+            text: "leaq 0x1009(%rip),%rax".to_owned(),
+            section: ".text".to_owned(),
+        };
+
+        assert_eq!(instruction_addresses(&instruction), [0x402000]);
+    }
 }

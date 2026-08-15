@@ -8,43 +8,28 @@ use crate::{
     ui::{ERROR, MUTED, format_size},
 };
 
-pub fn show(ui: &mut egui::Ui, analysis: &Analysis, expert_mode: bool, language: Language) {
+pub fn show(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
     if analysis.sections.is_empty() {
         ui.label(text(language, Text::NoSections));
         return;
     }
 
-    if !expert_mode {
-        ui.small(text(language, Text::SegmentsHelp));
-        ui.add_space(8.0);
-    }
     if analysis.truncated {
         ui.colored_label(ERROR, text(language, Text::TruncatedAnalysis));
         ui.add_space(8.0);
     }
 
-    // Expert mode adds the mapped size, which differs from the stored size for
-    // zero-filled sections such as `.bss`.
-    let columns: &[Text] = if expert_mode {
-        &[
-            Text::Name,
-            Text::Address,
-            Text::Offset,
-            Text::Size,
-            Text::MappedSize,
-            Text::Rights,
-            Text::Entropy,
-        ]
-    } else {
-        &[
-            Text::Name,
-            Text::Address,
-            Text::Offset,
-            Text::Size,
-            Text::Rights,
-            Text::Entropy,
-        ]
-    };
+    // Mapped size differs from stored size for zero-filled sections such as
+    // `.bss`, so it is always shown.
+    let columns: &[Text] = &[
+        Text::Name,
+        Text::Address,
+        Text::Offset,
+        Text::Size,
+        Text::MappedSize,
+        Text::Rights,
+        Text::Entropy,
+    ];
 
     egui::ScrollArea::both()
         .auto_shrink([false, false])
@@ -60,14 +45,14 @@ pub fn show(ui: &mut egui::Ui, analysis: &Analysis, expert_mode: bool, language:
                     ui.end_row();
 
                     for section in &analysis.sections {
-                        row(ui, section, expert_mode, language);
+                        row(ui, section, language);
                         ui.end_row();
                     }
                 });
         });
 }
 
-fn row(ui: &mut egui::Ui, section: &Section, expert_mode: bool, language: Language) {
+fn row(ui: &mut egui::Ui, section: &Section, language: Language) {
     ui.monospace(&section.name);
 
     if section.is_mapped() {
@@ -78,9 +63,7 @@ fn row(ui: &mut egui::Ui, section: &Section, expert_mode: bool, language: Langua
 
     ui.monospace(format!("{:#x}", section.file_offset));
     ui.label(format_size(section.file_size));
-    if expert_mode {
-        ui.label(format_size(section.virtual_size));
-    }
+    ui.label(format_size(section.virtual_size));
     ui.monospace(section.permissions.label());
 
     match section.entropy {

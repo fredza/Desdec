@@ -1,4 +1,4 @@
-use desdec_core::Analysis;
+use desdec_core::{Analysis, entropy};
 use eframe::egui;
 
 use crate::{
@@ -16,7 +16,6 @@ pub fn show_central_panel(app: &mut DesdecApp, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             ui.heading(app.t(app.active_view.text()));
             ui.separator();
-            ui.label(egui::RichText::new(app.mode_label()).color(MUTED));
         });
         ui.add_space(12.0);
         content(app, ui);
@@ -29,7 +28,6 @@ pub fn show_central_panel(app: &mut DesdecApp, ctx: &egui::Context) {
 
 fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let language = app.preferences.language;
-    let expert_mode = app.expert_mode;
     let view = app.active_view;
 
     // Borrowing the analysis and the filter separately keeps both available.
@@ -43,19 +41,41 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
     };
 
     match view {
-        WorkspaceView::Overview => overview(ui, analysis, expert_mode, language),
-        WorkspaceView::Segments => segments::show(ui, analysis, expert_mode, language),
+        WorkspaceView::Overview => overview(ui, analysis, language),
+        WorkspaceView::Segments => segments::show(ui, analysis, language),
         WorkspaceView::Strings => {
-            strings::show(ui, analysis, &mut app.strings_filter, expert_mode, language);
+            strings::show(
+                ui,
+                analysis,
+                &mut app.strings_filter,
+                &mut app.selected_string,
+                &mut app.selected_instruction,
+                &mut app.pending_instruction_scroll,
+                &mut app.instruction_attention,
+                &mut app.active_view,
+                language,
+            );
         }
-        WorkspaceView::Functions => functions::show(ui, analysis, expert_mode, language),
-        WorkspaceView::Disassembly => {
-            disassembly::show(ui, analysis, expert_mode, &mut app.detailed_decode)
+        WorkspaceView::Functions => {
+            functions::show(ui, analysis, &mut app.selected_function, language)
         }
-        WorkspaceView::Decompile => decompile::show(ui, analysis, expert_mode),
+        WorkspaceView::Disassembly => disassembly::show(
+            ui,
+            analysis,
+            &mut app.selected_instruction,
+            &mut app.pending_instruction_scroll,
+            &mut app.instruction_attention,
+        ),
+        WorkspaceView::Decompile => decompile::show(
+            ui,
+            analysis,
+            &mut app.selected_instruction,
+            &mut app.pending_instruction_scroll,
+            &mut app.instruction_attention,
+        ),
         view => {
             if let Some(explanation) = view.planned_explanation() {
-                planned_view(ui, view, explanation, expert_mode, language);
+                planned_view(ui, view, explanation, language);
             }
         }
     }
@@ -87,42 +107,24 @@ fn welcome(app: &mut DesdecApp, ui: &mut egui::Ui) {
     });
 }
 
-fn overview(ui: &mut egui::Ui, analysis: &Analysis, expert_mode: bool, language: Language) {
+fn overview(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
     // `auto_shrink` off makes the panels span the window instead of hugging
     // their own content.
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             alerts(ui, analysis, language);
-            if expert_mode {
-                expert_layout(ui, analysis, language);
-            } else {
-                guided_layout(ui, analysis, language);
-            }
+            expert_layout(ui, analysis, language);
         });
 }
 
-/// Guided mode keeps one column and explains the next step.
-fn guided_layout(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
-    file_card(ui, analysis, false, language);
-    ui.add_space(12.0);
-    findings_card(ui, analysis, language);
-    ui.add_space(12.0);
-    ui.small(text(language, Text::ExpertHint));
-
-    ui.add_space(12.0);
-    card(ui, text(language, Text::NextStep), |ui| {
-        ui.label(text(language, Text::NextStepDetail));
-    });
-}
-
-/// Expert mode uses the whole width: what the file *is* on the left, what it
-/// *contains and depends on* on the right.
+/// The detailed overview uses the whole width: what the file *is* on the left,
+/// what it *contains and depends on* on the right.
 fn expert_layout(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
     columns(
         ui,
         |ui| {
-            file_card(ui, analysis, true, language);
+            file_card(ui, analysis, language);
             ui.add_space(12.0);
             expert::hardening_card(ui, analysis.details.hardening, language);
         },
@@ -157,9 +159,8 @@ fn alerts(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
     }
 }
 
-/// What the file is. Expert mode adds the loader-level identity, so the two
-/// modes never show two frames saying almost the same thing.
-fn file_card(ui: &mut egui::Ui, analysis: &Analysis, expert_mode: bool, language: Language) {
+/// What the file is, including its loader-level identity.
+fn file_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
     let summary = &analysis.summary;
 
     card(ui, text(language, Text::ActiveFile), |ui| {
@@ -183,13 +184,9 @@ fn file_card(ui: &mut egui::Ui, analysis: &Analysis, expert_mode: bool, language
                 ui.label(format_size(summary.size));
                 ui.end_row();
 
-                if expert_mode {
-                    expert::identity_rows(ui, analysis, language);
-                }
+                expert::identity_rows(ui, analysis, language);
             });
-        if expert_mode {
-            expert::digest_row(ui, analysis, language);
-        }
+        expert::digest_row(ui, analysis, language);
     });
 }
 
@@ -214,8 +211,10 @@ fn findings_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
 
                 ui.strong(text(language, Text::Entropy));
                 match analysis.entropy {
-                    Some(value) => ui.label(format!("{value:.2} / 8.00")),
-                    None => ui.label("—"),
+                    Some(value) => entropy_bar(ui, value),
+                    None => {
+                        ui.label("—");
+                    }
                 };
                 ui.end_row();
 
@@ -223,7 +222,123 @@ fn findings_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
                 ui.label(format_size(analysis.analysed_bytes));
                 ui.end_row();
             });
+
+        obfuscation_hint(ui, analysis, language);
     });
+}
+
+/// Entropy is an indicator, not proof: a dense executable section can be
+/// packed, encrypted or obfuscated. When it also contains almost no readable
+/// strings, encrypted or obfuscated strings become a second lead to inspect.
+fn obfuscation_hint(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
+    let code_may_be_obfuscated =
+        code_may_be_obfuscated(analysis.entropy, analysis.suggests_packing());
+    let strings_may_be_obfuscated = code_may_be_obfuscated && analysis.strings.len() <= 2;
+    if !code_may_be_obfuscated {
+        return;
+    }
+
+    ui.add_space(8.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.strong(text(language, Text::Obfuscation));
+        ui.colored_label(ERROR, text(language, Text::CodeMayBeObfuscated));
+        if strings_may_be_obfuscated {
+            ui.separator();
+            ui.colored_label(ERROR, text(language, Text::StringsMayBeObfuscated));
+        }
+    });
+}
+
+/// The overview gauges the whole analysed binary, so its warning follows that
+/// same scale. A dense executable section remains an independent signal even
+/// when other low-entropy data brings the global value back below 7.
+fn code_may_be_obfuscated(entropy: Option<f32>, dense_executable_section: bool) -> bool {
+    const ENTROPY_THRESHOLD: f32 = 7.0;
+
+    dense_executable_section || entropy.is_some_and(|value| value > ENTROPY_THRESHOLD)
+}
+
+/// Compact entropy gauge. The filled portion progresses from green through
+/// orange to red, while the divisions retain the 0–8 bits-per-byte scale.
+fn entropy_bar(ui: &mut egui::Ui, value: f32) {
+    const WIDTH: f32 = 156.0;
+    const HEIGHT: f32 = 14.0;
+    /// Eight one-bit bands: each division represents one bit per byte.
+    const STEPS: usize = 8;
+
+    let ratio = (value / entropy::MAXIMUM).clamp(0.0, 1.0);
+    ui.horizontal(|ui| {
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(WIDTH, HEIGHT), egui::Sense::hover());
+        let painter = ui.painter();
+        let visuals = ui.style().visuals.clone();
+        painter.rect_filled(rect, 3.0, visuals.extreme_bg_color);
+
+        for step in 0..STEPS {
+            let start = step as f32 / STEPS as f32;
+            let end = (step + 1) as f32 / STEPS as f32;
+            let filled_end = end.min(ratio);
+            if filled_end <= start {
+                continue;
+            }
+            let segment = egui::Rect::from_min_max(
+                egui::pos2(rect.left() + rect.width() * start, rect.top()),
+                egui::pos2(rect.left() + rect.width() * filled_end, rect.bottom()),
+            );
+            painter.rect_filled(segment, 0.0, entropy_color((start + end) / 2.0));
+        }
+
+        for graduation in 1..STEPS {
+            let x = rect.left() + rect.width() * graduation as f32 / STEPS as f32;
+            painter.line_segment(
+                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                egui::Stroke::new(1.0_f32, visuals.window_stroke.color),
+            );
+        }
+        painter.rect_stroke(rect, 3.0, visuals.window_stroke, egui::StrokeKind::Inside);
+        response.on_hover_text(format!("{value:.2} / {:.2}", entropy::MAXIMUM));
+        ui.monospace(format!("{value:.2} / {:.2}", entropy::MAXIMUM));
+    });
+}
+
+/// Maps the normalised entropy range to green → orange → red.
+fn entropy_color(ratio: f32) -> egui::Color32 {
+    let ratio = ratio.clamp(0.0, 1.0);
+    let (from, to, local_ratio) = if ratio < 0.5 {
+        (
+            egui::Color32::from_rgb(77, 180, 110),
+            egui::Color32::from_rgb(241, 169, 75),
+            ratio * 2.0,
+        )
+    } else {
+        (
+            egui::Color32::from_rgb(241, 169, 75),
+            egui::Color32::from_rgb(222, 86, 76),
+            (ratio - 0.5) * 2.0,
+        )
+    };
+    let mix = |start: u8, end: u8| start as f32 + (end as f32 - start as f32) * local_ratio;
+    egui::Color32::from_rgb(
+        mix(from.r(), to.r()) as u8,
+        mix(from.g(), to.g()) as u8,
+        mix(from.b(), to.b()) as u8,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::code_may_be_obfuscated;
+
+    #[test]
+    fn global_entropy_above_seven_marks_code_as_possibly_obfuscated() {
+        assert!(code_may_be_obfuscated(Some(7.01), false));
+        assert!(!code_may_be_obfuscated(Some(7.0), false));
+    }
+
+    #[test]
+    fn dense_executable_section_remains_a_signal_below_global_threshold() {
+        assert!(code_may_be_obfuscated(Some(6.8), true));
+    }
 }
 
 /// The entry point, and the section it lands in when one can be found.
@@ -249,13 +364,7 @@ fn entry_point(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
 }
 
 /// A view that is announced but not implemented yet.
-fn planned_view(
-    ui: &mut egui::Ui,
-    view: WorkspaceView,
-    explanation: Text,
-    expert_mode: bool,
-    language: Language,
-) {
+fn planned_view(ui: &mut egui::Ui, view: WorkspaceView, explanation: Text, language: Language) {
     let title = format!(
         "{} {}",
         text(language, view.text()),
@@ -263,9 +372,5 @@ fn planned_view(
     );
     card(ui, &title, |ui| {
         ui.label(text(language, explanation));
-        if !expert_mode {
-            ui.add_space(8.0);
-            ui.small(text(language, Text::GuidedHelp));
-        }
     });
 }

@@ -136,15 +136,21 @@ pub struct DesdecApp {
     pub error: Option<String>,
     pub active_view: WorkspaceView,
     pub navigation_open: bool,
-    pub expert_mode: bool,
-    /// User-requested detailed decoding; the bytes are already safely decoded
-    /// in the core and this only reveals the additional columns.
-    pub detailed_decode: bool,
     pub dialogs: Dialogs,
     pub preferences: Preferences,
     pub preferences_tab: PreferencesTab,
     pub editing_shortcut: Option<Command>,
     pub palette: PaletteState,
+    /// Address of the function currently inspected in the Functions view.
+    pub selected_function: Option<u64>,
+    /// Instruction selected in the disassembly or local pseudo-code view.
+    pub selected_instruction: Option<u64>,
+    /// Instruction that must be brought into view after a new selection.
+    pub pending_instruction_scroll: Option<u64>,
+    /// Temporarily draws attention to an instruction reached from another view.
+    pub instruction_attention: Option<(u64, f64)>,
+    /// File offset of the string inspected in the Strings view.
+    pub selected_string: Option<u64>,
     /// Free-text filter applied to the extracted strings.
     pub strings_filter: String,
     jobs: BackgroundJobs,
@@ -205,25 +211,6 @@ impl DesdecApp {
         }
     }
 
-    /// Short name of the current mode, for the status-bar toggle.
-    pub fn mode_label(&self) -> &'static str {
-        if self.expert_mode {
-            self.t(Text::Expert)
-        } else {
-            self.t(Text::Guided)
-        }
-    }
-
-    /// How the application describes what it is doing, in the title area and in
-    /// the tooltip of the mode toggle. Follows the selected mode.
-    pub fn analysis_mode_label(&self) -> &'static str {
-        if self.expert_mode {
-            self.t(Text::ExpertAnalysis)
-        } else {
-            self.t(Text::GuidedAnalysis)
-        }
-    }
-
     pub fn shortcut_label(&self, command: Command) -> String {
         self.preferences
             .shortcuts
@@ -243,8 +230,10 @@ impl DesdecApp {
                 self.preferences.show_tooltips = !self.preferences.show_tooltips;
             }
             Command::CommandPalette => {
-                self.palette = PaletteState::default();
-                self.dialogs.command_palette = true;
+                self.dialogs.command_palette = !self.dialogs.command_palette;
+                if self.dialogs.command_palette {
+                    self.palette = PaletteState::default();
+                }
             }
             Command::Preferences => self.dialogs.preferences = true,
             Command::About => self.dialogs.about = true,
@@ -255,7 +244,6 @@ impl DesdecApp {
             Command::Functions => self.select_view(WorkspaceView::Functions),
             Command::Strings => self.select_view(WorkspaceView::Strings),
             Command::Patches => self.select_view(WorkspaceView::Patches),
-            Command::ToggleExpertMode => self.expert_mode = !self.expert_mode,
             Command::ThemeSystem => self.set_theme(ctx, ThemePreference::System),
             Command::ThemeDark => self.set_theme(ctx, ThemePreference::Dark),
             Command::ThemeLight => self.set_theme(ctx, ThemePreference::Light),
@@ -339,6 +327,11 @@ impl DesdecApp {
                 self.error = None;
                 self.active_view = WorkspaceView::Overview;
                 self.strings_filter.clear();
+                self.selected_function = None;
+                self.selected_instruction = None;
+                self.pending_instruction_scroll = None;
+                self.instruction_attention = None;
+                self.selected_string = None;
             }
             Err(error) => {
                 self.error = Some(format!(
@@ -377,7 +370,11 @@ impl DesdecApp {
         self.error = None;
         self.active_view = WorkspaceView::Overview;
         self.strings_filter.clear();
-        self.detailed_decode = false;
+        self.selected_function = None;
+        self.selected_instruction = None;
+        self.pending_instruction_scroll = None;
+        self.instruction_attention = None;
+        self.selected_string = None;
     }
 
     pub fn select_view(&mut self, view: WorkspaceView) {
@@ -507,6 +504,18 @@ mod tests {
     }
 
     #[test]
+    fn command_palette_command_toggles_the_palette() {
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::default();
+
+        app.run_command(&ctx, Command::CommandPalette);
+        assert!(app.dialogs.command_palette);
+
+        app.run_command(&ctx, Command::CommandPalette);
+        assert!(!app.dialogs.command_palette);
+    }
+
+    #[test]
     fn escape_leaves_a_shortcut_capture_before_closing_its_dialog() {
         let mut app = DesdecApp {
             dialogs: Dialogs {
@@ -520,24 +529,6 @@ mod tests {
         app.dismiss_topmost_dialog();
         assert!(app.editing_shortcut.is_none());
         assert!(app.dialogs.preferences);
-    }
-
-    /// The header and the status-bar tooltip must name the mode that is
-    /// actually selected, in every language.
-    #[test]
-    fn the_analysis_label_follows_the_selected_mode() {
-        let mut app = DesdecApp::default();
-        for language in Language::ALL {
-            app.preferences.language = *language;
-
-            app.expert_mode = false;
-            assert_eq!(app.analysis_mode_label(), app.t(Text::GuidedAnalysis));
-            assert_eq!(app.mode_label(), app.t(Text::Guided));
-
-            app.expert_mode = true;
-            assert_eq!(app.analysis_mode_label(), app.t(Text::ExpertAnalysis));
-            assert_eq!(app.mode_label(), app.t(Text::Expert));
-        }
     }
 
     #[test]
