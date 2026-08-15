@@ -11,6 +11,7 @@ pub mod expert;
 pub mod functions;
 pub mod navigation;
 pub mod palette;
+pub mod patches_view;
 pub mod preferences_window;
 pub mod segments;
 pub mod status_bar;

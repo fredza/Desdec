@@ -1,10 +1,13 @@
 use eframe::egui;
 
+use desdec_core::decompiler::Availability;
+
 use crate::{
     app::DesdecApp,
     commands::{Command, Shortcut},
     i18n::{Language, Text, text},
-    preferences::{ThemePreference, accent},
+    preferences::{DecompilerPreference, ThemePreference, accent, success},
+    ui::{ERROR, MUTED},
 };
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
@@ -13,16 +16,23 @@ pub enum PreferencesTab {
     Appearance,
     Shortcuts,
     Behaviour,
+    Decompiler,
 }
 
 impl PreferencesTab {
-    const ALL: &[Self] = &[Self::Appearance, Self::Shortcuts, Self::Behaviour];
+    const ALL: &[Self] = &[
+        Self::Appearance,
+        Self::Shortcuts,
+        Self::Behaviour,
+        Self::Decompiler,
+    ];
 
     const fn text(self) -> Text {
         match self {
             Self::Appearance => Text::Appearance,
             Self::Shortcuts => Text::Shortcuts,
             Self::Behaviour => Text::Behaviour,
+            Self::Decompiler => Text::Decompiler,
         }
     }
 }
@@ -65,6 +75,7 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                 PreferencesTab::Appearance => appearance(app, ctx, ui),
                 PreferencesTab::Shortcuts => shortcuts(app, ctx, ui),
                 PreferencesTab::Behaviour => behaviour(app, ui),
+                PreferencesTab::Decompiler => decompiler(app, ui),
             }
         });
     app.dialogs.preferences = open;
@@ -144,6 +155,93 @@ fn capture(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui, command:
         app.editing_shortcut = None;
     }
     ui.add_space(6.0);
+}
+
+/// Chooses which decompiler produces the pseudo-code, and reports honestly
+/// what is actually installed: an engine offered but absent would be a promise
+/// the application cannot keep.
+fn decompiler(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    let language = app.preferences.language;
+    ui.heading(text(language, Text::Decompiler));
+    ui.small(text(language, Text::DecompilerInfo));
+    ui.add_space(10.0);
+
+    ui.radio_value(
+        &mut app.preferences.decompiler,
+        DecompilerPreference::Builtin,
+        text(language, Text::BuiltinDecompiler),
+    );
+
+    for choice in DecompilerPreference::ALL
+        .iter()
+        .copied()
+        .filter(|choice| choice.engine().is_some())
+    {
+        let Some(engine) = choice.engine() else {
+            continue;
+        };
+        ui.add_space(10.0);
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            let availability = app.engine_availability(engine);
+            ui.horizontal(|ui| {
+                // An engine that cannot run must not be selectable: choosing
+                // it would leave the pseudo-code view permanently empty.
+                ui.add_enabled_ui(availability.is_usable(), |ui| {
+                    ui.radio_value(&mut app.preferences.decompiler, choice, engine.label());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    availability_badge(app, ui, &availability);
+                });
+            });
+
+            match &availability {
+                Availability::Found(path) => {
+                    ui.small(egui::RichText::new(path.display().to_string()).color(MUTED));
+                }
+                Availability::Incomplete { .. } => {
+                    ui.small(
+                        egui::RichText::new(text(language, Text::EngineMissingPlugin)).color(ERROR),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.small(text(language, Text::EngineInstallWith));
+                        ui.small(egui::RichText::new(engine.install_hint()).monospace());
+                    });
+                }
+                Availability::Missing => {
+                    ui.horizontal(|ui| {
+                        ui.small(text(language, Text::EngineInstallWith));
+                        ui.small(egui::RichText::new(engine.install_hint()).monospace());
+                    });
+                }
+            }
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.small(text(language, Text::EnginePath));
+                let hint = text(language, Text::EnginePathHint);
+                ui.add(
+                    egui::TextEdit::singleline(app.preferences.engine_paths.field_mut(engine))
+                        .hint_text(hint)
+                        .desired_width(240.0),
+                );
+            });
+        });
+    }
+}
+
+fn availability_badge(app: &DesdecApp, ui: &mut egui::Ui, availability: &Availability) {
+    let language = app.preferences.language;
+    let (label, color) = match availability {
+        Availability::Found(_) => (Text::EngineAvailable, success(app.preferences.theme)),
+        Availability::Incomplete { .. } => (Text::EngineIncomplete, ERROR),
+        Availability::Missing => (Text::EngineMissing, MUTED),
+    };
+    ui.label(
+        egui::RichText::new(text(language, label))
+            .color(color)
+            .small(),
+    );
 }
 
 fn behaviour(app: &mut DesdecApp, ui: &mut egui::Ui) {

@@ -1,3 +1,6 @@
+use std::path::Path;
+
+use desdec_core::decompiler::Engine;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +15,58 @@ pub enum ThemePreference {
     Catppuccin,
 }
 
+/// Which decompiler produces the pseudo-code.
+///
+/// The built-in one always works and needs nothing installed; the others are
+/// external programs, run only when explicitly chosen.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DecompilerPreference {
+    #[default]
+    Builtin,
+    RzGhidra,
+    RetDec,
+}
+
+impl DecompilerPreference {
+    pub const ALL: &[Self] = &[Self::Builtin, Self::RzGhidra, Self::RetDec];
+
+    /// The external engine behind this choice, or `None` for the built-in one.
+    #[must_use]
+    pub const fn engine(self) -> Option<Engine> {
+        match self {
+            Self::Builtin => None,
+            Self::RzGhidra => Some(Engine::RzGhidra),
+            Self::RetDec => Some(Engine::RetDec),
+        }
+    }
+}
+
+/// Where an external engine lives, when it is not simply on `PATH`.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnginePaths {
+    pub rz_ghidra: String,
+    pub retdec: String,
+}
+
+impl EnginePaths {
+    #[must_use]
+    pub fn for_engine(&self, engine: Engine) -> Option<&Path> {
+        let configured = match engine {
+            Engine::RzGhidra => &self.rz_ghidra,
+            Engine::RetDec => &self.retdec,
+        };
+        (!configured.trim().is_empty()).then(|| Path::new(configured.trim()))
+    }
+
+    pub fn field_mut(&mut self, engine: Engine) -> &mut String {
+        match engine {
+            Engine::RzGhidra => &mut self.rz_ghidra,
+            Engine::RetDec => &mut self.retdec,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -21,6 +76,8 @@ pub struct Preferences {
     pub show_tooltips: bool,
     pub persistence_enabled: bool,
     pub ai_assistance: bool,
+    pub decompiler: DecompilerPreference,
+    pub engine_paths: EnginePaths,
     pub shortcuts: ShortcutBindings,
 }
 
@@ -33,6 +90,8 @@ impl Default for Preferences {
             show_tooltips: true,
             persistence_enabled: true,
             ai_assistance: false,
+            decompiler: DecompilerPreference::Builtin,
+            engine_paths: EnginePaths::default(),
             shortcuts: ShortcutBindings::default(),
         }
     }

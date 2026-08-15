@@ -1,33 +1,86 @@
-use crate::ui::{MUTED, card, syntax};
+use crate::{
+    app::DesdecApp,
+    i18n::{Text, text},
+    ui::{ERROR, MUTED, card, syntax},
+};
 use desdec_core::Analysis;
 use eframe::egui;
 use std::time::Duration;
-pub fn show(
-    ui: &mut egui::Ui,
-    analysis: &Analysis,
-    selected_instruction: &mut Option<u64>,
-    pending_scroll: &mut Option<u64>,
-    instruction_attention: &mut Option<(u64, f64)>,
-) {
-    card(ui, "Pseudo-code local", |ui| {
-        ui.small("Le flot observé est expliqué, sans prétendre reconstituer le code source.");
+/// The pseudo-code view: the built-in translation, or the external engine
+/// chosen in the preferences.
+pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    if app.preferences.decompiler.engine().is_some() {
+        external(app, ui);
+        return;
+    }
+    let language = app.preferences.language;
+    let Some(analysis) = &app.analysis else {
+        return;
+    };
+    card(ui, text(language, Text::PseudoCode), |ui| {
+        ui.small(text(language, Text::PseudoCodeHelp));
         if analysis.instructions.is_empty() {
-            ui.label(egui::RichText::new("Aucune instruction décodable disponible.").color(MUTED));
+            ui.label(egui::RichText::new(text(language, Text::NoDisassembly)).color(MUTED));
             return;
         }
-        let scroll_target = *pending_scroll;
-        let attention = active_attention(ui.ctx(), instruction_attention);
+        let scroll_target = app.pending_instruction_scroll;
+        let attention = active_attention(ui.ctx(), &mut app.instruction_attention);
         panel(
             ui,
             analysis,
-            selected_instruction,
+            &mut app.selected_instruction,
             scroll_target,
-            pending_scroll,
+            &mut app.pending_instruction_scroll,
             attention,
         );
-        if *pending_scroll == scroll_target {
-            *pending_scroll = None;
+        if app.pending_instruction_scroll == scroll_target {
+            app.pending_instruction_scroll = None;
         }
+    });
+}
+
+/// Output of an external decompiler, started on demand.
+///
+/// The engine is named next to its text: two decompilers disagree often
+/// enough that reading one without knowing which would be misleading.
+fn external(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    let language = app.preferences.language;
+    let engine = app.preferences.decompiler.engine();
+    let title = engine.map_or_else(|| String::from("—"), |engine| engine.label().to_owned());
+    app.request_decompilation(ui.ctx(), app.selected_function);
+
+    card(ui, text(language, Text::PseudoCode), |ui| {
+        ui.horizontal(|ui| {
+            ui.small(text(language, Text::DecompiledBy));
+            ui.small(egui::RichText::new(&title).strong());
+        });
+        ui.add_space(8.0);
+
+        if app.external.running {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(text(language, Text::Decompiling));
+            });
+            return;
+        }
+        if let Some(error) = &app.external.error {
+            ui.colored_label(
+                ERROR,
+                format!("{} {error}", text(language, Text::DecompilerFailed)),
+            );
+            return;
+        }
+        let Some(decompiled) = &app.external.text else {
+            return;
+        };
+        egui::ScrollArea::both()
+            .id_salt("external_decompilation")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for line in decompiled.lines() {
+                    ui.label(syntax::pseudo_code(ui, line, egui::Color32::TRANSPARENT));
+                }
+            });
     });
 }
 
