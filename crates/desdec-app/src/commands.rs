@@ -56,6 +56,14 @@ commands! {
     Functions => [Functions], Some(Shortcut::ctrl(KeyName::Num3)),
     Strings => [Strings], Some(Shortcut::ctrl(KeyName::Num4)),
     Patches => [Patches], Some(Shortcut::ctrl(KeyName::Num5)),
+    Segments => [Segments], Some(Shortcut::ctrl(KeyName::Num6)),
+    ExportPatched => [Patches, ExportPatched], None,
+    DiscardPatches => [Patches, DiscardPatches], None,
+    DecompilerBuiltin => [Decompiler, BuiltinDecompiler], None,
+    DecompilerRzGhidra => [Decompiler, RzGhidraEngine], None,
+    DecompilerRetDec => [Decompiler, RetDecEngine], None,
+    ToggleDecompilationCache => [Decompiler, CacheDecompilations], None,
+    ClearDecompilationCache => [Decompiler, ClearCache], None,
     ThemeSystem => [Theme, SystemTheme], None,
     ThemeDark => [Theme, DarkTheme], None,
     ThemeLight => [Theme, LightTheme], None,
@@ -81,14 +89,35 @@ impl Command {
         self.default_shortcut().is_some()
     }
 
-    /// Whether running the command does anything today.
+    /// Whether the command is implemented at all.
     ///
-    /// The palette still lists the others, so what is planned stays visible,
-    /// but it never lets one be chosen: a highlighted entry that answers
-    /// nothing to `Enter` reads as a broken palette.
+    /// Separate from whether it can run *right now*, which depends on the
+    /// state and is answered by [`crate::app::DesdecApp::can_run`]. The
+    /// palette lists everything either way, so what exists stays visible, but
+    /// it never lets an entry be chosen that would answer nothing: a highlight
+    /// on which `Enter` does nothing reads as a broken palette.
     #[must_use]
-    pub const fn available(self) -> bool {
+    pub const fn implemented(self) -> bool {
         !matches!(self, Self::AiAssistance)
+    }
+
+    /// Whether the command acts on a loaded binary, and so needs one.
+    ///
+    /// Switching view is deliberately not in this list: with no binary open a
+    /// view says so plainly, which is a visible answer rather than a keystroke
+    /// that vanished, and the palette should never lock out navigation.
+    #[must_use]
+    pub const fn needs_a_binary(self) -> bool {
+        matches!(
+            self,
+            Self::CloseBinary | Self::ExportPatched | Self::DiscardPatches
+        )
+    }
+
+    /// Whether the command acts on the pending patches, and so needs some.
+    #[must_use]
+    pub const fn needs_patches(self) -> bool {
+        matches!(self, Self::ExportPatched | Self::DiscardPatches)
     }
 }
 

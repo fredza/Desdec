@@ -55,7 +55,7 @@ fn contents(app: &mut DesdecApp, ui: &mut egui::Ui) -> Option<Command> {
                     let selected = index == app.palette.selected;
                     let label = command.label(app.preferences.language);
                     let entry = ui.add_enabled(
-                        command.available(),
+                        app.can_run(command),
                         egui::SelectableLabel::new(selected, label),
                     );
                     if entry.clicked() {
@@ -124,7 +124,7 @@ fn keyboard_selection(
     let runnable: Vec<usize> = matches
         .iter()
         .enumerate()
-        .filter(|(_, command)| command.available())
+        .filter(|(_, command)| app.can_run(**command))
         .map(|(index, _)| index)
         .collect();
     let Some(&first) = runnable.first() else {
@@ -220,7 +220,7 @@ mod tests {
 
         frame(&ctx, &mut app, press(egui::Key::Enter));
 
-        assert!(app.active_view == WorkspaceView::Disassembly);
+        assert_eq!(app.active_view, WorkspaceView::Disassembly);
         assert!(!app.dialogs.command_palette, "running a command closes it");
     }
 
@@ -288,7 +288,7 @@ mod tests {
         }
         frame(&ctx, &mut app, press(egui::Key::Enter));
 
-        assert!(app.active_view == WorkspaceView::Strings);
+        assert_eq!(app.active_view, WorkspaceView::Strings);
         assert!(!app.dialogs.command_palette);
     }
 
@@ -305,6 +305,86 @@ mod tests {
         assert!(!app.dialogs.command_palette);
     }
 
+    /// The palette is the one place the whole application is visible, so an
+    /// empty query must list every command there is — no hidden entries.
+    #[test]
+    fn an_empty_query_lists_every_command() {
+        let ctx = egui::Context::default();
+        let app = searching(&ctx, "");
+
+        assert_eq!(matching_commands(&app).len(), Command::ALL.len());
+    }
+
+    /// Every view reachable from the menu must also be reachable from the
+    /// palette. `Segments` was missing, and so could only be opened one way.
+    #[test]
+    fn every_view_has_a_command() {
+        for view in WorkspaceView::ALL {
+            assert!(
+                Command::ALL
+                    .iter()
+                    .any(|command| view_of(*command) == Some(*view)),
+                "{view:?} cannot be reached from the palette"
+            );
+        }
+    }
+
+    /// The view a command opens, found by running it.
+    fn view_of(command: Command) -> Option<WorkspaceView> {
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
+        // A view every command must move away from, so "did not move" is
+        // distinguishable from "moved to the default".
+        app.active_view = WorkspaceView::Patches;
+        app.run_command(&ctx, command);
+        (app.active_view != WorkspaceView::Patches || command == Command::Patches)
+            .then_some(app.active_view)
+    }
+
+    /// Actions offered elsewhere in the interface must be offered here too.
+    #[test]
+    fn the_actions_of_the_interface_are_all_in_the_palette() {
+        let ctx = egui::Context::default();
+        let app = searching(&ctx, "");
+        let labels: Vec<String> = matching_commands(&app)
+            .iter()
+            .map(|command| command.label(Language::English).to_lowercase())
+            .collect();
+
+        for expected in [
+            "open binary",
+            "close binary",
+            "segments",
+            "export patched binary",
+            "discard all",
+            "keep decompiled functions on disk",
+            "clear the cache",
+            "rizin + rz-ghidra",
+            "retdec",
+            "preferences",
+        ] {
+            assert!(
+                labels.iter().any(|label| label.contains(expected)),
+                "the palette offers no way to {expected}"
+            );
+        }
+    }
+
+    /// An action that cannot act right now is listed but not chosen: an export
+    /// with nothing to export would swallow the keystroke.
+    #[test]
+    fn an_action_with_nothing_to_act_on_cannot_be_chosen() {
+        let app = DesdecApp::for_test(None, WorkspaceView::Overview);
+
+        assert!(!app.can_run(Command::ExportPatched), "no binary, no export");
+        assert!(!app.can_run(Command::CloseBinary), "nothing to close");
+        assert!(
+            app.can_run(Command::Disassembly),
+            "switching view says to open a binary, which is an answer"
+        );
+        assert!(app.can_run(Command::Preferences));
+    }
+
     /// Every other command in the list is reachable and does something.
     #[test]
     fn walking_the_whole_list_never_stops_on_an_unavailable_command() {
@@ -314,7 +394,7 @@ mod tests {
 
         for _ in 0..=matches.len() {
             assert!(
-                matches[app.palette.selected].available(),
+                app.can_run(matches[app.palette.selected]),
                 "the highlight stopped on an unavailable command"
             );
             frame(&ctx, &mut app, press(egui::Key::ArrowDown));
