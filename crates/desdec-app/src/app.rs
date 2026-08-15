@@ -176,6 +176,10 @@ pub struct ExternalDecompilation {
     pub text: Option<String>,
     pub error: Option<String>,
     pub running: bool,
+    /// Whether this text was read back from the cache rather than produced
+    /// now. Said plainly on screen: a reader should know whether they are
+    /// looking at a fresh answer or a stored one.
+    pub from_cache: bool,
 }
 
 #[derive(Default)]
@@ -207,6 +211,8 @@ pub struct DesdecApp {
     pub patch_editor: Option<Editor>,
     /// Outcome of the last export, kept until the next one.
     pub export_report: Option<Result<PathBuf, String>>,
+    /// How many cache entries the last clear removed.
+    pub cache_report: Option<usize>,
     /// Text produced by the selected external decompiler.
     pub external: ExternalDecompilation,
     /// What was found for each engine, and for which configured path.
@@ -513,6 +519,19 @@ impl DesdecApp {
             return;
         };
 
+        // A cached answer is the same text the engine produced for these exact
+        // bytes, so it is shown straight away rather than paying the engine's
+        // start-up again.
+        if let Some(cached) = self.cached_decompilation(engine, address) {
+            self.external = ExternalDecompilation {
+                source: Some((choice, address)),
+                text: Some(cached),
+                from_cache: true,
+                ..ExternalDecompilation::default()
+            };
+            return;
+        }
+
         let decompiler::Availability::Found(program) = self.engine_availability(engine) else {
             self.external = ExternalDecompilation {
                 source: Some((choice, address)),
@@ -531,6 +550,9 @@ impl DesdecApp {
             running: true,
             ..ExternalDecompilation::default()
         };
+        // Carried into the thread so the answer can be stored the moment it
+        // arrives, without the interface having to be involved.
+        let store = self.cache_target();
         let repaint = ctx.clone();
         let (sender, receiver) = mpsc::channel();
         self.jobs.decompilation = Some(receiver);
@@ -542,9 +564,52 @@ impl DesdecApp {
                 address,
                 decompiler::DEFAULT_TIMEOUT,
             );
+            if let (Ok(text), Some((directory, digest))) = (&result, &store) {
+                // A cache that cannot be written is not a failed analysis: the
+                // answer is on screen either way, so this stays silent.
+                let _ = decompiler::cache::write(
+                    directory,
+                    decompiler::cache::Key {
+                        digest,
+                        engine,
+                        address,
+                    },
+                    text,
+                );
+            }
             let _ = sender.send(result);
             repaint.request_repaint();
         });
+    }
+
+    /// Where this binary's answers are kept, and the digest that identifies
+    /// them.
+    ///
+    /// `None` when caching must not happen: no digest means the file was only
+    /// read in part, and keying on anything weaker would risk showing one
+    /// binary's decompilation for another.
+    fn cache_target(&self) -> Option<(PathBuf, [u8; 32])> {
+        if !self.preferences.cache_decompilations {
+            return None;
+        }
+        let digest = self.analysis.as_ref()?.sha256?;
+        Some((decompilation_cache_dir()?, digest))
+    }
+
+    fn cached_decompilation(
+        &self,
+        engine: decompiler::Engine,
+        address: Option<u64>,
+    ) -> Option<String> {
+        let (directory, digest) = self.cache_target()?;
+        decompiler::cache::read(
+            &directory,
+            decompiler::cache::Key {
+                digest: &digest,
+                engine,
+                address,
+            },
+        )
     }
 
     /// Asks where to write the patched copy. The analysed file is never the
@@ -651,6 +716,27 @@ impl DesdecApp {
         }
         self.persisted_preferences = self.preferences.clone();
     }
+}
+
+/// Where decompiled functions are kept between runs.
+///
+/// The platform's cache location, which is the right home for data that can be
+/// recomputed: a system may clear it, and losing it costs only the time to run
+/// the engine again. Resolved from the environment rather than through a
+/// dependency, since it is three rules.
+#[must_use]
+pub fn decompilation_cache_dir() -> Option<PathBuf> {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches"))
+    } else {
+        std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+    }?;
+    Some(base.join("desdec").join("decompiled"))
 }
 
 /// Default name of the exported copy: the original with `.patched` before its
@@ -803,6 +889,70 @@ mod tests {
         assert!(app.dismiss_topmost_dialog());
         assert!(!app.dialogs.about);
         assert!(app.dialogs.preferences);
+    }
+
+    /// A cached answer must be found again for the same binary and function,
+    /// and never for another. This drives the real application state rather
+    /// than the cache module alone, so the key it builds is exercised too.
+    #[test]
+    fn a_cached_function_is_reused_and_never_confused_with_another() {
+        let path = std::env::current_exe().expect("the test binary has a path");
+        let analysis = desdec_core::analyse_path(&path).expect("the test binary is analysable");
+        let digest = analysis.sha256.expect("a whole file has a digest");
+
+        let mut app = DesdecApp::for_test(Some(analysis), WorkspaceView::Decompile);
+        app.preferences.decompiler = DecompilerPreference::RzGhidra;
+        let (directory, keyed) = app.cache_target().expect("caching is on by default");
+        assert_eq!(keyed, digest, "the binary's digest is what keys the cache");
+
+        let engine = decompiler::Engine::RzGhidra;
+        let key = |address| decompiler::cache::Key {
+            digest: &digest,
+            engine,
+            address,
+        };
+        // A directory of this test's own, so a real cache is never touched.
+        let directory = directory.join("test-scratch");
+        let _ = std::fs::remove_dir_all(&directory);
+        decompiler::cache::write(&directory, key(Some(0x1234)), "void f(void) {}")
+            .expect("the cache is writable");
+
+        assert_eq!(
+            decompiler::cache::read(&directory, key(Some(0x1234))),
+            Some("void f(void) {}".to_owned())
+        );
+        assert_eq!(
+            decompiler::cache::read(&directory, key(Some(0x5678))),
+            None,
+            "another function must not read this one's answer"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Nothing is cached when the digest is unknown, which is the case for a
+    /// file too large to be read whole: keying on anything weaker could show
+    /// one binary's decompilation for another.
+    #[test]
+    fn a_binary_without_a_digest_is_never_cached() {
+        let path = std::env::current_exe().expect("the test binary has a path");
+        let mut analysis = desdec_core::analyse_path(&path).expect("analysable");
+        analysis.sha256 = None;
+        analysis.truncated = true;
+
+        let app = DesdecApp::for_test(Some(analysis), WorkspaceView::Decompile);
+
+        assert!(app.cache_target().is_none());
+    }
+
+    #[test]
+    fn turning_the_cache_off_stops_it_being_used() {
+        let path = std::env::current_exe().expect("the test binary has a path");
+        let analysis = desdec_core::analyse_path(&path).expect("analysable");
+        let mut app = DesdecApp::for_test(Some(analysis), WorkspaceView::Decompile);
+
+        assert!(app.cache_target().is_some());
+        app.preferences.cache_decompilations = false;
+        assert!(app.cache_target().is_none());
     }
 
     /// Opening the file dialog is not an analysis. The status bar used to

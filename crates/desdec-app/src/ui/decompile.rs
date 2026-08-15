@@ -62,6 +62,11 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.small(text(language, Text::DecompiledBy));
             ui.small(egui::RichText::new(&title).strong());
+            if app.external.from_cache {
+                // Said plainly: this text was produced earlier, for these same
+                // bytes, and is not the engine answering again now.
+                ui.small(egui::RichText::new(text(language, Text::FromCache)).color(MUTED));
+            }
             ui.separator();
             function_picker(app, ui, &functions, language);
         });
