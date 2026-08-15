@@ -140,7 +140,7 @@ fn rz_ghidra_readiness(program: &Path) -> Availability {
         PROBE_TIMEOUT,
     );
     match probe {
-        Ok(output) if output.to_lowercase().contains("pdg") => {
+        Ok(run) if run.stdout.to_lowercase().contains("pdg") => {
             Availability::Found(program.to_owned())
         }
         Ok(_) => Availability::Incomplete {
@@ -231,8 +231,11 @@ fn retdec(program: &Path, binary: &Path, timeout: Duration) -> io::Result<String
     );
     let decompiled = std::fs::read_to_string(&output_file);
     let _ = std::fs::remove_file(&output_file);
-    result?;
-    usable(decompiled?)
+    let run = result?;
+    usable(Run {
+        stdout: decompiled?,
+        stderr: run.stderr,
+    })
 }
 
 /// A per-run number, so two decompilations never share a temporary file.
@@ -242,14 +245,47 @@ fn tag() -> u128 {
         .map_or(0, |since| since.as_nanos())
 }
 
-fn usable(output: String) -> io::Result<String> {
-    if output.trim().is_empty() {
+/// Rejects an empty answer, quoting what the engine complained about.
+///
+/// An engine that fails usually explains itself on standard error; reporting
+/// only "no output" left the user with nothing to act on.
+fn usable(run: Run) -> io::Result<String> {
+    if run.stdout.trim().is_empty() {
+        let complaint = last_meaningful_line(&run.stderr);
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "the decompiler produced no output",
+            complaint.map_or_else(
+                || "the decompiler produced no output".to_owned(),
+                |line| format!("the decompiler produced no output: {line}"),
+            ),
         ));
     }
-    Ok(output)
+    Ok(run.stdout)
+}
+
+/// The last line worth showing from an engine's standard error.
+///
+/// Engines print progress and warnings there too, so the tail is what tends to
+/// carry the reason; blank lines and pure progress noise are skipped.
+fn last_meaningful_line(stderr: &str) -> Option<String> {
+    stderr
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty() && !line.starts_with("WARN"))
+        .map(|line| {
+            const LIMIT: usize = 200;
+            if line.chars().count() > LIMIT {
+                line.chars().take(LIMIT).collect::<String>() + "…"
+            } else {
+                line.to_owned()
+            }
+        })
+}
+
+/// What a finished process left behind.
+struct Run {
+    stdout: String,
+    stderr: String,
 }
 
 /// Runs a program with a deadline, returning its standard output.
@@ -260,7 +296,7 @@ fn usable(output: String) -> io::Result<String> {
 /// Output is drained by a thread while the deadline is watched: a decompiler
 /// prints far more than a pipe holds, and a child blocked on a full pipe would
 /// never reach the exit this function is waiting for.
-fn run_bounded<I, S>(program: &Path, arguments: I, timeout: Duration) -> io::Result<String>
+fn run_bounded<I, S>(program: &Path, arguments: I, timeout: Duration) -> io::Result<Run>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -269,16 +305,27 @@ where
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()?;
 
     let mut stdout = child
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("the decompiler gave no output stream"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("the decompiler gave no error stream"))?;
     let reader = thread::spawn(move || {
         let mut collected = Vec::new();
         let _ = stdout.read_to_end(&mut collected);
+        collected
+    });
+    // Drained on its own thread too: an engine that fills the error pipe would
+    // otherwise block waiting for someone to read it, and never exit.
+    let complaints = thread::spawn(move || {
+        let mut collected = Vec::new();
+        let _ = stderr.read_to_end(&mut collected);
         collected
     });
 
@@ -299,13 +346,17 @@ where
     }
 
     let collected = reader.join().unwrap_or_default();
+    let complaints = complaints.join().unwrap_or_default();
     if timed_out {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
             format!("the decompiler exceeded {} seconds", timeout.as_secs()),
         ));
     }
-    Ok(String::from_utf8_lossy(&collected).into_owned())
+    Ok(Run {
+        stdout: String::from_utf8_lossy(&collected).into_owned(),
+        stderr: String::from_utf8_lossy(&complaints).into_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -346,7 +397,9 @@ mod tests {
         let started = Instant::now();
         let result = run_bounded(&sleep, ["30"], Duration::from_millis(200));
 
-        let error = result.expect_err("a run past its deadline must fail");
+        let error = result
+            .map(|_| ())
+            .expect_err("a run past its deadline must fail");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(
             started.elapsed() < Duration::from_secs(5),
@@ -359,9 +412,9 @@ mod tests {
         let Some(echo) = find_on_path("echo") else {
             return;
         };
-        let output = run_bounded(&echo, ["decompiled"], Duration::from_secs(5))
+        let run = run_bounded(&echo, ["decompiled"], Duration::from_secs(5))
             .expect("a program that finishes should be readable");
-        assert_eq!(output.trim(), "decompiled");
+        assert_eq!(run.stdout.trim(), "decompiled");
     }
 
     /// A `rizin` without the plugin must be reported incomplete, not usable.
@@ -388,7 +441,7 @@ mod tests {
                 )
                 .expect("the probe runs");
                 assert!(
-                    probe.to_lowercase().contains("pdg"),
+                    probe.stdout.to_lowercase().contains("pdg"),
                     "an engine reported as found must really provide pdg"
                 );
             }
@@ -399,8 +452,19 @@ mod tests {
 
     #[test]
     fn an_engine_that_prints_nothing_is_an_error_rather_than_an_empty_view() {
-        assert!(usable(String::new()).is_err());
-        assert!(usable("   \n".to_owned()).is_err());
-        assert!(usable("int main() {}".to_owned()).is_ok());
+        let run = |stdout: &str, stderr: &str| Run {
+            stdout: stdout.to_owned(),
+            stderr: stderr.to_owned(),
+        };
+        assert!(usable(run("", "")).is_err());
+        assert!(usable(run("   \n", "")).is_err());
+        assert!(usable(run("int main() {}", "")).is_ok());
+
+        // What the engine complained about reaches the message, so the user
+        // has something to act on instead of a bare "no output".
+        let reported = usable(run("", "ERROR: cannot open file\n"))
+            .expect_err("an empty answer is a failure")
+            .to_string();
+        assert!(reported.contains("cannot open file"), "got {reported}");
     }
 }

@@ -4,7 +4,7 @@ use crate::{
     app::DesdecApp,
     i18n::Text,
     preferences::{accent, success},
-    ui::{ERROR, format_size},
+    ui::{ERROR, MUTED, format_size},
 };
 
 const HEIGHT: f32 = 28.0;
@@ -14,15 +14,20 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         .exact_height(HEIGHT)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                // While a file is being chosen or analysed, the activity is the
-                // whole status: announcing a file that is not loaded yet, or a
-                // readiness the application does not have, would contradict it.
-                if app.is_busy() {
+                // An analysis actually running is the whole status: claiming a
+                // readiness the application does not have would contradict it.
+                // Waiting on the file dialog is not that — nothing is being
+                // analysed until a file has been chosen.
+                if app.is_analysing() {
                     ui.spinner();
                     ui.label(
                         egui::RichText::new(app.t(Text::StatusWorking))
                             .color(accent(app.preferences.theme)),
                     );
+                    return;
+                }
+                if app.is_choosing_file() && app.analysis.is_none() {
+                    ui.label(egui::RichText::new(app.t(Text::StatusChoosing)).color(MUTED));
                     return;
                 }
 

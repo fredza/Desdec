@@ -73,12 +73,16 @@ fn binary_actions(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
     }
 
     if app.analysis.is_some() {
+        ui.add_space(6.0);
+        // Framed on purpose: without a frame this read as a caption rather
+        // than a button, and closing a binary looked impossible.
         let close = ui.add_sized(
             [ui.available_width(), SECONDARY_BUTTON_HEIGHT],
-            egui::Button::new(app.t(Text::CloseBinary)).frame(false),
+            egui::Button::new(app.t(Text::CloseBinary)),
         );
         if close.clicked() {
             app.close_binary();
+            app.navigation_open = false;
         }
     }
 }

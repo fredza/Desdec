@@ -1,6 +1,6 @@
 use crate::{
     app::DesdecApp,
-    i18n::{Text, text},
+    i18n::{Language, Text, text},
     ui::{ERROR, MUTED, card, syntax},
 };
 use desdec_core::Analysis;
@@ -47,12 +47,23 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let language = app.preferences.language;
     let engine = app.preferences.decompiler.engine();
     let title = engine.map_or_else(|| String::from("—"), |engine| engine.label().to_owned());
+
+    // These engines decompile one function at a time. Without a choice the
+    // view always showed `entry0`, the C runtime stub, which says nothing
+    // about the program — so the function is picked here, defaulting to the
+    // one a reader actually starts from.
+    let functions = decompilable_functions(app);
+    if app.selected_function.is_none() {
+        app.selected_function = default_function(&functions);
+    }
     app.request_decompilation(ui.ctx(), app.selected_function);
 
     card(ui, text(language, Text::PseudoCode), |ui| {
         ui.horizontal(|ui| {
             ui.small(text(language, Text::DecompiledBy));
             ui.small(egui::RichText::new(&title).strong());
+            ui.separator();
+            function_picker(app, ui, &functions, language);
         });
         ui.add_space(8.0);
 
@@ -82,6 +93,71 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 }
             });
     });
+}
+
+/// Functions the engine can be pointed at: named, defined here, with an
+/// address. Sorted by address so the list reads like the image itself.
+fn decompilable_functions(app: &DesdecApp) -> Vec<(u64, String)> {
+    let Some(analysis) = app.analysis.as_ref() else {
+        return Vec::new();
+    };
+    let mut functions: Vec<(u64, String)> = analysis
+        .symbols
+        .iter()
+        .filter(|symbol| !symbol.imported)
+        .filter_map(|symbol| Some((symbol.address?, symbol.name.clone())))
+        .collect();
+    functions.sort_by_key(|(address, _)| *address);
+    functions.dedup_by_key(|(address, _)| *address);
+    functions
+}
+
+/// Where a reader starts: `main` when the binary has one, otherwise the entry
+/// point, and failing both the first named function.
+fn default_function(functions: &[(u64, String)]) -> Option<u64> {
+    functions
+        .iter()
+        .find(|(_, name)| name == "main")
+        .or_else(|| functions.first())
+        .map(|(address, _)| *address)
+}
+
+fn function_picker(
+    app: &mut DesdecApp,
+    ui: &mut egui::Ui,
+    functions: &[(u64, String)],
+    language: Language,
+) {
+    if functions.is_empty() {
+        // A stripped binary names nothing. Saying which address is being
+        // decompiled anyway beats an empty picker and an unexplained listing.
+        ui.small(egui::RichText::new(text(language, Text::StrippedEntryPoint)).color(MUTED));
+        return;
+    }
+    let selected = app
+        .selected_function
+        .and_then(|address| {
+            functions
+                .iter()
+                .find(|(candidate, _)| *candidate == address)
+        })
+        .map_or_else(|| "—".to_owned(), |(_, name)| name.clone());
+
+    ui.small(text(language, Text::Function));
+    egui::ComboBox::from_id_salt("external_function")
+        .selected_text(selected)
+        .width(260.0)
+        .show_ui(ui, |ui| {
+            for (address, name) in functions {
+                let label = format!("{name}  {address:#x}");
+                if ui
+                    .selectable_label(app.selected_function == Some(*address), label)
+                    .clicked()
+                {
+                    app.selected_function = Some(*address);
+                }
+            }
+        });
 }
 
 /// Returns the address to flash until its deadline, clearing it afterwards.

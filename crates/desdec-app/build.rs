@@ -46,11 +46,31 @@ fn git_build() -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-/// Rebuilds when a new commit is checked out. The paths are only declared when
-/// they exist: pointing `rerun-if-changed` at a missing file would rebuild the
-/// crate on every single run once the sources are unpacked outside a checkout.
+/// Rebuilds when the identifier could have changed.
+///
+/// Two things move it, and both must be watched:
+///
+/// - **The commit.** `HEAD` when a branch is checked out, `refs` and
+///   `packed-refs` when a commit lands on the current one.
+/// - **The working tree**, which decides the `-dirty` suffix. Without the
+///   source directories here, the build script never reran on an edit, so a
+///   build made from modified sources kept claiming a clean commit — the About
+///   dialog said the binary was something it was not.
+///
+/// Paths are only declared when they exist: pointing `rerun-if-changed` at a
+/// missing file would rebuild the crate on every single run once the sources
+/// are unpacked outside a checkout.
 fn watch_git_head() {
-    for path in ["../../.git/HEAD", "../../.git/refs"] {
+    for path in [
+        "../../.git/HEAD",
+        "../../.git/refs",
+        "../../.git/packed-refs",
+        "../../Cargo.toml",
+        "../desdec-core/src",
+        "../desdec-core/Cargo.toml",
+        "src",
+        "Cargo.toml",
+    ] {
         if Path::new(path).exists() {
             println!("cargo:rerun-if-changed={path}");
         }
