@@ -1,4 +1,4 @@
-use crate::ui::{MUTED, card};
+use crate::ui::{MUTED, card, syntax};
 use desdec_core::Analysis;
 use eframe::egui;
 use std::time::Duration;
@@ -93,29 +93,37 @@ pub fn panel(
     ensure_selected_instruction(analysis, selected_instruction);
     egui::ScrollArea::both()
         .id_salt("pseudo_code")
+        // Fill the space the panel was given instead of hugging the longest
+        // line, so both listings of the disassembly view stay side by side.
+        .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.monospace("void decompiled_entry(void) {");
+            let transparent = egui::Color32::TRANSPARENT;
+            ui.label(syntax::pseudo_code(
+                ui,
+                "void decompiled_entry(void) {",
+                transparent,
+            ));
             for instruction in &analysis.instructions {
                 ui.horizontal(|ui| {
                     let selected_fill =
                         instruction_fill(ui, instruction.address, *selected_instruction, attention);
                     let address = ui
                         .add(
-                            egui::Label::new(
-                                egui::RichText::new(format!("{:#018x}", instruction.address))
-                                    .monospace()
-                                    .background_color(selected_fill),
-                            )
+                            egui::Label::new(syntax::dim(
+                                ui,
+                                &format!("{:#018x}", instruction.address),
+                                selected_fill,
+                            ))
                             .sense(egui::Sense::click()),
                         )
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     let code = ui
                         .add(
-                            egui::Label::new(
-                                egui::RichText::new(format!("    {}", pseudo_c(&instruction.text)))
-                                    .monospace()
-                                    .background_color(selected_fill),
-                            )
+                            egui::Label::new(syntax::pseudo_code(
+                                ui,
+                                &format!("    {}", pseudo_c(&instruction.text)),
+                                selected_fill,
+                            ))
                             .sense(egui::Sense::click()),
                         )
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -129,7 +137,7 @@ pub fn panel(
                     }
                 });
             }
-            ui.monospace("}");
+            ui.label(syntax::pseudo_code(ui, "}", transparent));
         });
 }
 /// Conservative AT&T-to-C presentation. The decoder remains authoritative;

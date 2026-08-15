@@ -15,6 +15,7 @@ pub mod preferences_window;
 pub mod segments;
 pub mod status_bar;
 pub mod strings;
+pub mod syntax;
 pub mod views;
 
 /// Secondary text: readable, never competing with the content.
