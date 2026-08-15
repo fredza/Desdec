@@ -56,6 +56,8 @@ translations! {
         "Ready to open a binary",
         "Listo para abrir un binario",
     ],
+    StatusWorking => ["Analyse en cours…", "Analysing…", "Analizando…"],
+    StatusFailed => ["Échec", "Failed", "Error"],
     Overview => ["Vue d’ensemble", "Overview", "Resumen"],
     Segments => ["Segments", "Segments", "Segmentos"],
     Functions => ["Fonctions", "Functions", "Funciones"],

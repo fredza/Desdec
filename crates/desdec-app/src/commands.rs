@@ -80,6 +80,16 @@ impl Command {
     pub const fn configurable_shortcut(self) -> bool {
         self.default_shortcut().is_some()
     }
+
+    /// Whether running the command does anything today.
+    ///
+    /// The palette still lists the others, so what is planned stays visible,
+    /// but it never lets one be chosen: a highlighted entry that answers
+    /// nothing to `Enter` reads as a broken palette.
+    #[must_use]
+    pub const fn available(self) -> bool {
+        !matches!(self, Self::AiAssistance)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

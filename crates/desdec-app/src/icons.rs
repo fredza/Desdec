@@ -7,6 +7,7 @@ use eframe::egui;
 pub enum Icon {
     Overview,
     Disassembly,
+    Decompile,
     Functions,
     Strings,
     Patches,
@@ -62,6 +63,7 @@ fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::Colo
     match icon {
         Icon::Overview => overview(painter, rect, stroke),
         Icon::Disassembly => disassembly(painter, rect, stroke),
+        Icon::Decompile => decompile(painter, rect, stroke),
         Icon::Functions => functions(painter, rect, stroke, color),
         Icon::Strings => strings(painter, rect, stroke),
         Icon::Patches => patches(painter, rect, stroke, color),
@@ -95,6 +97,28 @@ fn disassembly(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) 
             ],
             stroke,
         );
+    }
+}
+
+/// A pair of braces: the pseudo-code rebuilt from those instructions. The
+/// disassembly keeps the stacked lines, so the two toolbar actions no longer
+/// wear the same glyph.
+fn decompile(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let (top, bottom, middle) = (rect.top() + 1.0, rect.bottom() - 1.0, rect.center().y);
+    for (edge, inward) in [(rect.left() + 1.0, 1.0_f32), (rect.right() - 1.0, -1.0)] {
+        let spine = edge + inward * 3.0;
+        painter.add(egui::Shape::line(
+            vec![
+                egui::pos2(spine + inward * 3.0, top),
+                egui::pos2(spine, top + 3.0),
+                egui::pos2(spine, middle - 2.0),
+                egui::pos2(edge, middle),
+                egui::pos2(spine, middle + 2.0),
+                egui::pos2(spine, bottom - 3.0),
+                egui::pos2(spine + inward * 3.0, bottom),
+            ],
+            stroke,
+        ));
     }
 }
 
