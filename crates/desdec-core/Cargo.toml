@@ -7,3 +7,6 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+iced-x86 = { version = "1.21", features = ["decoder", "gas"] }

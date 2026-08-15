@@ -20,14 +20,18 @@ use std::{
 };
 
 pub mod details;
+pub mod disassembly;
 pub mod entropy;
 pub mod hash;
 pub mod sections;
 pub mod strings;
+pub mod symbols;
 
 pub use details::{BinaryDetails, FileKind, Hardening, Relro, Segment};
+pub use disassembly::Instruction;
 pub use sections::{Permissions, Section};
 pub use strings::{ExtractedString, StringEncoding};
+pub use symbols::Symbol;
 
 use crate::binary::{BinarySummary, inspect_bytes};
 
@@ -44,6 +48,8 @@ pub struct Analysis {
     pub entry_point: Option<u64>,
     pub sections: Vec<Section>,
     pub strings: Vec<ExtractedString>,
+    pub symbols: Vec<Symbol>,
+    pub instructions: Vec<Instruction>,
     /// Loader-level facts: file kind, mapping, dependencies, hardening.
     pub details: BinaryDetails,
     /// SHA-256 of the file, and `None` when only part of it was read — a
@@ -123,6 +129,9 @@ pub fn analyse_bytes(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
     let truncated = size > bytes.len() as u64;
 
     let strings = strings::extract(bytes);
+    let symbols = symbols::extract(bytes, format);
+    let sections = sections::parse(bytes, format);
+    let instructions = disassembly::decode(bytes, format, architecture, &sections);
     let mut details = details::parse(bytes, format);
     details::note_stack_canary(&mut details, &strings);
 
@@ -134,8 +143,10 @@ pub fn analyse_bytes(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
             architecture,
         },
         entry_point: sections::entry_point(bytes, format),
-        sections: sections::parse(bytes, format),
+        sections,
         strings,
+        symbols,
+        instructions,
         details,
         sha256: (!truncated).then(|| hash::sha256(bytes)),
         entropy: entropy::shannon(bytes),

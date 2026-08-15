@@ -5,7 +5,10 @@ use crate::{
     app::{DesdecApp, WorkspaceView},
     i18n::{Language, Text, text},
     preferences::accent,
-    ui::{ERROR, MUTED, card, columns, expert, format_size, segments, strings},
+    ui::{
+        ERROR, MUTED, card, columns, decompile, disassembly, expert, format_size, functions,
+        segments, strings,
+    },
 };
 
 pub fn show_central_panel(app: &mut DesdecApp, ctx: &egui::Context) {
@@ -45,6 +48,11 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
         WorkspaceView::Strings => {
             strings::show(ui, analysis, &mut app.strings_filter, expert_mode, language);
         }
+        WorkspaceView::Functions => functions::show(ui, analysis, expert_mode, language),
+        WorkspaceView::Disassembly => {
+            disassembly::show(ui, analysis, expert_mode, &mut app.detailed_decode)
+        }
+        WorkspaceView::Decompile => decompile::show(ui, analysis, expert_mode),
         view => {
             if let Some(explanation) = view.planned_explanation() {
                 planned_view(ui, view, explanation, expert_mode, language);

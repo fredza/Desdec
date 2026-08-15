@@ -163,4 +163,10 @@ fn behaviour(app: &mut DesdecApp, ui: &mut egui::Ui) {
         ui.checkbox(value, text(language, label));
     }
     ui.small(text(language, Text::PersistenceInfo));
+    ui.add_space(12.0);
+    ui.checkbox(
+        &mut app.preferences.ai_assistance,
+        text(language, Text::AiAssistance),
+    );
+    ui.small(text(language, Text::AiAssistanceUnavailable));
 }

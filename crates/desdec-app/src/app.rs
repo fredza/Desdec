@@ -38,6 +38,7 @@ pub enum WorkspaceView {
     Functions,
     Strings,
     Disassembly,
+    Decompile,
     Patches,
 }
 
@@ -48,6 +49,7 @@ impl WorkspaceView {
         Self::Functions,
         Self::Strings,
         Self::Disassembly,
+        Self::Decompile,
         Self::Patches,
     ];
 
@@ -58,6 +60,7 @@ impl WorkspaceView {
             Self::Functions => Text::Functions,
             Self::Strings => Text::Strings,
             Self::Disassembly => Text::Disassembly,
+            Self::Decompile => Text::Decompile,
             Self::Patches => Text::Patches,
         }
     }
@@ -71,6 +74,7 @@ impl WorkspaceView {
             Self::Functions => "Fn",
             Self::Strings => "STR",
             Self::Disassembly => "ASM",
+            Self::Decompile => "DEC",
             Self::Patches => "PATCH",
         }
     }
@@ -79,9 +83,8 @@ impl WorkspaceView {
     /// show real data.
     pub const fn planned_explanation(self) -> Option<Text> {
         match self {
-            Self::Overview | Self::Segments | Self::Strings => None,
-            Self::Functions => Some(Text::FunctionsInfo),
-            Self::Disassembly => Some(Text::DisassemblyInfo),
+            Self::Overview | Self::Segments | Self::Functions | Self::Strings => None,
+            Self::Disassembly | Self::Decompile => None,
             Self::Patches => Some(Text::PatchesInfo),
         }
     }
@@ -134,6 +137,9 @@ pub struct DesdecApp {
     pub active_view: WorkspaceView,
     pub navigation_open: bool,
     pub expert_mode: bool,
+    /// User-requested detailed decoding; the bytes are already safely decoded
+    /// in the core and this only reveals the additional columns.
+    pub detailed_decode: bool,
     pub dialogs: Dialogs,
     pub preferences: Preferences,
     pub preferences_tab: PreferencesTab,
@@ -244,6 +250,8 @@ impl DesdecApp {
             Command::About => self.dialogs.about = true,
             Command::Overview => self.select_view(WorkspaceView::Overview),
             Command::Disassembly => self.select_view(WorkspaceView::Disassembly),
+            Command::Decompile => self.select_view(WorkspaceView::Decompile),
+            Command::AiAssistance => {}
             Command::Functions => self.select_view(WorkspaceView::Functions),
             Command::Strings => self.select_view(WorkspaceView::Strings),
             Command::Patches => self.select_view(WorkspaceView::Patches),
@@ -369,6 +377,7 @@ impl DesdecApp {
         self.error = None;
         self.active_view = WorkspaceView::Overview;
         self.strings_filter.clear();
+        self.detailed_decode = false;
     }
 
     pub fn select_view(&mut self, view: WorkspaceView) {
@@ -619,6 +628,9 @@ mod tests {
         const IMPLEMENTED: &[WorkspaceView] = &[
             WorkspaceView::Overview,
             WorkspaceView::Segments,
+            WorkspaceView::Functions,
+            WorkspaceView::Disassembly,
+            WorkspaceView::Decompile,
             WorkspaceView::Strings,
         ];
 

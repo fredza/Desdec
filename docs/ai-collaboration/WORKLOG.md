@@ -542,3 +542,19 @@ suivent le mode dans les trois langues.
 - Vérifications : `cargo fmt --all --check` réussi ; `cargo clippy --workspace
   --all-targets` sans avertissement ; `cargo test --workspace` réussi
   (73 tests) ; application lancée avec un binaire en argument.
+
+## 2026-08-15 — symboles de fonctions ELF
+
+- Objectif : remplacer l'annonce de la vue Fonctions par des données de
+  symboles réellement présentes dans le fichier.
+- Décision : le cœur normalise les symboles de fonction ELF des tables
+  `SHT_SYMTAB` et `SHT_DYNSYM` (nom, adresse, taille et import/définition),
+  avec des parcours bornés et des lectures contrôlées. La vue les affiche et
+  conserve les trois langues. PE et Mach-O restent volontairement vides tant
+  que leurs parcours RVA et tables de chaînes ne sont pas implémentés.
+- Fichiers modifiés : `analysis/symbols.rs`, API du cœur, vue Fonctions et
+  traductions.
+- Vérifications : `cargo fmt --all --check`, `cargo test --workspace` (73
+  tests) et `cargo clippy --workspace --all-targets -- -D warnings` réussis.
+- Suite : couvrir des fixtures ELF dédiées, puis ajouter les exports/imports
+  PE et les symboles Mach-O avant de bâtir le désassembleur.

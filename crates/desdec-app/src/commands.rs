@@ -51,6 +51,8 @@ commands! {
     About => [About], Some(Shortcut::plain(KeyName::F1)),
     Overview => [Overview], Some(Shortcut::ctrl(KeyName::Num1)),
     Disassembly => [Disassembly], Some(Shortcut::ctrl(KeyName::Num2)),
+    Decompile => [Decompile], Some(Shortcut::ctrl_shift(KeyName::D)),
+    AiAssistance => [AiAssistance], Some(Shortcut::ctrl_alt(KeyName::A)),
     Functions => [Functions], Some(Shortcut::ctrl(KeyName::Num3)),
     Strings => [Strings], Some(Shortcut::ctrl(KeyName::Num4)),
     Patches => [Patches], Some(Shortcut::ctrl(KeyName::Num5)),
