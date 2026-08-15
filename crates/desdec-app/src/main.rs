@@ -6,6 +6,7 @@ mod app;
 mod commands;
 mod i18n;
 mod icons;
+mod patches;
 mod preferences;
 mod ui;
 

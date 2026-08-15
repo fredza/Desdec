@@ -1,16 +1,18 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
     time::Duration,
 };
 
-use desdec_core::{Analysis, analyse_path};
+use desdec_core::{Analysis, analyse_path, decompiler};
 use eframe::{Storage, egui};
 
 use crate::{
     commands::{Command, Shortcut},
     i18n::{Language, Text, text},
-    preferences::{Preferences, ThemePreference, apply_theme},
+    patches::{Editor, Patches},
+    preferences::{DecompilerPreference, Preferences, ThemePreference, apply_theme},
     ui::{self, preferences_window::PreferencesTab},
 };
 
@@ -84,8 +86,7 @@ impl WorkspaceView {
     pub const fn planned_explanation(self) -> Option<Text> {
         match self {
             Self::Overview | Self::Segments | Self::Functions | Self::Strings => None,
-            Self::Disassembly | Self::Decompile => None,
-            Self::Patches => Some(Text::PatchesInfo),
+            Self::Disassembly | Self::Decompile | Self::Patches => None,
         }
     }
 }
@@ -160,6 +161,21 @@ pub struct PaletteState {
 struct BackgroundJobs {
     file_picker: Option<Receiver<Option<PathBuf>>>,
     inspection: Option<Receiver<(PathBuf, std::io::Result<Analysis>)>>,
+    /// An external decompiler, which can take a minute on a large binary.
+    decompilation: Option<Receiver<std::io::Result<String>>>,
+    /// Where the user chose to export the patched copy.
+    export_picker: Option<Receiver<Option<PathBuf>>>,
+}
+
+/// Result of the external decompiler, when one is selected.
+#[derive(Default)]
+pub struct ExternalDecompilation {
+    /// Engine and function the shown text came from, so a stale result is not
+    /// left under a different selection.
+    pub source: Option<(DecompilerPreference, Option<u64>)>,
+    pub text: Option<String>,
+    pub error: Option<String>,
+    pub running: bool,
 }
 
 #[derive(Default)]
@@ -186,6 +202,19 @@ pub struct DesdecApp {
     pub selected_string: Option<u64>,
     /// Free-text filter applied to the extracted strings.
     pub strings_filter: String,
+    /// Pending byte patches, and the instruction being edited.
+    pub patches: Patches,
+    pub patch_editor: Option<Editor>,
+    /// Outcome of the last export, kept until the next one.
+    pub export_report: Option<Result<PathBuf, String>>,
+    /// Text produced by the selected external decompiler.
+    pub external: ExternalDecompilation,
+    /// What was found for each engine, and for which configured path.
+    ///
+    /// Detecting an engine touches the file system, and `rz-ghidra` is probed
+    /// by running `rizin`: doing that every frame while the preferences window
+    /// is open would spawn a process sixty times a second.
+    engine_availability: HashMap<&'static str, (String, decompiler::Availability)>,
     jobs: BackgroundJobs,
     /// Last state handed to storage, used to detect unsaved preferences.
     persisted_preferences: Preferences,
@@ -368,13 +397,7 @@ impl DesdecApp {
             Ok(analysis) => {
                 self.analysis = Some(analysis);
                 self.error = None;
-                self.active_view = WorkspaceView::Overview;
-                self.strings_filter.clear();
-                self.selected_function = None;
-                self.selected_instruction = None;
-                self.pending_instruction_scroll = None;
-                self.instruction_attention = None;
-                self.selected_string = None;
+                self.reset_file_state();
             }
             Err(error) => {
                 self.error = Some(format!(
@@ -406,6 +429,33 @@ impl DesdecApp {
             Some(Err(TryRecvError::Disconnected)) => self.jobs.inspection = None,
             Some(Err(TryRecvError::Empty)) | None => {}
         }
+
+        let decompilation = self.jobs.decompilation.as_ref().map(Receiver::try_recv);
+        match decompilation {
+            Some(Ok(result)) => {
+                self.jobs.decompilation = None;
+                self.external.running = false;
+                match result {
+                    Ok(text) => self.external.text = Some(text),
+                    Err(error) => self.external.error = Some(error.to_string()),
+                }
+            }
+            Some(Err(TryRecvError::Disconnected)) => {
+                self.jobs.decompilation = None;
+                self.external.running = false;
+            }
+            Some(Err(TryRecvError::Empty)) | None => {}
+        }
+
+        let export = self.jobs.export_picker.as_ref().map(Receiver::try_recv);
+        match export {
+            Some(Ok(Some(destination))) => {
+                self.jobs.export_picker = None;
+                self.write_export(&destination);
+            }
+            Some(Ok(None) | Err(TryRecvError::Disconnected)) => self.jobs.export_picker = None,
+            Some(Err(TryRecvError::Empty)) | None => {}
+        }
     }
 
     /// Whether a file dialog or an analysis is still running. A large binary
@@ -415,9 +465,142 @@ impl DesdecApp {
         self.jobs.file_picker.is_some() || self.jobs.inspection.is_some()
     }
 
+    /// What is installed for `engine`, detected once per configured path.
+    ///
+    /// The cache key is the configured path, so editing it re-detects while
+    /// typing something else does not.
+    pub fn engine_availability(&mut self, engine: decompiler::Engine) -> decompiler::Availability {
+        let configured = self
+            .preferences
+            .engine_paths
+            .for_engine(engine)
+            .map_or_else(String::new, |path| path.display().to_string());
+        if let Some((cached_for, availability)) = self.engine_availability.get(engine.program())
+            && *cached_for == configured
+        {
+            return availability.clone();
+        }
+        let availability =
+            decompiler::locate(engine, self.preferences.engine_paths.for_engine(engine));
+        self.engine_availability
+            .insert(engine.program(), (configured, availability.clone()));
+        availability
+    }
+
+    /// Starts the selected external decompiler, unless its result is already
+    /// on screen. Does nothing when the built-in engine is selected.
+    pub fn request_decompilation(&mut self, ctx: &egui::Context, address: Option<u64>) {
+        let choice = self.preferences.decompiler;
+        let Some(engine) = choice.engine() else {
+            self.external = ExternalDecompilation::default();
+            return;
+        };
+        if self.jobs.decompilation.is_some() || self.external.source == Some((choice, address)) {
+            return;
+        }
+        let Some(path) = self
+            .analysis
+            .as_ref()
+            .map(|analysis| analysis.summary.path.clone())
+        else {
+            return;
+        };
+
+        let decompiler::Availability::Found(program) = self.engine_availability(engine) else {
+            self.external = ExternalDecompilation {
+                source: Some((choice, address)),
+                error: Some(format!(
+                    "{} {}",
+                    self.t(Text::EngineUnavailable),
+                    engine.install_hint()
+                )),
+                ..ExternalDecompilation::default()
+            };
+            return;
+        };
+
+        self.external = ExternalDecompilation {
+            source: Some((choice, address)),
+            running: true,
+            ..ExternalDecompilation::default()
+        };
+        let repaint = ctx.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.jobs.decompilation = Some(receiver);
+        std::thread::spawn(move || {
+            let result = decompiler::decompile(
+                engine,
+                &program,
+                &path,
+                address,
+                decompiler::DEFAULT_TIMEOUT,
+            );
+            let _ = sender.send(result);
+            repaint.request_repaint();
+        });
+    }
+
+    /// Asks where to write the patched copy. The analysed file is never the
+    /// destination: [`desdec_core::patch::write_patched_copy`] refuses it.
+    pub fn export_patched_copy(&mut self, ctx: &egui::Context) {
+        if self.jobs.export_picker.is_some() || self.patches.is_empty() {
+            return;
+        }
+        let Some(source) = self
+            .analysis
+            .as_ref()
+            .map(|analysis| &analysis.summary.path)
+        else {
+            return;
+        };
+        let suggested = suggested_export_name(source);
+        let title = self.t(Text::ExportPatched).to_owned();
+        let repaint = ctx.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.jobs.export_picker = Some(receiver);
+        std::thread::spawn(move || {
+            let path = pollster::block_on(
+                rfd::AsyncFileDialog::new()
+                    .set_title(title)
+                    .set_file_name(suggested)
+                    .save_file(),
+            )
+            .map(|file| file.path().to_path_buf());
+            let _ = sender.send(path);
+            repaint.request_repaint();
+        });
+    }
+
+    fn write_export(&mut self, destination: &Path) {
+        let Some(source) = self
+            .analysis
+            .as_ref()
+            .map(|analysis| &analysis.summary.path)
+        else {
+            return;
+        };
+        self.export_report = match desdec_core::patch::write_patched_copy(
+            source,
+            destination,
+            self.patches.entries(),
+        ) {
+            Ok(_) => Some(Ok(destination.to_path_buf())),
+            Err(error) => Some(Err(error.to_string())),
+        };
+    }
+
     pub fn close_binary(&mut self) {
         self.analysis = None;
         self.error = None;
+        self.reset_file_state();
+    }
+
+    /// Clears everything that describes one particular file.
+    ///
+    /// Patches belong to the file they were written against: carrying them
+    /// over to the next binary would offer to write bytes at offsets that mean
+    /// something else entirely.
+    fn reset_file_state(&mut self) {
         self.active_view = WorkspaceView::Overview;
         self.strings_filter.clear();
         self.selected_function = None;
@@ -425,6 +608,10 @@ impl DesdecApp {
         self.pending_instruction_scroll = None;
         self.instruction_attention = None;
         self.selected_string = None;
+        self.patches.clear();
+        self.patch_editor = None;
+        self.export_report = None;
+        self.external = ExternalDecompilation::default();
     }
 
     pub fn select_view(&mut self, view: WorkspaceView) {
@@ -456,6 +643,19 @@ impl DesdecApp {
             storage.set_string(PREFERENCES_KEY, String::new());
         }
         self.persisted_preferences = self.preferences.clone();
+    }
+}
+
+/// Default name of the exported copy: the original with `.patched` before its
+/// extension, so the two never collide in a file listing.
+fn suggested_export_name(source: &Path) -> String {
+    let stem = source.file_stem().map_or_else(
+        || "binary".to_owned(),
+        |stem| stem.to_string_lossy().into_owned(),
+    );
+    match source.extension() {
+        Some(extension) => format!("{stem}.patched.{}", extension.to_string_lossy()),
+        None => format!("{stem}.patched"),
     }
 }
 
@@ -705,6 +905,7 @@ mod tests {
             WorkspaceView::Disassembly,
             WorkspaceView::Decompile,
             WorkspaceView::Strings,
+            WorkspaceView::Patches,
         ];
 
         for view in WorkspaceView::ALL {

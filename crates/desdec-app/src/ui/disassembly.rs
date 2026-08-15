@@ -1,30 +1,64 @@
 //! Detailed x86/x86-64 decoding, synchronised with the local pseudo-code.
-use crate::{ui::MUTED, ui::decompile, ui::syntax};
+use crate::{
+    i18n::{Language, Text, text},
+    patches::Patches,
+    ui::MUTED,
+    ui::decompile,
+    ui::syntax,
+};
 use desdec_core::Analysis;
 use eframe::egui;
 
+/// Bytes a pending patch would write, marked so an edited row is never taken
+/// for what the file currently holds.
+const PATCHED: egui::Color32 = egui::Color32::from_rgb(224, 164, 104);
+
+fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Draws the disassembly, returning the instruction the user asked to edit.
 pub fn show(
     ui: &mut egui::Ui,
     analysis: &Analysis,
     selected_instruction: &mut Option<u64>,
     pending_scroll: &mut Option<u64>,
     instruction_attention: &mut Option<(u64, f64)>,
-) {
+    patches: &Patches,
+    language: Language,
+) -> Option<u64> {
     if analysis.instructions.is_empty() {
-        ui.label(egui::RichText::new("Le désassemblage est disponible pour les binaires x86, x86-64 et ARM64 ; ce fichier utilise une autre architecture ou ne contient aucune section exécutable lisible.").color(MUTED));
-        return;
+        ui.label(egui::RichText::new(text(language, Text::NoDisassembly)).color(MUTED));
+        return None;
     }
+    let mut edit = None;
     ui.horizontal(|ui| {
-        ui.add_enabled(false, egui::Button::new("Décodage approfondi"))
-            .on_hover_text("Les décodeurs locaux iced-x86 et Capstone sont actifs. Les moteurs alternatifs, comme rz-ghidra, seront proposés ici.");
-        ui.small("Décodeurs locaux : iced-x86 (x86/x86-64) et Capstone (ARM64, dont Apple Silicon).");
+        let selected = *selected_instruction;
+        let patchable = selected
+            .is_some_and(|address| crate::patches::file_offset_of(analysis, address).is_some());
+        let button = ui.add_enabled(
+            selected.is_some() && patchable,
+            egui::Button::new(text(language, Text::EditInstruction)),
+        );
+        if button.clicked() {
+            edit = selected;
+        }
+        if selected.is_some() && !patchable {
+            ui.label(egui::RichText::new(text(language, Text::NotPatchable)).color(MUTED));
+        } else {
+            ui.small(text(language, Text::LocalDecoders));
+        }
     });
     ui.add_space(8.0);
     let scroll_target = *pending_scroll;
     let attention = decompile::active_attention(ui.ctx(), instruction_attention);
     ui.columns(2, |columns| {
-        columns[1].strong("Pseudo-code local");
-        columns[1].small("Traduction déterministe du flot, sans code source inventé.");
+        columns[1].strong(text(language, Text::PseudoCode));
+        columns[1].small(text(language, Text::PseudoCodeHelp));
         decompile::panel(
             &mut columns[1],
             analysis,
@@ -40,13 +74,20 @@ pub fn show(
             scroll_target,
             pending_scroll,
             attention,
+            patches,
+            language,
         );
     });
     if *pending_scroll == scroll_target {
         *pending_scroll = None;
     }
+    edit
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one listing needs its selection, its scrolling and its patches"
+)]
 fn instructions(
     ui: &mut egui::Ui,
     analysis: &Analysis,
@@ -54,6 +95,8 @@ fn instructions(
     scroll_target: Option<u64>,
     pending_scroll: &mut Option<u64>,
     attention: Option<u64>,
+    patches: &Patches,
+    language: Language,
 ) {
     decompile::ensure_selected_instruction(analysis, selected_instruction);
     egui::ScrollArea::both()
@@ -64,10 +107,9 @@ fn instructions(
                 .num_columns(4)
                 .striped(true)
                 .show(ui, |ui| {
-                    ui.strong("Adresse");
-                    ui.strong("Octets");
-                    ui.strong("Section");
-                    ui.strong("Instruction");
+                    for title in [Text::Address, Text::Bytes, Text::Section, Text::Instruction] {
+                        ui.strong(text(language, title));
+                    }
                     ui.end_row();
                     for instruction in &analysis.instructions {
                         let selected_fill = decompile::instruction_fill(
@@ -76,6 +118,7 @@ fn instructions(
                             *selected_instruction,
                             attention,
                         );
+                        let patch = patches.patch_at(instruction.address);
                         let address = ui
                             .add(
                                 egui::Label::new(syntax::dim(
@@ -86,13 +129,28 @@ fn instructions(
                                 .sense(egui::Sense::click()),
                             )
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
-                        let bytes = instruction
-                            .bytes
-                            .iter()
-                            .map(|byte| format!("{byte:02x}"))
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        ui.label(syntax::dim(ui, &bytes, egui::Color32::TRANSPARENT));
+                        // A patched row shows the bytes that would be written,
+                        // marked, rather than the ones still in the file: the
+                        // listing must describe the binary being built.
+                        let bytes =
+                            hex(patch.map_or(&instruction.bytes, |patch| &patch.replacement));
+                        match patch {
+                            Some(patch) => {
+                                ui.label(
+                                    egui::RichText::new(format!("{bytes} *"))
+                                        .monospace()
+                                        .color(PATCHED),
+                                )
+                                .on_hover_text(format!(
+                                    "{} {}",
+                                    text(language, Text::OriginalBytes),
+                                    hex(&patch.original)
+                                ));
+                            }
+                            None => {
+                                ui.label(syntax::dim(ui, &bytes, egui::Color32::TRANSPARENT));
+                            }
+                        }
                         ui.label(syntax::dim(
                             ui,
                             &instruction.section,

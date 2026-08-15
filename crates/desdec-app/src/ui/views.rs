@@ -7,7 +7,7 @@ use crate::{
     preferences::accent,
     ui::{
         ERROR, MUTED, card, columns, decompile, disassembly, expert, format_size, functions,
-        segments, strings,
+        patches_view, segments, strings,
     },
 };
 
@@ -30,13 +30,31 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let language = app.preferences.language;
     let view = app.active_view;
 
-    // Borrowing the analysis and the filter separately keeps both available.
-    let Some(analysis) = &app.analysis else {
+    if app.analysis.is_none() {
         if view == WorkspaceView::Overview {
             welcome(app, ui);
         } else {
             ui.label(text(language, Text::OpenFirst));
         }
+        return;
+    }
+
+    // These views hold the whole application, since they act on it: patches
+    // are exported, and the decompiler is started from the view showing it.
+    match view {
+        WorkspaceView::Patches => {
+            patches_view::show(app, ui);
+            return;
+        }
+        WorkspaceView::Decompile => {
+            decompile::show(app, ui);
+            return;
+        }
+        _ => {}
+    }
+
+    // Borrowing the analysis and the filter separately keeps both available.
+    let Some(analysis) = &app.analysis else {
         return;
     };
 
@@ -59,20 +77,24 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
         WorkspaceView::Functions => {
             functions::show(ui, analysis, &mut app.selected_function, language)
         }
-        WorkspaceView::Disassembly => disassembly::show(
-            ui,
-            analysis,
-            &mut app.selected_instruction,
-            &mut app.pending_instruction_scroll,
-            &mut app.instruction_attention,
-        ),
-        WorkspaceView::Decompile => decompile::show(
-            ui,
-            analysis,
-            &mut app.selected_instruction,
-            &mut app.pending_instruction_scroll,
-            &mut app.instruction_attention,
-        ),
+        WorkspaceView::Disassembly => {
+            let edit = disassembly::show(
+                ui,
+                analysis,
+                &mut app.selected_instruction,
+                &mut app.pending_instruction_scroll,
+                &mut app.instruction_attention,
+                &app.patches,
+                language,
+            );
+            if let Some(address) = edit {
+                // Editing happens where the patches live, so the pending list
+                // and the export are in front of the user straight away.
+                if patches_view::open_editor(app, address) {
+                    app.active_view = WorkspaceView::Patches;
+                }
+            }
+        }
         view => {
             if let Some(explanation) = view.planned_explanation() {
                 planned_view(ui, view, explanation, language);

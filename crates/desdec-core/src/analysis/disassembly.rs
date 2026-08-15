@@ -113,10 +113,106 @@ fn decode_arm64(file: &[u8], sections: &[Section]) -> Vec<Instruction> {
     output
 }
 
+/// Decodes a single instruction from `bytes`, as it would read at `address`.
+///
+/// Used to show what an edited instruction became, so a patch is judged on the
+/// decoder's answer rather than on the editor's intent. Returns `None` when the
+/// bytes do not form one whole instruction: a partial decode would describe
+/// something the processor will not execute.
+#[must_use]
+pub fn decode_one(bytes: &[u8], architecture: Architecture, address: u64) -> Option<Instruction> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let decoded = match architecture {
+        Architecture::X86 => decode_one_x86(bytes, address, 32),
+        Architecture::X86_64 => decode_one_x86(bytes, address, 64),
+        Architecture::Arm64 => decode_one_arm64(bytes, address),
+        Architecture::Arm | Architecture::Unknown => None,
+    }?;
+    // The bytes must be exactly one instruction: trailing bytes would be a
+    // second, unshown instruction, and a short read a truncated one.
+    (decoded.bytes.len() == bytes.len()).then_some(decoded)
+}
+
+fn decode_one_x86(bytes: &[u8], address: u64, bits: u32) -> Option<Instruction> {
+    let mut decoder = Decoder::with_ip(bits, bytes, address, DecoderOptions::NONE);
+    if !decoder.can_decode() {
+        return None;
+    }
+    let instruction = decoder.decode();
+    let length = instruction.len();
+    if length == 0 || instruction.is_invalid() {
+        return None;
+    }
+    let mut text = String::new();
+    GasFormatter::new().format(&instruction, &mut text);
+    Some(Instruction {
+        address,
+        bytes: bytes.get(..length)?.to_vec(),
+        text,
+        section: String::new(),
+    })
+}
+
+fn decode_one_arm64(bytes: &[u8], address: u64) -> Option<Instruction> {
+    let engine = Capstone::new()
+        .arm64()
+        .mode(arm64::ArchMode::Arm)
+        .detail(true)
+        .build()
+        .ok()?;
+    let decoded = engine.disasm_count(bytes, address, 1).ok()?;
+    let instruction = decoded.iter().next()?;
+    let mnemonic = instruction.mnemonic().unwrap_or_default();
+    let operands = instruction.op_str().unwrap_or_default();
+    Some(Instruction {
+        address,
+        bytes: instruction.bytes().to_vec(),
+        text: if operands.is_empty() {
+            mnemonic.to_owned()
+        } else {
+            format!("{mnemonic} {operands}")
+        },
+        section: String::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Endianness, Permissions};
+
+    #[test]
+    fn decodes_a_single_x86_instruction_for_a_patch_preview() {
+        let nop = decode_one(&[0x90], Architecture::X86_64, 0x40_1000)
+            .expect("0x90 is one whole instruction");
+        assert_eq!(nop.text, "nop");
+        assert_eq!(nop.address, 0x40_1000);
+        assert_eq!(nop.bytes, [0x90]);
+    }
+
+    /// Bytes that decode to something shorter hide a second instruction; the
+    /// preview must not show only the first.
+    #[test]
+    fn trailing_bytes_are_refused_rather_than_partly_decoded() {
+        assert_eq!(decode_one(&[0x90, 0x90], Architecture::X86_64, 0), None);
+        assert_eq!(decode_one(&[], Architecture::X86_64, 0), None);
+    }
+
+    #[test]
+    fn undecodable_bytes_have_no_preview() {
+        // An incomplete instruction: the operand bytes are missing.
+        assert_eq!(decode_one(&[0x48, 0x8b], Architecture::X86_64, 0), None);
+    }
+
+    #[test]
+    fn decodes_a_single_arm64_instruction() {
+        let ret = decode_one(&[0xc0, 0x03, 0x5f, 0xd6], Architecture::Arm64, 0x1_0000)
+            .expect("this word is an AArch64 `ret`");
+        assert_eq!(ret.text, "ret");
+        assert_eq!(ret.bytes.len(), 4);
+    }
 
     #[test]
     fn decodes_an_arm64_return_instruction() {

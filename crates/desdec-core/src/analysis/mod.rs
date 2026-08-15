@@ -28,7 +28,7 @@ pub mod strings;
 pub mod symbols;
 
 pub use details::{BinaryDetails, FileKind, Hardening, Relro, Segment};
-pub use disassembly::Instruction;
+pub use disassembly::{Instruction, decode_one};
 pub use sections::{Permissions, Section};
 pub use strings::{ExtractedString, StringEncoding};
 pub use symbols::Symbol;
