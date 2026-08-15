@@ -32,7 +32,7 @@ pub const PREFERENCES_KEY: &str = "desdec.preferences";
 /// interval costs nothing while nothing is edited.
 pub const AUTO_SAVE_INTERVAL: Duration = Duration::from_secs(2);
 
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum WorkspaceView {
     #[default]
     Overview,
@@ -458,11 +458,18 @@ impl DesdecApp {
         }
     }
 
-    /// Whether a file dialog or an analysis is still running. A large binary
-    /// takes visible time, and a status bar that stays silent about it looks
-    /// like an application that ignored the file.
-    pub const fn is_busy(&self) -> bool {
-        self.jobs.file_picker.is_some() || self.jobs.inspection.is_some()
+    /// Whether a binary is being analysed right now.
+    ///
+    /// Deliberately not "is something running": while the file dialog is open
+    /// nothing is being analysed, and saying otherwise announced an analysis
+    /// of a file the user had not chosen yet — and often would never choose.
+    pub const fn is_analysing(&self) -> bool {
+        self.jobs.inspection.is_some()
+    }
+
+    /// Whether the file dialog is open, waiting on the user.
+    pub const fn is_choosing_file(&self) -> bool {
+        self.jobs.file_picker.is_some()
     }
 
     /// What is installed for `engine`, detected once per configured path.
@@ -670,6 +677,19 @@ impl DesdecApp {
             ..Self::default()
         }
     }
+
+    /// An application waiting on the file dialog, without opening a real one:
+    /// a test must never make a native window appear.
+    pub fn for_test_choosing_file() -> Self {
+        let (_sender, receiver) = mpsc::channel();
+        Self {
+            jobs: BackgroundJobs {
+                file_picker: Some(receiver),
+                ..BackgroundJobs::default()
+            },
+            ..Self::default()
+        }
+    }
 }
 
 impl eframe::App for DesdecApp {
@@ -783,6 +803,36 @@ mod tests {
         assert!(app.dismiss_topmost_dialog());
         assert!(!app.dialogs.about);
         assert!(app.dialogs.preferences);
+    }
+
+    /// Opening the file dialog is not an analysis. The status bar used to
+    /// announce one the moment the dialog appeared, for a file the user had
+    /// not chosen yet — and might never choose.
+    #[test]
+    fn choosing_a_file_is_not_reported_as_an_analysis() {
+        let app = DesdecApp::for_test_choosing_file();
+
+        assert!(app.is_choosing_file(), "the dialog is open");
+        assert!(
+            !app.is_analysing(),
+            "nothing is analysed while the dialog waits on the user"
+        );
+    }
+
+    /// Closing must be reachable without hunting through the collapsed menu,
+    /// so the action bar carries it whenever a binary is open.
+    #[test]
+    fn a_loaded_binary_can_be_closed_from_the_keyboard() {
+        let path = std::env::current_exe().expect("the test binary has a path");
+        let analysis = desdec_core::analyse_path(&path).expect("the test binary is analysable");
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::for_test(Some(analysis), WorkspaceView::Disassembly);
+
+        app.run_command(&ctx, Command::CloseBinary);
+
+        assert!(app.analysis.is_none());
+        assert!(app.patches.is_empty(), "patches belong to the closed file");
+        assert_eq!(app.active_view, WorkspaceView::Overview);
     }
 
     #[test]

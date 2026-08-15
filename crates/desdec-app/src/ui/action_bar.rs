@@ -10,6 +10,7 @@ use crate::{
 
 const HEIGHT: f32 = 48.0;
 const HAMBURGER_SIZE: egui::Vec2 = egui::vec2(34.0, 30.0);
+const CLOSE_BUTTON_SIZE: egui::Vec2 = egui::vec2(26.0, 26.0);
 
 /// Toolbar actions that switch the workspace view.
 const VIEW_ACTIONS: &[(Icon, Command, WorkspaceView)] = &[
@@ -60,6 +61,10 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                         .size(20.0),
                 );
                 ui.strong("Desdec");
+                // The open file, and the way to close it. Closing used to live
+                // only in the collapsed side menu, which made it look as if a
+                // binary could not be closed at all.
+                open_binary(app, ui);
 
                 if app.preferences.show_toolbar {
                     ui.separator();
@@ -67,6 +72,29 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                 }
             });
         });
+}
+
+/// Name of the loaded binary, with the button that closes it.
+fn open_binary(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    let Some(name) = app.analysis.as_ref().map(|analysis| {
+        analysis.summary.path.file_name().map_or_else(
+            || analysis.summary.path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+    }) else {
+        return;
+    };
+
+    ui.separator();
+    let active_file = app.t(Text::ActiveFile);
+    app.tooltip(ui.label(egui::RichText::new(name).monospace()), active_file);
+    let close = app.tooltip(
+        ui.add(egui::Button::new("×").min_size(CLOSE_BUTTON_SIZE)),
+        &app.command_tooltip(Command::CloseBinary),
+    );
+    if close.clicked() {
+        app.close_binary();
+    }
 }
 
 fn toolbar(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
