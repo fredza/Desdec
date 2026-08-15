@@ -20,7 +20,7 @@ const VIEW_ACTIONS: &[(Icon, Command, WorkspaceView)] = &[
         WorkspaceView::Disassembly,
     ),
     (
-        Icon::Disassembly,
+        Icon::Decompile,
         Command::Decompile,
         WorkspaceView::Decompile,
     ),

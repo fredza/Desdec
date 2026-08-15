@@ -19,7 +19,7 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         .min_width(360.0)
         .min_height(260.0)
         .show(ctx, |ui| {
-            chosen = contents(app, ctx, ui);
+            chosen = contents(app, ui);
         });
 
     if let Some(command) = chosen {
@@ -29,8 +29,13 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     app.dialogs.command_palette = open;
 }
 
-fn contents(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) -> Option<Command> {
+fn contents(app: &mut DesdecApp, ui: &mut egui::Ui) -> Option<Command> {
     ui.label(app.t(Text::SearchAction));
+    // The keys that drive the list are claimed before the search field is
+    // drawn, so they only ever do one thing: the focused `TextEdit` would
+    // otherwise also act on them — the arrows moving the text cursor, Enter
+    // dropping the focus — while the list moved underneath.
+    let keys = NavigationKeys::take(ui);
     let search_hint = app.t(Text::SearchHint);
     let response =
         ui.add(egui::TextEdit::singleline(&mut app.palette.query).hint_text(search_hint));
@@ -41,7 +46,7 @@ fn contents(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) -> Opti
     ui.add_space(8.0);
 
     let matches = matching_commands(app);
-    let mut chosen = keyboard_selection(app, ctx, &matches);
+    let mut chosen = keyboard_selection(app, &matches, keys);
     egui::ScrollArea::vertical()
         .max_height(ui.available_height().max(160.0))
         .show(ui, |ui| {
@@ -49,13 +54,18 @@ fn contents(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) -> Opti
                 ui.horizontal(|ui| {
                     let selected = index == app.palette.selected;
                     let label = command.label(app.preferences.language);
-                    let enabled = !matches!(command, Command::AiAssistance);
-                    if ui
-                        .add_enabled(enabled, egui::SelectableLabel::new(selected, label))
-                        .clicked()
-                    {
+                    let entry = ui.add_enabled(
+                        command.available(),
+                        egui::SelectableLabel::new(selected, label),
+                    );
+                    if entry.clicked() {
                         chosen = Some(command);
                         app.palette.selected = index;
+                    }
+                    // Keep the highlight visible when the arrows walk past the
+                    // bottom of the list.
+                    if selected && keys.moved() {
+                        entry.scroll_to_me(Some(egui::Align::Center));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(app.shortcut_label(command)).color(MUTED));
@@ -64,6 +74,28 @@ fn contents(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) -> Opti
             }
         });
     chosen
+}
+
+/// The keys the palette handles itself, taken out of the frame's events.
+#[derive(Clone, Copy, Default)]
+struct NavigationKeys {
+    up: bool,
+    down: bool,
+    run: bool,
+}
+
+impl NavigationKeys {
+    fn take(ui: &egui::Ui) -> Self {
+        ui.input_mut(|input| Self {
+            up: input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            down: input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            run: input.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+        })
+    }
+
+    const fn moved(self) -> bool {
+        self.up || self.down
+    }
 }
 
 fn matching_commands(app: &DesdecApp) -> Vec<Command> {
@@ -81,23 +113,211 @@ fn matching_commands(app: &DesdecApp) -> Vec<Command> {
 }
 
 /// Moves the highlight with the arrow keys and runs it with `Enter`.
+///
+/// The highlight only ever lands on a command that can actually run, so
+/// `Enter` always answers something.
 fn keyboard_selection(
     app: &mut DesdecApp,
-    ctx: &egui::Context,
     matches: &[Command],
+    keys: NavigationKeys,
 ) -> Option<Command> {
-    let Some(last) = matches.len().checked_sub(1) else {
+    let runnable: Vec<usize> = matches
+        .iter()
+        .enumerate()
+        .filter(|(_, command)| command.available())
+        .map(|(index, _)| index)
+        .collect();
+    let Some(&first) = runnable.first() else {
         app.palette.selected = 0;
         return None;
     };
 
-    app.palette.selected = app.palette.selected.min(last);
-    if ctx.input(|input| input.key_pressed(egui::Key::ArrowDown)) {
-        app.palette.selected = (app.palette.selected + 1) % matches.len();
+    let position = runnable
+        .iter()
+        .position(|index| *index == app.palette.selected)
+        .unwrap_or_else(|| {
+            app.palette.selected = first;
+            0
+        });
+    let last = runnable.len() - 1;
+    if keys.down {
+        app.palette.selected = runnable[if position == last { 0 } else { position + 1 }];
+    } else if keys.up {
+        app.palette.selected = runnable[position.checked_sub(1).unwrap_or(last)];
     }
-    if ctx.input(|input| input.key_pressed(egui::Key::ArrowUp)) {
-        app.palette.selected = app.palette.selected.checked_sub(1).unwrap_or(last);
+    keys.run.then(|| matches[app.palette.selected])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{app::WorkspaceView, i18n::Language};
+
+    /// One frame carrying a single key press.
+    fn press(key: egui::Key) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        }
     }
-    ctx.input(|input| input.key_pressed(egui::Key::Enter))
-        .then(|| matches[app.palette.selected])
+
+    /// One frame carrying a key held with modifiers.
+    fn shortcut(key: egui::Key, modifiers: egui::Modifiers) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            modifiers,
+            ..Default::default()
+        }
+    }
+
+    /// One frame carrying typed text, as the search field receives it.
+    fn typed(text: &str) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![egui::Event::Text(text.to_owned())],
+            ..Default::default()
+        }
+    }
+
+    /// Runs one whole application frame, not just this window: the palette
+    /// shares its keyboard with the shortcut handling and every other panel,
+    /// and a key one of them claims first never reaches the list.
+    fn frame(ctx: &egui::Context, app: &mut DesdecApp, input: egui::RawInput) {
+        let _ = ctx.run(input, |ctx| app.run_frame(ctx));
+    }
+
+    /// An open palette whose query was typed in, with the search field focused
+    /// as it is in front of a user.
+    fn searching(ctx: &egui::Context, query: &str) -> DesdecApp {
+        let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
+        app.preferences.language = Language::English;
+        app.dialogs.command_palette = true;
+        frame(ctx, &mut app, egui::RawInput::default());
+        for character in query.chars() {
+            frame(ctx, &mut app, typed(&character.to_string()));
+        }
+        assert_eq!(app.palette.query, query, "the query should have been typed");
+        app
+    }
+
+    /// Enter must reach the list even though the search field holds the
+    /// keyboard focus.
+    #[test]
+    fn enter_runs_the_highlighted_command() {
+        let ctx = egui::Context::default();
+        let mut app = searching(&ctx, "disassembly");
+
+        frame(&ctx, &mut app, press(egui::Key::Enter));
+
+        assert!(app.active_view == WorkspaceView::Disassembly);
+        assert!(!app.dialogs.command_palette, "running a command closes it");
+    }
+
+    #[test]
+    fn the_arrows_walk_the_list_before_enter_runs_it() {
+        let ctx = egui::Context::default();
+        let mut app = searching(&ctx, "theme");
+
+        frame(&ctx, &mut app, press(egui::Key::ArrowDown));
+        assert_eq!(app.palette.selected, 1);
+
+        frame(&ctx, &mut app, press(egui::Key::ArrowUp));
+        assert_eq!(app.palette.selected, 0);
+    }
+
+    #[test]
+    fn the_highlight_wraps_around_the_ends_of_the_list() {
+        let ctx = egui::Context::default();
+        let mut app = searching(&ctx, "e");
+        let count = matching_commands(&app).len();
+
+        frame(&ctx, &mut app, press(egui::Key::ArrowUp));
+        assert_eq!(app.palette.selected, count - 1);
+
+        frame(&ctx, &mut app, press(egui::Key::ArrowDown));
+        assert_eq!(app.palette.selected, 0);
+    }
+
+    /// A command that does nothing yet must never be what `Enter` lands on.
+    #[test]
+    fn the_highlight_skips_commands_that_cannot_run() {
+        let ctx = egui::Context::default();
+        let mut app = searching(&ctx, "ai assistance");
+        assert_eq!(matching_commands(&app), vec![Command::AiAssistance]);
+
+        frame(&ctx, &mut app, press(egui::Key::Enter));
+
+        assert!(
+            app.dialogs.command_palette,
+            "an unavailable entry leaves the palette open instead of pretending to act"
+        );
+    }
+
+    /// The path a user actually takes: open the palette with its shortcut,
+    /// type, then press Enter — all of it through the whole frame.
+    #[test]
+    fn the_shortcut_opens_a_palette_that_answers_the_keyboard() {
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
+        app.preferences.language = Language::English;
+
+        frame(&ctx, &mut app, egui::RawInput::default());
+        frame(
+            &ctx,
+            &mut app,
+            shortcut(egui::Key::P, egui::Modifiers::CTRL | egui::Modifiers::SHIFT),
+        );
+        assert!(
+            app.dialogs.command_palette,
+            "the shortcut opens the palette"
+        );
+
+        for character in "strings".chars() {
+            frame(&ctx, &mut app, typed(&character.to_string()));
+        }
+        frame(&ctx, &mut app, press(egui::Key::Enter));
+
+        assert!(app.active_view == WorkspaceView::Strings);
+        assert!(!app.dialogs.command_palette);
+    }
+
+    /// A shortcut must keep working while the search field holds the focus:
+    /// its own combination is how the palette is closed again.
+    #[test]
+    fn the_shortcut_still_closes_the_palette_it_opened() {
+        let ctx = egui::Context::default();
+        let mut app = searching(&ctx, "theme");
+        let combination = shortcut(egui::Key::P, egui::Modifiers::CTRL | egui::Modifiers::SHIFT);
+
+        frame(&ctx, &mut app, combination);
+
+        assert!(!app.dialogs.command_palette);
+    }
+
+    /// Every other command in the list is reachable and does something.
+    #[test]
+    fn walking_the_whole_list_never_stops_on_an_unavailable_command() {
+        let ctx = egui::Context::default();
+        let mut app = searching(&ctx, "");
+        let matches = matching_commands(&app);
+
+        for _ in 0..=matches.len() {
+            assert!(
+                matches[app.palette.selected].available(),
+                "the highlight stopped on an unavailable command"
+            );
+            frame(&ctx, &mut app, press(egui::Key::ArrowDown));
+        }
+    }
 }

@@ -90,28 +90,61 @@ impl WorkspaceView {
     }
 }
 
-/// Modal windows, ordered from the topmost to the oldest.
+const DIALOG_COUNT: usize = 3;
+
+/// Modal windows. Each one is opened by simply setting its flag, from wherever
+/// in the interface; [`Dialogs::track_openings`] turns those flags into an
+/// order so `Escape` closes the window the user is actually looking at.
 #[derive(Default)]
 pub struct Dialogs {
     pub command_palette: bool,
     pub preferences: bool,
     pub about: bool,
+    /// Opening rank of each dialog, the highest being the topmost.
+    ranks: [u64; DIALOG_COUNT],
+    /// Flags as of the previous frame, to spot the ones that just opened.
+    was_open: [bool; DIALOG_COUNT],
+    clock: u64,
 }
 
 impl Dialogs {
-    /// Closes the topmost open dialog and reports whether one was closed.
-    fn dismiss_topmost(&mut self) -> bool {
-        for open in [
-            &mut self.command_palette,
-            &mut self.preferences,
-            &mut self.about,
-        ] {
-            if *open {
-                *open = false;
-                return true;
+    fn flags(&self) -> [bool; DIALOG_COUNT] {
+        [self.command_palette, self.preferences, self.about]
+    }
+
+    fn flag_mut(&mut self, index: usize) -> &mut bool {
+        match index {
+            0 => &mut self.command_palette,
+            1 => &mut self.preferences,
+            _ => &mut self.about,
+        }
+    }
+
+    /// Stamps every dialog opened since the last frame.
+    fn track_openings(&mut self) {
+        let open = self.flags();
+        for (index, opened) in open.iter().enumerate() {
+            if *opened && !self.was_open[index] {
+                self.clock += 1;
+                self.ranks[index] = self.clock;
             }
         }
-        false
+        self.was_open = open;
+    }
+
+    /// Closes the most recently opened dialog and reports whether one was
+    /// closed.
+    fn dismiss_topmost(&mut self) -> bool {
+        let open = self.flags();
+        let topmost = (0..DIALOG_COUNT)
+            .filter(|index| open[*index])
+            .max_by_key(|index| self.ranks[*index]);
+        let Some(index) = topmost else {
+            return false;
+        };
+        *self.flag_mut(index) = false;
+        self.was_open[index] = false;
+        true
     }
 }
 
@@ -258,14 +291,21 @@ impl DesdecApp {
     }
 
     fn process_shortcuts(&mut self, ctx: &egui::Context) {
-        if self.editing_shortcut.is_some() || ctx.wants_keyboard_input() {
+        if self.editing_shortcut.is_some() {
             return;
         }
+        // While a text field has the focus, a bare key belongs to what is being
+        // typed. A combination held with Ctrl or Alt never does, so those keep
+        // working — otherwise the palette, once open, could not be closed with
+        // its own shortcut, and no command could be reached from a filter box.
+        let typing = ctx.wants_keyboard_input();
         let command = Command::ALL.iter().copied().find(|command| {
             self.preferences
                 .shortcuts
                 .shortcut_for(*command)
-                .is_some_and(|shortcut| shortcut.pressed(ctx))
+                .is_some_and(|shortcut| {
+                    (!typing || shortcut.ctrl || shortcut.alt) && shortcut.pressed(ctx)
+                })
         });
         if let Some(command) = command {
             self.run_command(ctx, command);
@@ -310,6 +350,9 @@ impl DesdecApp {
             return;
         }
 
+        // The previous failure belongs to the previous file; leaving it on
+        // screen next to a running analysis reads as this one having failed.
+        self.error = None;
         let repaint = ctx.clone();
         let (sender, receiver) = mpsc::channel();
         self.jobs.inspection = Some(receiver);
@@ -363,6 +406,13 @@ impl DesdecApp {
             Some(Err(TryRecvError::Disconnected)) => self.jobs.inspection = None,
             Some(Err(TryRecvError::Empty)) | None => {}
         }
+    }
+
+    /// Whether a file dialog or an analysis is still running. A large binary
+    /// takes visible time, and a status bar that stays silent about it looks
+    /// like an application that ignored the file.
+    pub const fn is_busy(&self) -> bool {
+        self.jobs.file_picker.is_some() || self.jobs.inspection.is_some()
     }
 
     pub fn close_binary(&mut self) {
@@ -424,10 +474,30 @@ impl DesdecApp {
 
 impl eframe::App for DesdecApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.run_frame(ctx);
+    }
+
+    fn save(&mut self, storage: &mut dyn Storage) {
+        self.persist_preferences(storage);
+    }
+
+    fn auto_save_interval(&self) -> Duration {
+        AUTO_SAVE_INTERVAL
+    }
+}
+
+impl DesdecApp {
+    /// One whole interface frame.
+    ///
+    /// Separate from [`eframe::App::update`] so tests can run the real
+    /// sequence — shortcuts, dialogs, every panel in order — without an
+    /// `eframe::Frame`, which only a live window can provide.
+    pub fn run_frame(&mut self, ctx: &egui::Context) {
         if self.preferences.theme == ThemePreference::System {
             apply_theme(ctx, ThemePreference::System);
         }
         self.process_shortcuts(ctx);
+        self.dialogs.track_openings();
         self.dismiss_dialog_with_escape(ctx);
         self.poll_background_jobs(ctx);
         let dropped_files = ctx.input(|input| input.raw.dropped_files.clone());
@@ -444,14 +514,6 @@ impl eframe::App for DesdecApp {
         ui::about::show(self, ctx);
 
         self.schedule_pending_save(ctx);
-    }
-
-    fn save(&mut self, storage: &mut dyn Storage) {
-        self.persist_preferences(storage);
-    }
-
-    fn auto_save_interval(&self) -> Duration {
-        AUTO_SAVE_INTERVAL
     }
 }
 
@@ -478,29 +540,49 @@ mod tests {
         fn flush(&mut self) {}
     }
 
+    /// Escape closes what is on top, which is whatever was opened last — not a
+    /// fixed favourite among the three windows.
     #[test]
-    fn escape_dismisses_dialogs_from_the_topmost_to_the_oldest() {
-        let mut app = DesdecApp {
-            dialogs: Dialogs {
-                command_palette: true,
-                preferences: true,
-                about: true,
-            },
-            ..Default::default()
-        };
+    fn escape_dismisses_dialogs_from_the_newest_to_the_oldest() {
+        let mut app = DesdecApp::default();
+        app.dialogs.preferences = true;
+        app.dialogs.track_openings();
+        app.dialogs.about = true;
+        app.dialogs.track_openings();
+        app.dialogs.command_palette = true;
+        app.dialogs.track_openings();
 
         assert!(app.dismiss_topmost_dialog());
         assert!(!app.dialogs.command_palette);
-        assert!(app.dialogs.preferences);
-
-        assert!(app.dismiss_topmost_dialog());
-        assert!(!app.dialogs.preferences);
         assert!(app.dialogs.about);
 
         assert!(app.dismiss_topmost_dialog());
         assert!(!app.dialogs.about);
+        assert!(app.dialogs.preferences);
+
+        assert!(app.dismiss_topmost_dialog());
+        assert!(!app.dialogs.preferences);
 
         assert!(!app.dismiss_topmost_dialog());
+    }
+
+    /// Reopening a dialog puts it back on top of the ones already open.
+    #[test]
+    fn a_reopened_dialog_becomes_the_topmost_one() {
+        let mut app = DesdecApp::default();
+        app.dialogs.about = true;
+        app.dialogs.track_openings();
+        app.dialogs.preferences = true;
+        app.dialogs.track_openings();
+
+        app.dialogs.about = false;
+        app.dialogs.track_openings();
+        app.dialogs.about = true;
+        app.dialogs.track_openings();
+
+        assert!(app.dismiss_topmost_dialog());
+        assert!(!app.dialogs.about);
+        assert!(app.dialogs.preferences);
     }
 
     #[test]
