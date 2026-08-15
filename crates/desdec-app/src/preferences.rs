@@ -78,6 +78,8 @@ pub struct Preferences {
     pub ai_assistance: bool,
     pub decompiler: DecompilerPreference,
     pub engine_paths: EnginePaths,
+    /// Whether decompiled functions are kept on disk between runs.
+    pub cache_decompilations: bool,
     pub shortcuts: ShortcutBindings,
 }
 
@@ -92,6 +94,7 @@ impl Default for Preferences {
             ai_assistance: false,
             decompiler: DecompilerPreference::Builtin,
             engine_paths: EnginePaths::default(),
+            cache_decompilations: true,
             shortcuts: ShortcutBindings::default(),
         }
     }

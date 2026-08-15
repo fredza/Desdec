@@ -1,13 +1,13 @@
 use eframe::egui;
 
-use desdec_core::decompiler::Availability;
+use desdec_core::decompiler::{self, Availability};
 
 use crate::{
-    app::DesdecApp,
+    app::{DesdecApp, decompilation_cache_dir},
     commands::{Command, Shortcut},
     i18n::{Language, Text, text},
     preferences::{DecompilerPreference, ThemePreference, accent, success},
-    ui::{ERROR, MUTED},
+    ui::{ERROR, MUTED, format_size},
 };
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
@@ -228,6 +228,43 @@ fn decompiler(app: &mut DesdecApp, ui: &mut egui::Ui) {
             });
         });
     }
+
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(6.0);
+    cache_controls(app, ui);
+}
+
+/// The decompilation cache: what it is for, and how to empty it.
+fn cache_controls(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    let language = app.preferences.language;
+    let label = text(language, Text::CacheDecompilations);
+    ui.checkbox(&mut app.preferences.cache_decompilations, label);
+    ui.small(text(language, Text::CacheInfo));
+
+    let Some(directory) = decompilation_cache_dir() else {
+        return;
+    };
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if ui.button(text(language, Text::ClearCache)).clicked() {
+            app.cache_report = decompiler::cache::clear(&directory)
+                .map_err(|error| error.to_string())
+                .ok();
+        }
+        let held = decompiler::cache::size(&directory);
+        if held > 0 {
+            ui.label(egui::RichText::new(format_size(held)).color(MUTED));
+        }
+    });
+    if let Some(removed) = app.cache_report {
+        ui.small(format!(
+            "{} {removed} {}",
+            text(language, Text::CacheCleared),
+            text(language, Text::CacheEntries)
+        ));
+    }
+    ui.small(egui::RichText::new(directory.display().to_string()).color(MUTED));
 }
 
 fn availability_badge(app: &DesdecApp, ui: &mut egui::Ui, availability: &Availability) {
