@@ -20,6 +20,7 @@ pub struct Preferences {
     pub show_toolbar: bool,
     pub show_tooltips: bool,
     pub persistence_enabled: bool,
+    pub ai_assistance: bool,
     pub shortcuts: ShortcutBindings,
 }
 
@@ -31,6 +32,7 @@ impl Default for Preferences {
             show_toolbar: true,
             show_tooltips: true,
             persistence_enabled: true,
+            ai_assistance: false,
             shortcuts: ShortcutBindings::default(),
         }
     }

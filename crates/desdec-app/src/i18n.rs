@@ -65,6 +65,9 @@ translations! {
     Functions => ["Fonctions", "Functions", "Funciones"],
     Strings => ["Chaînes", "Strings", "Cadenas"],
     Disassembly => ["Désassemblage", "Disassembly", "Desensamblado"],
+    Decompile => ["Décompiler", "Decompile", "Decompilar"],
+    AiAssistance => ["Assistance IA", "AI assistance", "Asistencia de IA"],
+    AiAssistanceUnavailable => ["Bientôt disponible : choisissez alors un fournisseur IA dans les préférences.", "Coming soon: choose an AI provider in preferences then.", "Próximamente: elija entonces un proveedor de IA en preferencias."],
     Patches => ["Correctifs", "Patches", "Parches"],
     StartAnalysis => [
         "Commencer une analyse",
@@ -103,16 +106,6 @@ translations! {
         "Abra un binario antes de utilizar esta vista.",
     ],
     ComingSoon => ["en préparation", "coming soon", "en preparación"],
-    FunctionsInfo => [
-        "La détection de fonctions suivra la lecture des sections exécutables.",
-        "Function detection will follow executable-section parsing.",
-        "La detección de funciones seguirá al análisis de las secciones ejecutables.",
-    ],
-    DisassemblyInfo => [
-        "Le désassemblage x86-64 sera ajouté après l’adressage virtuel et les sections.",
-        "x86-64 disassembly will follow virtual addressing and section support.",
-        "El desensamblado x86-64 se añadirá tras el direccionamiento virtual y las secciones.",
-    ],
     PatchesInfo => [
         "Les correctifs seront prévisualisés et exportés vers une copie du fichier.",
         "Patches will be previewed and exported to a copy of the file.",
@@ -264,6 +257,11 @@ translations! {
         "Readable strings often reveal the paths, messages and URLs a program uses.",
         "Las cadenas legibles suelen revelar rutas, mensajes y URL que utiliza el programa.",
     ],
+    FunctionSymbolsHelp => ["Les fonctions nommées viennent des tables de symboles. Les fonctions anonymes seront reconnues avec le désassembleur.", "Named functions come from symbol tables. Anonymous functions will be found by the disassembler.", "Las funciones con nombre proceden de las tablas de símbolos. El desensamblador reconocerá las funciones anónimas."],
+    NoFunctionSymbols => ["Aucun symbole de fonction lisible pour ce format ou ce fichier.", "No readable function symbols for this format or file.", "No hay símbolos de función legibles para este formato o archivo."],
+    SymbolOrigin => ["Origine", "Origin", "Origen"],
+    Imported => ["importée", "imported", "importada"],
+    Defined => ["définie", "defined", "definida"],
     MappedSize => ["Taille en mémoire", "Mapped size", "Tamaño en memoria"],
     WordSize => ["Taille de mot", "Word size", "Tamaño de palabra"],
     ByteOrder => ["Ordre des octets", "Byte order", "Orden de bytes"],

@@ -49,7 +49,11 @@ fn contents(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) -> Opti
                 ui.horizontal(|ui| {
                     let selected = index == app.palette.selected;
                     let label = command.label(app.preferences.language);
-                    if ui.selectable_label(selected, label).clicked() {
+                    let enabled = !matches!(command, Command::AiAssistance);
+                    if ui
+                        .add_enabled(enabled, egui::SelectableLabel::new(selected, label))
+                        .clicked()
+                    {
                         chosen = Some(command);
                         app.palette.selected = index;
                     }

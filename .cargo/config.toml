@@ -1,0 +1,16 @@
+# Cross-compilation. Aucun linker n'est déclaré ici : les cibles non natives
+# passent par cargo-zigbuild (Zig fournit glibc et libSystem) ou cargo-xwin
+# (CRT et SDK Windows mis en cache dans ~/.cache/cargo-xwin).
+#
+#   RUSTFLAGS= cargo zigbuild --target aarch64-unknown-linux-gnu
+#   RUSTFLAGS= cargo zigbuild --target aarch64-apple-darwin      # desdec-core seul
+#   RUSTFLAGS= cargo xwin build --target x86_64-pc-windows-msvc
+#   RUSTFLAGS= cargo xwin build --target aarch64-pc-windows-msvc
+#
+# Le `RUSTFLAGS=` initial est nécessaire : ~/.zshrc exporte
+# `-C target-cpu=native`, qui s'appliquerait tel quel aux cibles ARM et écrase
+# toute clé `rustflags` de ce fichier.
+#
+# desdec-app ne peut pas être lié pour macOS depuis cette machine : eframe et
+# rfd réclament AppKit, Metal et CoreGraphics, que Zig ne fournit pas. Cela
+# demanderait un SDK Apple via osxcross.
