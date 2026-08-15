@@ -20,16 +20,6 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                     ui.label(app.t(Text::ReadyToOpen));
                 }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mode = app.tooltip(ui.button(app.mode_label()), app.analysis_mode_label());
-                    if mode.clicked() {
-                        app.expert_mode = !app.expert_mode;
-                    }
-                    // Patch state belongs here once patches exist, and only
-                    // when there are any: a permanent "no patches applied"
-                    // reports on a feature that does not exist yet, and would
-                    // keep saying nothing once it does.
-                });
             });
         });
 }

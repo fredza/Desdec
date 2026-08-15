@@ -26,8 +26,8 @@ auditable.
 
 Créer **Desdec**, un outil open source de désassemblage, d'analyse statique,
 de pseudo-décompilation et de patching pédagogique. Il devra fonctionner sur
-Linux, macOS et Windows, conserver une empreinte légère et proposer deux
-niveaux d'usage : guidé pour débuter, expert pour approfondir.
+Linux, macOS et Windows, conserver une empreinte légère et proposer une
+analyse détaillée.
 
 ### Capacités ciblées
 
@@ -165,7 +165,7 @@ niveaux d'usage : guidé pour débuter, expert pour approfondir.
 - Commandes : un registre unique alimente la palette (`Ctrl+Maj+P`), les
   boutons, les raccourcis et la page Préférences > Raccourcis. Les conventions
   par défaut couvrent l’ouverture, la fermeture, la navigation, les vues,
-  l’aide et le mode guidé/expert ; toute commande est aussi disponible dans la
+  l’aide ; toute commande est aussi disponible dans la
   palette.
 - Personnalisation : les raccourcis peuvent être capturés au clavier, remis à
   zéro et réattribués sans doublon. Lorsqu’une combinaison est réaffectée,
@@ -478,10 +478,8 @@ fichier.
 
 ### Titre
 
-« Desdec / analyse guidée » devient « Desdec / analyse experte » dès que le mode
-expert est choisi depuis la barre d'état. Le libellé provient d'un seul
-accesseur, `analysis_mode_label`, également utilisé par l'infobulle du bouton de
-bascule : les deux ne peuvent plus se contredire. Traduit dans les trois langues.
+La barre supérieure décrivait auparavant un basculement de niveau d’analyse.
+L’interface affiche désormais directement les informations détaillées.
 
 ### Occupation de l'espace
 
@@ -505,7 +503,6 @@ disponible pour qu'ils s'alignent au lieu de flotter à des largeurs différente
   le cadre « Fichier actif », qui répétait sinon presque les mêmes informations.
   L'empreinte SHA-256 est placée sous la grille plutôt que dedans, ses
   soixante-quatre caractères déformant sinon la colonne.
-- Le mode guidé conserve une colonne unique et l'invitation à passer en expert.
 
 ### Vérification
 
@@ -558,3 +555,28 @@ suivent le mode dans les trois langues.
   tests) et `cargo clippy --workspace --all-targets -- -D warnings` réussis.
 - Suite : couvrir des fixtures ELF dédiées, puis ajouter les exports/imports
   PE et les symboles Mach-O avant de bâtir le désassembleur.
+
+## 2026-08-15 — analyse détaillée, navigation et préparation ARM64
+
+- Décision UX : le niveau guidé a été retiré. La palette de commandes est
+  activable depuis la barre d'outils ; les informations d'analyse détaillée sont
+  directement visibles. L'entropie est présentée sur huit repères colorés du
+  vert au rouge, avec avertissement explicite au-delà de 7.
+- Navigation : les vues Fonctions, Désassemblage, Pseudo-code et Chaînes sont
+  reliées par l'adresse d'instruction. La liste des fonctions donne taille et
+  blocs ; le graphe de flot affiche les instructions au survol. Les références
+  de chaînes peuvent ouvrir l'instruction correspondante. Toute navigation
+  vers le désassemblage centre la ligne et la fait clignoter en orange durant
+  trois secondes, sans défilement récurrent.
+- ARM64 : le cœur utilise maintenant Capstone uniquement pour ARM64, tandis que
+  iced-x86 reste le décodeur x86/x86-64. Les exécutables ARM64, dont les
+  Mach-O Apple Silicon, produisent donc des instructions avec adresses, octets
+  et mnémoniques. Le décodage est limité à 100 000 instructions comme les
+  autres architectures.
+- Vérifications : `cargo check -p desdec-app`, les tests ciblés des références
+  de chaînes et le test de décodage ARM64 ont réussi ; `git diff --check` est
+  propre.
+- Relais : l'extraction des symboles/fonctions Mach-O et un pseudo-code ARM64
+  restent à réaliser. `analysis/symbols.rs` renvoie encore une liste vide pour
+  Mach-O ; ne pas présenter la vue Fonctions Apple Silicon comme complète tant
+  que cette étape n'est pas ajoutée.

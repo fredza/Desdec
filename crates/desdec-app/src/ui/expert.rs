@@ -1,8 +1,7 @@
-//! Panels shown only in expert mode.
+//! Detailed binary-analysis panels.
 //!
-//! Guided mode answers "what is this file?"; expert mode answers the questions
-//! that come next — how it is mapped, what it depends on, and what the compiler
-//! and linker did to make it harder to exploit.
+//! They answer how the image is mapped, what it depends on, and what the
+//! compiler and linker did to make it harder to exploit.
 //!
 //! The pieces are exposed one by one rather than as a single block, so
 //! [`crate::ui::views`] can place them across its two-column layout.

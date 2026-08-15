@@ -121,23 +121,20 @@ mod tests {
 
         let ctx = egui::Context::default();
         for view in WorkspaceView::ALL {
-            for expert_mode in [false, true] {
-                for language in crate::i18n::Language::ALL {
-                    let mut app = DesdecApp::for_test(Some(analysis.clone()), *view);
-                    app.expert_mode = expert_mode;
-                    app.preferences.language = *language;
+            for language in crate::i18n::Language::ALL {
+                let mut app = DesdecApp::for_test(Some(analysis.clone()), *view);
+                app.preferences.language = *language;
 
-                    for width in layout_widths() {
-                        let output = ctx.run(input_of_width(width), |ctx| {
-                            views::show_central_panel(&mut app, ctx);
-                            status_bar::show(&mut app, ctx);
-                        });
-                        assert!(
-                            !output.shapes.is_empty(),
-                            "{} drew nothing at width {width}",
-                            view.icon()
-                        );
-                    }
+                for width in layout_widths() {
+                    let output = ctx.run(input_of_width(width), |ctx| {
+                        views::show_central_panel(&mut app, ctx);
+                        status_bar::show(&mut app, ctx);
+                    });
+                    assert!(
+                        !output.shapes.is_empty(),
+                        "{} drew nothing at width {width}",
+                        view.icon()
+                    );
                 }
             }
         }

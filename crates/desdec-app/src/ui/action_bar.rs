@@ -6,7 +6,6 @@ use crate::{
     i18n::Text,
     icons::{self, Icon},
     preferences::accent,
-    ui::MUTED,
 };
 
 const HEIGHT: f32 = 48.0;
@@ -61,9 +60,6 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                         .size(20.0),
                 );
                 ui.strong("Desdec");
-                ui.label(
-                    egui::RichText::new(format!("/ {}", app.analysis_mode_label())).color(MUTED),
-                );
 
                 if app.preferences.show_toolbar {
                     ui.separator();
@@ -97,7 +93,7 @@ fn toolbar(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
                 ui,
                 *icon,
                 app.optional_command_tooltip(*command),
-                false,
+                matches!(command, Command::CommandPalette) && app.dialogs.command_palette,
                 accent,
             )
             .clicked()
