@@ -185,11 +185,12 @@ fn decompiler(app: &mut DesdecApp, ui: &mut egui::Ui) {
             ui.set_width(ui.available_width());
             let availability = app.engine_availability(engine);
             ui.horizontal(|ui| {
-                // An engine that cannot run must not be selectable: choosing
-                // it would leave the pseudo-code view permanently empty.
-                ui.add_enabled_ui(availability.is_usable(), |ui| {
-                    ui.radio_value(&mut app.preferences.decompiler, choice, engine.label());
-                });
+                // Selectable even when absent: the choice is recorded, the
+                // status below says what is missing, and the pseudo-code view
+                // repeats it with the command that installs it. Disabling the
+                // option here would also have contradicted the command
+                // palette, which lists every command.
+                ui.radio_value(&mut app.preferences.decompiler, choice, engine.label());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     availability_badge(app, ui, &availability);
                 });

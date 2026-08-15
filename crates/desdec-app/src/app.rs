@@ -286,6 +286,36 @@ impl DesdecApp {
             .map_or_else(|| self.t(Text::NoShortcut).to_owned(), Shortcut::label)
     }
 
+    /// Whether the command would do something if run right now.
+    ///
+    /// The palette lists every command, so the whole application is visible
+    /// from one place, but an entry that cannot act must say so rather than
+    /// swallow a keystroke: a command that answers nothing reads as broken.
+    #[must_use]
+    pub fn can_run(&self, command: Command) -> bool {
+        if !command.implemented() {
+            return false;
+        }
+        if command.needs_a_binary() && self.analysis.is_none() {
+            return false;
+        }
+        if command.needs_patches() && self.patches.is_empty() {
+            return false;
+        }
+        // Choosing an engine always does something — it records the choice —
+        // even when that engine is not installed yet. Detecting one spawns a
+        // process, and this is asked for every command on every frame the
+        // palette is open, so nothing here probes; the pseudo-code view
+        // reports a missing engine, with the command that installs it.
+        true
+    }
+
+    fn set_decompiler(&mut self, choice: DecompilerPreference) {
+        self.preferences.decompiler = choice;
+        // The shown text belongs to the previous engine.
+        self.external = ExternalDecompilation::default();
+    }
+
     pub fn run_command(&mut self, ctx: &egui::Context, command: Command) {
         match command {
             Command::OpenBinary => self.choose_binary(ctx),
@@ -306,6 +336,26 @@ impl DesdecApp {
             Command::Preferences => self.dialogs.preferences = true,
             Command::About => self.dialogs.about = true,
             Command::Overview => self.select_view(WorkspaceView::Overview),
+            Command::Segments => self.select_view(WorkspaceView::Segments),
+            Command::ExportPatched => {
+                self.select_view(WorkspaceView::Patches);
+                self.export_patched_copy(ctx);
+            }
+            Command::DiscardPatches => {
+                self.patches.clear();
+                self.patch_editor = None;
+                self.export_report = None;
+            }
+            Command::DecompilerBuiltin => self.set_decompiler(DecompilerPreference::Builtin),
+            Command::DecompilerRzGhidra => self.set_decompiler(DecompilerPreference::RzGhidra),
+            Command::DecompilerRetDec => self.set_decompiler(DecompilerPreference::RetDec),
+            Command::ToggleDecompilationCache => {
+                self.preferences.cache_decompilations = !self.preferences.cache_decompilations;
+            }
+            Command::ClearDecompilationCache => {
+                self.cache_report = decompilation_cache_dir()
+                    .and_then(|directory| decompiler::cache::clear(&directory).ok());
+            }
             Command::Disassembly => self.select_view(WorkspaceView::Disassembly),
             Command::Decompile => self.select_view(WorkspaceView::Decompile),
             Command::AiAssistance => {}

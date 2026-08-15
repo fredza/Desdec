@@ -153,6 +153,8 @@ translations! {
         "Un motor externo tarda segundos por función, sobre todo en arrancar. Las respuestas se conservan y reutilizan mientras el binario no cambie: su huella SHA-256 forma parte de la clave.",
     ],
     ClearCache => ["Vider le cache", "Clear the cache", "Vaciar la caché"],
+    RzGhidraEngine => ["rizin + rz-ghidra", "rizin + rz-ghidra", "rizin + rz-ghidra"],
+    RetDecEngine => ["RetDec", "RetDec", "RetDec"],
     CacheCleared => ["Cache vidé :", "Cache cleared:", "Caché vaciada:"],
     CacheEntries => ["entrées", "entries", "entradas"],
     DecompilerFailed => ["Le décompilateur a échoué :", "The decompiler failed:", "El decompilador falló:"],
