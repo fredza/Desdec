@@ -30,12 +30,12 @@ pub fn show(
     instruction_attention: &mut Option<(u64, f64)>,
     patches: &Patches,
     language: Language,
-) -> Option<u64> {
+) -> Action {
     if analysis.instructions.is_empty() {
         ui.label(egui::RichText::new(text(language, Text::NoDisassembly)).color(MUTED));
-        return None;
+        return Action::default();
     }
-    let mut edit = None;
+    let mut action = Action::default();
     ui.horizontal(|ui| {
         let selected = *selected_instruction;
         let patchable = selected
@@ -45,7 +45,7 @@ pub fn show(
             egui::Button::new(text(language, Text::EditInstruction)),
         );
         if button.clicked() {
-            edit = selected;
+            action.edit = selected;
         }
         if selected.is_some() && !patchable {
             ui.label(egui::RichText::new(text(language, Text::NotPatchable)).color(MUTED));
@@ -67,7 +67,7 @@ pub fn show(
             pending_scroll,
             attention,
         );
-        instructions(
+        action.inspect = instructions(
             &mut columns[0],
             analysis,
             selected_instruction,
@@ -81,7 +81,16 @@ pub fn show(
     if *pending_scroll == scroll_target {
         *pending_scroll = None;
     }
-    edit
+    action
+}
+
+/// What the reader asked of the disassembly this frame.
+#[derive(Default)]
+pub struct Action {
+    /// An instruction whose bytes are to be edited.
+    pub edit: Option<u64>,
+    /// An instruction whose operand is to be explained.
+    pub inspect: Option<u64>,
 }
 
 #[expect(
@@ -97,7 +106,8 @@ fn instructions(
     attention: Option<u64>,
     patches: &Patches,
     language: Language,
-) {
+) -> Option<u64> {
+    let mut inspect = None;
     decompile::ensure_selected_instruction(analysis, selected_instruction);
     egui::ScrollArea::both()
         .id_salt("instructions")
@@ -166,6 +176,15 @@ fn instructions(
                                 .sense(egui::Sense::click()),
                             )
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        // The right button asks what the operand designates,
+                        // which is the question an address in a listing
+                        // provokes and which no amount of hovering answers.
+                        assembly.context_menu(|ui| {
+                            if ui.button(text(language, Text::InspectOperand)).clicked() {
+                                inspect = Some(instruction.address);
+                                ui.close_menu();
+                            }
+                        });
                         if address.clicked() || assembly.clicked() {
                             *selected_instruction = Some(instruction.address);
                             *pending_scroll = Some(instruction.address);
@@ -178,4 +197,5 @@ fn instructions(
                     }
                 });
         });
+    inspect
 }

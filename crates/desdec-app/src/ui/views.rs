@@ -84,7 +84,7 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
             functions::show(ui, analysis, &mut app.selected_function, language)
         }
         WorkspaceView::Disassembly => {
-            let edit = disassembly::show(
+            let action = disassembly::show(
                 ui,
                 analysis,
                 &mut app.selected_instruction,
@@ -93,7 +93,11 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 &app.patches,
                 language,
             );
-            if let Some(address) = edit {
+            if let Some(address) = action.inspect {
+                app.inspecting_operand = Some(address);
+                app.dialogs.operand = true;
+            }
+            if let Some(address) = action.edit {
                 // Editing happens where the patches live, so the pending list
                 // and the export are in front of the user straight away.
                 if patches_view::open_editor(app, address) {

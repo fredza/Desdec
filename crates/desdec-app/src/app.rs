@@ -91,7 +91,7 @@ impl WorkspaceView {
     }
 }
 
-const DIALOG_COUNT: usize = 4;
+const DIALOG_COUNT: usize = 5;
 
 /// Modal windows. Each one is opened by simply setting its flag, from wherever
 /// in the interface; [`Dialogs::track_openings`] turns those flags into an
@@ -103,6 +103,8 @@ pub struct Dialogs {
     pub about: bool,
     /// Explanation of one linked library.
     pub library: bool,
+    /// What an instruction's operand designates.
+    pub operand: bool,
     /// Opening rank of each dialog, the highest being the topmost.
     ranks: [u64; DIALOG_COUNT],
     /// Flags as of the previous frame, to spot the ones that just opened.
@@ -117,6 +119,7 @@ impl Dialogs {
             self.preferences,
             self.about,
             self.library,
+            self.operand,
         ]
     }
 
@@ -125,7 +128,8 @@ impl Dialogs {
             0 => &mut self.command_palette,
             1 => &mut self.preferences,
             2 => &mut self.about,
-            _ => &mut self.library,
+            3 => &mut self.library,
+            _ => &mut self.operand,
         }
     }
 
@@ -225,6 +229,10 @@ pub struct DesdecApp {
     pub library_notes: crate::libraries::Catalogue,
     /// The library whose explanation is on screen.
     pub explaining_library: Option<String>,
+    /// The instruction whose operand is being inspected.
+    pub inspecting_operand: Option<u64>,
+    /// The bytes of the open file, kept for reading what an operand points at.
+    pub file_bytes: Vec<u8>,
     /// Text produced by the selected external decompiler.
     pub external: ExternalDecompilation,
     /// What was found for each engine, and for which configured path.
@@ -465,6 +473,9 @@ impl DesdecApp {
                 self.analysis = Some(analysis);
                 self.error = None;
                 self.reset_file_state();
+                // Kept so an operand's target can be read without going back
+                // to the disk on every inspection.
+                self.file_bytes = std::fs::read(path).unwrap_or_default();
             }
             Err(error) => {
                 self.error = Some(format!(
@@ -753,6 +764,8 @@ impl DesdecApp {
         self.selected_string = None;
         self.patches.clear();
         self.patch_editor = None;
+        self.inspecting_operand = None;
+        self.file_bytes.clear();
         self.export_report = None;
         self.external = ExternalDecompilation::default();
     }
@@ -898,6 +911,7 @@ impl DesdecApp {
         ui::preferences_window::show(self, ctx);
         ui::about::show(self, ctx);
         ui::library_note::show(self, ctx);
+        ui::operand_note::show(self, ctx);
 
         self.schedule_pending_save(ctx);
     }
