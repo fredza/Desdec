@@ -260,15 +260,29 @@ mod tests {
     /// [`PARALLEL_THRESHOLD`] happens to sit.
     #[test]
     fn both_paths_produce_the_same_analysis() {
-        // A real binary as well as the fixtures: the fixtures carry no symbols
-        // and few strings, so on their own they would let a whole part of the
-        // analysis differ between the paths unnoticed.
+        // A real binary as well as the fixtures: the fixtures carry almost
+        // nothing, so on their own they would let a whole part of the analysis
+        // differ between the paths unnoticed.
         let real = std::fs::read(std::env::current_exe().expect("the test binary has a path"))
             .expect("the test binary is readable");
+        let analysed = analyse(&real);
+        // Strings are read straight from the bytes, so a real binary yields
+        // them whatever executable format the platform uses.
         assert!(
-            !analyse(&real).symbols.is_empty(),
-            "the reference binary must exercise every part of the analysis"
+            !analysed.strings.is_empty(),
+            "the reference binary must exercise the analysis"
         );
+        // Symbols are extracted from ELF only — `symbols::extract` returns
+        // nothing for PE and Mach-O until those parsers land — so this is
+        // asserted where it holds instead of being demanded everywhere. The
+        // comparison below still covers the symbol list on every platform;
+        // it is simply empty on two of them.
+        if cfg!(target_os = "linux") {
+            assert!(
+                !analysed.symbols.is_empty(),
+                "an ELF host must reach the symbol table"
+            );
+        }
 
         let path = Path::new("test.bin");
         for bytes in [
