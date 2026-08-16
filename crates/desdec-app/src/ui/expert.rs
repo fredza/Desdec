@@ -6,7 +6,7 @@
 //! The pieces are exposed one by one rather than as a single block, so
 //! [`crate::ui::views`] can place them across its two-column layout.
 
-use desdec_core::{Analysis, Hardening, Relro, hash};
+use desdec_core::{Analysis, Confidence, Hardening, Relro, hash};
 use eframe::egui;
 
 use crate::{
@@ -21,6 +21,8 @@ pub fn identity_rows(ui: &mut egui::Ui, analysis: &Analysis, language: Language)
     ui.strong(text(language, Text::Type));
     ui.label(details.file_kind.label());
     ui.end_row();
+
+    source_language_row(ui, analysis, language);
 
     if details.bits > 0 {
         ui.strong(text(language, Text::WordSize));
@@ -49,6 +51,68 @@ pub fn identity_rows(ui: &mut egui::Ui, analysis: &Analysis, language: Language)
         ui.label(format!("{timestamp}"))
             .on_hover_text(text(language, Text::TimestampHint));
         ui.end_row();
+    }
+}
+
+/// The language the binary was built from, with what says so.
+///
+/// A compiled file states no such field, so this reports evidence rather than
+/// a verdict: the finding names what was found, and how firmly it points. A
+/// file that says nothing is reported as saying nothing — the alternative
+/// would be to guess, and a guess dressed as a finding is worse than a blank.
+fn source_language_row(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
+    ui.strong(text(language, Text::SourceLanguage));
+    let Some(headline) = analysis.languages.first() else {
+        ui.label(
+            egui::RichText::new(text(language, Text::LanguageUnknown))
+                .color(MUTED)
+                .italics(),
+        )
+        .on_hover_text(text(language, Text::LanguageUnknownHint));
+        ui.end_row();
+        return;
+    };
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(headline.language.label()).strong());
+        ui.label(
+            egui::RichText::new(text(language, confidence_label(headline.confidence)))
+                .small()
+                .color(MUTED),
+        )
+        .on_hover_text(&headline.evidence);
+
+        // Anything else the file points at. A Rust or Go program carries a C
+        // runtime, so a second entry is normal rather than a contradiction.
+        for other in analysis.languages.iter().skip(1) {
+            ui.label(
+                egui::RichText::new(format!("· {}", other.language.label()))
+                    .small()
+                    .color(MUTED),
+            )
+            .on_hover_text(&other.evidence);
+        }
+    });
+    ui.end_row();
+
+    // The compiler's own version, when the file records it: that is the file's
+    // word, and it dates the build more reliably than a timestamp.
+    if let Some(toolchain) = analysis
+        .languages
+        .iter()
+        .find_map(|found| found.toolchain.as_ref())
+    {
+        ui.strong(text(language, Text::Toolchain));
+        ui.label(egui::RichText::new(toolchain).monospace());
+        ui.end_row();
+    }
+}
+
+const fn confidence_label(confidence: Confidence) -> Text {
+    match confidence {
+        Confidence::Certain => Text::EvidenceCertain,
+        Confidence::Likely => Text::EvidenceLikely,
+        Confidence::Possible => Text::EvidencePossible,
     }
 }
 

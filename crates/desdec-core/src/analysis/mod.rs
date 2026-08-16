@@ -23,12 +23,14 @@ pub mod details;
 pub mod disassembly;
 pub mod entropy;
 pub mod hash;
+pub mod language;
 pub mod sections;
 pub mod strings;
 pub mod symbols;
 
 pub use details::{BinaryDetails, FileKind, Hardening, Relro, Segment};
 pub use disassembly::{Instruction, decode_one};
+pub use language::{Confidence, LanguageEvidence, SourceLanguage};
 pub use sections::{Permissions, Section};
 pub use strings::{ExtractedString, StringEncoding};
 pub use symbols::Symbol;
@@ -52,6 +54,9 @@ pub struct Analysis {
     pub instructions: Vec<Instruction>,
     /// Loader-level facts: file kind, mapping, dependencies, hardening.
     pub details: BinaryDetails,
+    /// What the file says about the language it was built from, strongest
+    /// evidence first. Empty when it says nothing.
+    pub languages: Vec<LanguageEvidence>,
     /// SHA-256 of the file, and `None` when only part of it was read — a
     /// digest of a prefix would be mistaken for the file's identity.
     pub sha256: Option<[u8; 32]>,
@@ -162,6 +167,7 @@ fn sequentially(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
     let instructions = disassembly::decode(bytes, format, architecture, &sections);
     let mut details = details::parse(bytes, format);
     details::note_stack_canary(&mut details, &strings);
+    let languages = language::detect(bytes, &sections, &symbols, &details);
 
     Analysis {
         summary: summary(path, size, bytes),
@@ -171,6 +177,7 @@ fn sequentially(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
         symbols,
         instructions,
         details,
+        languages,
         sha256: (!truncated).then(|| hash::sha256(bytes)),
         entropy: entropy::shannon(bytes),
         analysed_bytes: bytes.len() as u64,
@@ -207,14 +214,19 @@ fn concurrently(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
 
         let (strings, details) = join(described);
         let (sections, instructions) = join(code);
+        let symbols = join(symbols);
+        // Reads the three results above, so it waits for them rather than
+        // running as a seventh thread.
+        let languages = language::detect(bytes, &sections, &symbols, &details);
         Analysis {
             summary: summary(path, size, bytes),
             entry_point: join(entry_point),
             sections,
             strings,
-            symbols: join(symbols),
+            symbols,
             instructions,
             details,
+            languages,
             sha256: join(digest),
             entropy: join(entropy),
             analysed_bytes: bytes.len() as u64,
