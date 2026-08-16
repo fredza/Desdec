@@ -187,7 +187,12 @@ fn producer(text: &str) -> Option<LanguageEvidence> {
 fn from_producer_strings(file: &[u8], found: &mut Vec<LanguageEvidence>) {
     // A Rust binary bakes the compiler's own source path into its panic
     // messages, whatever the executable format, and it survives stripping.
-    if let Some(version) = scan_for(file, b"rustc version ") {
+    //
+    // The banner is only quoted when a version number really follows it. A
+    // scanner finds its own patterns when pointed at itself — Desdec analysing
+    // its own binary read back the literal `rustc version ` from this very
+    // function, and quoted whatever the linker had placed after it.
+    if let Some(version) = scan_for(file, b"rustc version ").filter(followed_by_a_version) {
         found.push(LanguageEvidence {
             language: SourceLanguage::Rust,
             confidence: Confidence::Certain,
@@ -202,7 +207,7 @@ fn from_producer_strings(file: &[u8], found: &mut Vec<LanguageEvidence>) {
             toolchain: None,
         });
     }
-    if let Some(version) = scan_for(file, b"go1.") {
+    if let Some(version) = scan_for(file, b"go1.").filter(followed_by_a_version) {
         found.push(LanguageEvidence {
             language: SourceLanguage::Go,
             confidence: Confidence::Possible,
@@ -210,6 +215,18 @@ fn from_producer_strings(file: &[u8], found: &mut Vec<LanguageEvidence>) {
             toolchain: Some(version),
         });
     }
+}
+
+/// Whether a producer banner is followed by something shaped like a version.
+///
+/// Without this the banner alone is enough to quote whatever bytes follow it,
+/// which is how a scanner ends up reporting its own search patterns.
+fn followed_by_a_version(text: &String) -> bool {
+    // A version number, wherever it sits: `1.97.1` after a space, or the
+    // `1.22` glued straight onto `go1.`.
+    text.as_bytes()
+        .windows(3)
+        .any(|window| window[0].is_ascii_digit() && window[1] == b'.' && window[2].is_ascii_digit())
 }
 
 /// Finds `needle` near either end of the file and returns the printable run it
@@ -454,6 +471,40 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].language, SourceLanguage::Cpp);
         assert_eq!(found[0].confidence, Confidence::Certain);
+    }
+
+    /// A banner with nothing version-shaped after it is not evidence.
+    ///
+    /// This is how Desdec read its own search patterns back out of its own
+    /// binary: the literal `rustc version ` sits in this module, and the
+    /// linker placed unrelated text after it.
+    #[test]
+    fn a_banner_without_a_version_after_it_is_not_quoted() {
+        assert!(!followed_by_a_version(
+            &"rustc version /rustc/compiler source paths (/rustc/".to_owned()
+        ));
+        assert!(followed_by_a_version(
+            &"rustc version 1.97.1 (8bab26f4f 2026-07-14)".to_owned()
+        ));
+        assert!(followed_by_a_version(&"go1.22.3".to_owned()));
+    }
+
+    /// Analysing this very binary must not quote the patterns this module
+    /// searches for. A scanner pointed at itself finds itself.
+    #[test]
+    fn the_scanner_does_not_report_its_own_patterns() {
+        let path = std::env::current_exe().expect("the test binary has a path");
+        let analysis = crate::analyse_path(&path).expect("analysable");
+
+        for found in &analysis.languages {
+            let Some(toolchain) = &found.toolchain else {
+                continue;
+            };
+            assert!(
+                followed_by_a_version(toolchain),
+                "quoted a banner with no version in it: {toolchain}"
+            );
+        }
     }
 
     /// The end-to-end check, on a file whose language is known for certain:
