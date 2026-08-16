@@ -272,17 +272,13 @@ mod tests {
             !analysed.strings.is_empty(),
             "the reference binary must exercise the analysis"
         );
-        // Symbols are extracted from ELF only — `symbols::extract` returns
-        // nothing for PE and Mach-O until those parsers land — so this is
-        // asserted where it holds instead of being demanded everywhere. The
-        // comparison below still covers the symbol list on every platform;
-        // it is simply empty on two of them.
-        if cfg!(target_os = "linux") {
-            assert!(
-                !analysed.symbols.is_empty(),
-                "an ELF host must reach the symbol table"
-            );
-        }
+        // Symbols are now read from all three formats, so this holds on every
+        // platform the tests run on. It was briefly conditional on Linux,
+        // while PE and Mach-O returned nothing.
+        assert!(
+            !analysed.symbols.is_empty(),
+            "the reference binary must reach the symbol table"
+        );
 
         let path = Path::new("test.bin");
         for bytes in [
