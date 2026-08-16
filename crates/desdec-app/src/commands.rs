@@ -1,7 +1,10 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use crate::i18n::{Language, Text, text};
+use crate::{
+    app::WorkspaceView,
+    i18n::{Language, Text, text},
+};
 
 /// Declares the command registry once.
 ///
@@ -118,6 +121,26 @@ impl Command {
     #[must_use]
     pub const fn needs_patches(self) -> bool {
         matches!(self, Self::ExportPatched | Self::DiscardPatches)
+    }
+
+    /// The workspace view this command opens, if it opens one.
+    ///
+    /// Declared rather than discovered by running the command: a test that
+    /// ran every command to see where each one led also ran the ones that
+    /// open a file dialog, which put seven of them on the user's screen.
+    #[must_use]
+    pub const fn opens_view(self) -> Option<WorkspaceView> {
+        Some(match self {
+            Self::Overview => WorkspaceView::Overview,
+            Self::Segments => WorkspaceView::Segments,
+            Self::Functions => WorkspaceView::Functions,
+            Self::Strings => WorkspaceView::Strings,
+            Self::Disassembly => WorkspaceView::Disassembly,
+            Self::Decompile => WorkspaceView::Decompile,
+            // Exporting shows the patches it is about to write.
+            Self::Patches | Self::ExportPatched => WorkspaceView::Patches,
+            _ => return None,
+        })
     }
 }
 
