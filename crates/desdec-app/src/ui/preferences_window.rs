@@ -236,6 +236,43 @@ fn decompiler(app: &mut DesdecApp, ui: &mut egui::Ui) {
     cache_controls(app, ui);
 }
 
+/// Turning the library explanations on, and pointing at the file that holds
+/// the user's own.
+fn library_explanations(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    let language = app.preferences.language;
+    let label = text(language, Text::ExplainLibraries);
+    ui.checkbox(&mut app.preferences.explain_libraries, label);
+    ui.small(text(language, Text::ExplainLibrariesInfo));
+
+    let Some(path) = crate::libraries::user_catalogue_path() else {
+        return;
+    };
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if path.exists() {
+            // An edit should take effect without restarting the application.
+            if ui.button(text(language, Text::ReloadLibraryFile)).clicked() {
+                app.library_notes.reload();
+            }
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} {}",
+                    app.library_notes.user_entries(),
+                    text(language, Text::LibraryFileEntries)
+                ))
+                .color(MUTED),
+            );
+        } else if ui.button(text(language, Text::CreateLibraryFile)).clicked() {
+            // Written with its format shown as comments, so there is nothing
+            // to look up before the first entry.
+            if crate::libraries::write_example_file(language).is_ok() {
+                app.library_notes.reload();
+            }
+        }
+    });
+    ui.small(egui::RichText::new(path.display().to_string()).color(MUTED));
+}
+
 /// The decompilation cache: what it is for, and how to empty it.
 fn cache_controls(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let language = app.preferences.language;
@@ -299,6 +336,12 @@ fn behaviour(app: &mut DesdecApp, ui: &mut egui::Ui) {
         ui.checkbox(value, text(language, label));
     }
     ui.small(text(language, Text::PersistenceInfo));
+
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(6.0);
+    library_explanations(app, ui);
+
     ui.add_space(12.0);
     ui.checkbox(
         &mut app.preferences.ai_assistance,

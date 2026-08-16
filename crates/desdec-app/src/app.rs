@@ -91,7 +91,7 @@ impl WorkspaceView {
     }
 }
 
-const DIALOG_COUNT: usize = 3;
+const DIALOG_COUNT: usize = 4;
 
 /// Modal windows. Each one is opened by simply setting its flag, from wherever
 /// in the interface; [`Dialogs::track_openings`] turns those flags into an
@@ -101,6 +101,8 @@ pub struct Dialogs {
     pub command_palette: bool,
     pub preferences: bool,
     pub about: bool,
+    /// Explanation of one linked library.
+    pub library: bool,
     /// Opening rank of each dialog, the highest being the topmost.
     ranks: [u64; DIALOG_COUNT],
     /// Flags as of the previous frame, to spot the ones that just opened.
@@ -110,14 +112,20 @@ pub struct Dialogs {
 
 impl Dialogs {
     fn flags(&self) -> [bool; DIALOG_COUNT] {
-        [self.command_palette, self.preferences, self.about]
+        [
+            self.command_palette,
+            self.preferences,
+            self.about,
+            self.library,
+        ]
     }
 
     fn flag_mut(&mut self, index: usize) -> &mut bool {
         match index {
             0 => &mut self.command_palette,
             1 => &mut self.preferences,
-            _ => &mut self.about,
+            2 => &mut self.about,
+            _ => &mut self.library,
         }
     }
 
@@ -213,6 +221,10 @@ pub struct DesdecApp {
     pub export_report: Option<Result<PathBuf, String>>,
     /// How many cache entries the last clear removed.
     pub cache_report: Option<usize>,
+    /// What each linked library is for, read once per session.
+    pub library_notes: crate::libraries::Catalogue,
+    /// The library whose explanation is on screen.
+    pub explaining_library: Option<String>,
     /// Text produced by the selected external decompiler.
     pub external: ExternalDecompilation,
     /// What was found for each engine, and for which configured path.
@@ -885,6 +897,7 @@ impl DesdecApp {
         ui::palette::show(self, ctx);
         ui::preferences_window::show(self, ctx);
         ui::about::show(self, ctx);
+        ui::library_note::show(self, ctx);
 
         self.schedule_pending_save(ctx);
     }

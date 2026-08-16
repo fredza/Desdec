@@ -242,16 +242,37 @@ fn mitigation_row(ui: &mut egui::Ui, mitigation: &Mitigation, language: Language
     }
 }
 
-pub fn libraries_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
+/// The libraries a binary needs, each with a way to ask what it is for.
+///
+/// Returns the library whose explanation was asked for, so the caller opens
+/// the window rather than this drawing code reaching into the application.
+pub fn libraries_card(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    language: Language,
+    explain: bool,
+) -> Option<String> {
+    let mut asked = None;
     card(ui, text(language, Text::LinkedLibraries), |ui| {
         if analysis.details.linked_libraries.is_empty() {
             ui.label(text(language, Text::NoLinkedLibraries));
             return;
         }
         for library in &analysis.details.linked_libraries {
-            ui.monospace(library);
+            ui.horizontal(|ui| {
+                ui.monospace(library);
+                if explain
+                    && ui
+                        .small_button("?")
+                        .on_hover_text(text(language, Text::WhatIsThisFor))
+                        .clicked()
+                {
+                    asked = Some(library.clone());
+                }
+            });
         }
     });
+    asked
 }
 
 pub fn mapping_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
