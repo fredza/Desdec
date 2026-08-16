@@ -335,10 +335,9 @@ impl DesdecApp {
             }
             Command::Preferences => self.dialogs.preferences = true,
             Command::About => self.dialogs.about = true,
-            Command::Overview => self.select_view(WorkspaceView::Overview),
-            Command::Segments => self.select_view(WorkspaceView::Segments),
+            Command::Overview | Command::Segments => self.open_view(command),
             Command::ExportPatched => {
-                self.select_view(WorkspaceView::Patches);
+                self.open_view(command);
                 self.export_patched_copy(ctx);
             }
             Command::DiscardPatches => {
@@ -356,12 +355,12 @@ impl DesdecApp {
                 self.cache_report = decompilation_cache_dir()
                     .and_then(|directory| decompiler::cache::clear(&directory).ok());
             }
-            Command::Disassembly => self.select_view(WorkspaceView::Disassembly),
-            Command::Decompile => self.select_view(WorkspaceView::Decompile),
+            Command::Disassembly => self.open_view(command),
+            Command::Decompile => self.open_view(command),
             Command::AiAssistance => {}
-            Command::Functions => self.select_view(WorkspaceView::Functions),
-            Command::Strings => self.select_view(WorkspaceView::Strings),
-            Command::Patches => self.select_view(WorkspaceView::Patches),
+            Command::Functions => self.open_view(command),
+            Command::Strings => self.open_view(command),
+            Command::Patches => self.open_view(command),
             Command::ThemeSystem => self.set_theme(ctx, ThemePreference::System),
             Command::ThemeDark => self.set_theme(ctx, ThemePreference::Dark),
             Command::ThemeLight => self.set_theme(ctx, ThemePreference::Light),
@@ -526,6 +525,16 @@ impl DesdecApp {
     /// Whether the file dialog is open, waiting on the user.
     pub const fn is_choosing_file(&self) -> bool {
         self.jobs.file_picker.is_some()
+    }
+
+    /// Whether a native dialog has been put on the user's screen.
+    ///
+    /// Tests assert this stays false: a test that opened one made seven file
+    /// explorers appear while the suite ran.
+    #[cfg(test)]
+    #[must_use]
+    pub const fn showing_a_native_dialog(&self) -> bool {
+        self.jobs.file_picker.is_some() || self.jobs.export_picker.is_some()
     }
 
     /// What is installed for `engine`, detected once per configured path.
@@ -734,6 +743,14 @@ impl DesdecApp {
         self.patch_editor = None;
         self.export_report = None;
         self.external = ExternalDecompilation::default();
+    }
+
+    /// Opens whatever view a command declares, doing nothing for one that
+    /// opens none.
+    fn open_view(&mut self, command: Command) {
+        if let Some(view) = command.opens_view() {
+            self.select_view(view);
+        }
     }
 
     pub fn select_view(&mut self, view: WorkspaceView) {

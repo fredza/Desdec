@@ -317,28 +317,41 @@ mod tests {
 
     /// Every view reachable from the menu must also be reachable from the
     /// palette. `Segments` was missing, and so could only be opened one way.
+    ///
+    /// The mapping is read rather than exercised: running every command to see
+    /// where each one led also ran the ones that open a file dialog, and put
+    /// seven of them on the screen.
     #[test]
     fn every_view_has_a_command() {
         for view in WorkspaceView::ALL {
             assert!(
                 Command::ALL
                     .iter()
-                    .any(|command| view_of(*command) == Some(*view)),
+                    .any(|command| command.opens_view() == Some(*view)),
                 "{view:?} cannot be reached from the palette"
             );
         }
     }
 
-    /// The view a command opens, found by running it.
-    fn view_of(command: Command) -> Option<WorkspaceView> {
+    /// A command that declares a view must actually open it, so the
+    /// declaration cannot drift from what running it does.
+    #[test]
+    fn a_command_opens_the_view_it_declares() {
         let ctx = egui::Context::default();
-        let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
-        // A view every command must move away from, so "did not move" is
-        // distinguishable from "moved to the default".
-        app.active_view = WorkspaceView::Patches;
-        app.run_command(&ctx, command);
-        (app.active_view != WorkspaceView::Patches || command == Command::Patches)
-            .then_some(app.active_view)
+        for command in Command::ALL.iter().copied() {
+            let Some(expected) = command.opens_view() else {
+                continue;
+            };
+            // Only view-switching commands are run here; none of them touches
+            // the file system or opens a dialog.
+            let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
+            app.run_command(&ctx, command);
+            assert_eq!(app.active_view, expected, "{command:?}");
+            assert!(
+                !app.showing_a_native_dialog(),
+                "{command:?} opened a dialog on the user's screen"
+            );
+        }
     }
 
     /// Actions offered elsewhere in the interface must be offered here too.
