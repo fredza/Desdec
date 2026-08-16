@@ -80,6 +80,8 @@ pub struct Preferences {
     pub engine_paths: EnginePaths,
     /// Whether decompiled functions are kept on disk between runs.
     pub cache_decompilations: bool,
+    /// Whether the linked-library list offers an explanation for each name.
+    pub explain_libraries: bool,
     pub shortcuts: ShortcutBindings,
 }
 
@@ -95,6 +97,7 @@ impl Default for Preferences {
             decompiler: DecompilerPreference::Builtin,
             engine_paths: EnginePaths::default(),
             cache_decompilations: true,
+            explain_libraries: true,
             shortcuts: ShortcutBindings::default(),
         }
     }

@@ -9,6 +9,7 @@ pub mod decompile;
 pub mod disassembly;
 pub mod expert;
 pub mod functions;
+pub mod library_note;
 pub mod navigation;
 pub mod palette;
 pub mod patches_view;

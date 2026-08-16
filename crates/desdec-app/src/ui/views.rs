@@ -59,7 +59,13 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
     };
 
     match view {
-        WorkspaceView::Overview => overview(ui, analysis, language),
+        WorkspaceView::Overview => {
+            let explain = app.preferences.explain_libraries;
+            if let Some(library) = overview(ui, analysis, language, explain) {
+                app.explaining_library = Some(library);
+                app.dialogs.library = true;
+            }
+        }
         WorkspaceView::Segments => segments::show(ui, analysis, language),
         WorkspaceView::Strings => {
             strings::show(
@@ -129,20 +135,32 @@ fn welcome(app: &mut DesdecApp, ui: &mut egui::Ui) {
     });
 }
 
-fn overview(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
+fn overview(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    language: Language,
+    explain: bool,
+) -> Option<String> {
     // `auto_shrink` off makes the panels span the window instead of hugging
     // their own content.
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             alerts(ui, analysis, language);
-            expert_layout(ui, analysis, language);
-        });
+            expert_layout(ui, analysis, language, explain)
+        })
+        .inner
 }
 
 /// The detailed overview uses the whole width: what the file *is* on the left,
 /// what it *contains and depends on* on the right.
-fn expert_layout(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
+fn expert_layout(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    language: Language,
+    explain: bool,
+) -> Option<String> {
+    let mut asked = None;
     columns(
         ui,
         |ui| {
@@ -153,11 +171,12 @@ fn expert_layout(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
         |ui| {
             findings_card(ui, analysis, language);
             ui.add_space(12.0);
-            expert::libraries_card(ui, analysis, language);
+            asked = expert::libraries_card(ui, analysis, language, explain);
             ui.add_space(12.0);
             expert::mapping_card(ui, analysis, language);
         },
     );
+    asked
 }
 
 /// Warnings come first: they change how everything below should be read.
