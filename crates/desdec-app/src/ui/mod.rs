@@ -11,6 +11,7 @@ pub mod expert;
 pub mod functions;
 pub mod library_note;
 pub mod navigation;
+pub mod operand_note;
 pub mod palette;
 pub mod patches_view;
 pub mod preferences_window;

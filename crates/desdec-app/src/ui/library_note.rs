@@ -36,30 +36,28 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
             ui.label(egui::RichText::new(&library).monospace().strong());
             ui.add_space(10.0);
 
-            match note {
-                Some(note) => {
-                    ui.label(&note.summary);
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-                    ui.label(section_title(app.t(match note.source {
-                        NoteSource::Builtin => Text::NoteFromCatalogue,
-                        NoteSource::UserFile => Text::NoteFromYourFile,
-                    })));
-                }
-                None => {
-                    // Naming the library is all that can honestly be done:
-                    // guessing from the name would send the reader looking in
-                    // the wrong place.
-                    ui.label(
-                        egui::RichText::new(app.t(Text::LibraryUndescribed))
-                            .color(MUTED)
-                            .italics(),
-                    );
-                    ui.add_space(10.0);
-                    ui.small(app.t(Text::DescribeItYourself));
-                }
-            }
+            let Some(note) = note else {
+                // Naming the library is all that can honestly be done:
+                // guessing from the name would send the reader looking in the
+                // wrong place.
+                ui.label(
+                    egui::RichText::new(app.t(Text::LibraryUndescribed))
+                        .color(MUTED)
+                        .italics(),
+                );
+                ui.add_space(10.0);
+                ui.small(app.t(Text::DescribeItYourself));
+                return;
+            };
+
+            ui.label(&note.summary);
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(section_title(app.t(match note.source {
+                NoteSource::Builtin => Text::NoteFromCatalogue,
+                NoteSource::UserFile => Text::NoteFromYourFile,
+            })));
         });
 
     app.dialogs.library = open;
