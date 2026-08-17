@@ -194,11 +194,22 @@ fn pending(app: &mut DesdecApp, ui: &mut egui::Ui) {
             ui.add_space(8.0);
             match report {
                 Ok(path) => {
-                    ui.label(format!(
-                        "{} {}",
-                        text(language, Text::ExportSucceeded),
-                        path.display()
-                    ));
+                    let path_text = path.display().to_string();
+                    ui.horizontal(|ui| {
+                        ui.label(text(language, Text::ExportSucceeded));
+                        let path_label = ui
+                            .add(
+                                egui::Label::new(egui::RichText::new(&path_text).monospace())
+                                    .sense(egui::Sense::click()),
+                            )
+                            .on_hover_text(&path_text)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if path_label.clicked()
+                            || ui.button(text(language, Text::CopyPath)).clicked()
+                        {
+                            ui.ctx().copy_text(path_text.clone());
+                        }
+                    });
                 }
                 Err(error) => {
                     ui.colored_label(

@@ -17,6 +17,7 @@ use std::{
     fs,
     io::{self, Read},
     path::Path,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 pub mod details;
@@ -117,15 +118,50 @@ impl Analysis {
 /// Returns an error if the file metadata cannot be read, or if the file cannot
 /// be opened or read.
 pub fn analyse_path(path: impl AsRef<Path>) -> io::Result<Analysis> {
+    analyse_path_cancellable(path, &AtomicBool::new(false)).map(|analysis| {
+        // A token created unset cannot be cancelled, so `None` is impossible.
+        analysis.expect("an unset cancellation token cannot stop an analysis")
+    })
+}
+
+/// Reads and analyses a binary until `cancelled` is set.
+///
+/// `Ok(None)` means cancellation, not malformed input or a partial result. The
+/// caller must discard it rather than presenting bytes that look authoritative.
+/// The file read itself checks the token every 64 KiB; once CPU analysis has
+/// started, the caller can still abandon its result immediately.
+pub fn analyse_path_cancellable(
+    path: impl AsRef<Path>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Analysis>> {
+    const READ_CHUNK: usize = 64 * 1024;
     let path = path.as_ref();
     let size = fs::metadata(path)?.len();
+    let limit = usize::try_from(size.min(ANALYSIS_BYTE_LIMIT)).unwrap_or(0);
+    let mut bytes = Vec::with_capacity(limit);
+    let mut file = fs::File::open(path)?;
+    let mut chunk = [0_u8; READ_CHUNK];
 
-    let mut bytes = Vec::with_capacity(usize::try_from(size.min(ANALYSIS_BYTE_LIMIT)).unwrap_or(0));
-    fs::File::open(path)?
-        .take(ANALYSIS_BYTE_LIMIT)
-        .read_to_end(&mut bytes)?;
-
-    Ok(analyse_bytes(path, size, &bytes))
+    while bytes.len() < limit {
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let wanted = (limit - bytes.len()).min(chunk.len());
+        let read = file.read(&mut chunk[..wanted])?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    let analysis = analyse_bytes(path, size, &bytes);
+    if cancelled.load(Ordering::Relaxed) {
+        Ok(None)
+    } else {
+        Ok(Some(analysis))
+    }
 }
 
 /// Above this, spreading the analysis across cores pays for itself.
@@ -272,6 +308,18 @@ mod tests {
     /// changed with the core count could not be compared against another run.
     /// Both are called directly, so the test does not depend on where
     /// [`PARALLEL_THRESHOLD`] happens to sit.
+    #[test]
+    fn a_cancelled_analysis_returns_no_partial_result() {
+        let cancelled = AtomicBool::new(true);
+        let path = std::env::current_exe().expect("the test binary has a path");
+
+        assert!(
+            analyse_path_cancellable(path, &cancelled)
+                .expect("metadata stays readable")
+                .is_none()
+        );
+    }
+
     #[test]
     fn both_paths_produce_the_same_analysis() {
         // A real binary as well as the fixtures: the fixtures carry almost

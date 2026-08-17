@@ -7,7 +7,7 @@ use crate::{
     preferences::accent,
     ui::{
         ERROR, MUTED, card, columns, decompile, disassembly, expert, format_size, functions,
-        patches_view, segments, strings,
+        patches_view, segments, strings, yara,
     },
 };
 
@@ -31,7 +31,9 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let view = app.active_view;
 
     if app.analysis.is_none() {
-        if view == WorkspaceView::Overview {
+        if app.is_analysing() {
+            loading(app, ui);
+        } else if view == WorkspaceView::Overview {
             welcome(app, ui);
         } else {
             ui.label(text(language, Text::OpenFirst));
@@ -48,6 +50,10 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
         }
         WorkspaceView::Decompile => {
             decompile::show(app, ui);
+            return;
+        }
+        WorkspaceView::Yara => {
+            yara::show(app, ui);
             return;
         }
         _ => {}
@@ -72,6 +78,8 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 ui,
                 analysis,
                 &mut app.strings_filter,
+                &mut app.strings_unmapped_only,
+                &mut app.strings_unreferenced_only,
                 &mut app.selected_string,
                 &mut app.selected_instruction,
                 &mut app.pending_instruction_scroll,
@@ -111,6 +119,24 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
             }
         }
     }
+}
+
+/// A deliberate, central loading state rather than a small status-bar hint:
+/// opening a large binary is the moment the reader needs a clear way out.
+fn loading(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    ui.add_space(88.0);
+    ui.vertical_centered(|ui| {
+        ui.spinner();
+        ui.add_space(12.0);
+        ui.heading(app.t(Text::StatusWorking));
+        ui.add_space(14.0);
+        if ui
+            .add(egui::Button::new(app.t(Text::CancelAnalysis)).min_size(egui::vec2(180.0, 34.0)))
+            .clicked()
+        {
+            app.cancel_analysis();
+        }
+    });
 }
 
 fn welcome(app: &mut DesdecApp, ui: &mut egui::Ui) {

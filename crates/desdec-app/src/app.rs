@@ -1,11 +1,15 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, TryRecvError},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, TryRecvError},
+    },
     time::Duration,
 };
 
-use desdec_core::{Analysis, analyse_path, decompiler};
+use desdec_core::{Analysis, analyse_path_cancellable, decompiler, yara};
 use eframe::{Storage, egui};
 
 use crate::{
@@ -42,6 +46,7 @@ pub enum WorkspaceView {
     Disassembly,
     Decompile,
     Patches,
+    Yara,
 }
 
 impl WorkspaceView {
@@ -53,6 +58,7 @@ impl WorkspaceView {
         Self::Disassembly,
         Self::Decompile,
         Self::Patches,
+        Self::Yara,
     ];
 
     pub const fn text(self) -> Text {
@@ -64,6 +70,7 @@ impl WorkspaceView {
             Self::Disassembly => Text::Disassembly,
             Self::Decompile => Text::Decompile,
             Self::Patches => Text::Patches,
+            Self::Yara => Text::Yara,
         }
     }
 
@@ -78,6 +85,7 @@ impl WorkspaceView {
             Self::Disassembly => "ASM",
             Self::Decompile => "DEC",
             Self::Patches => "PATCH",
+            Self::Yara => "YARA",
         }
     }
 
@@ -86,7 +94,7 @@ impl WorkspaceView {
     pub const fn planned_explanation(self) -> Option<Text> {
         match self {
             Self::Overview | Self::Segments | Self::Functions | Self::Strings => None,
-            Self::Disassembly | Self::Decompile | Self::Patches => None,
+            Self::Disassembly | Self::Decompile | Self::Patches | Self::Yara => None,
         }
     }
 }
@@ -167,19 +175,39 @@ pub struct PaletteState {
     pub selected: usize,
 }
 
+/// The history stays useful without letting a long-lived preferences file grow
+/// indefinitely. New successful analyses are inserted at the front.
+const RECENT_BINARY_LIMIT: usize = 12;
+
 /// Work handed to background threads so the interface never blocks on the file
 /// system or on a native dialog.
 #[derive(Default)]
 struct BackgroundJobs {
     file_picker: Option<Receiver<Option<PathBuf>>>,
-    inspection: Option<Receiver<(PathBuf, std::io::Result<Analysis>)>>,
+    inspection: Option<InspectionJob>,
     /// An external decompiler, which can take a minute on a large binary.
     decompilation: Option<Receiver<std::io::Result<String>>>,
     /// Where the user chose to export the patched copy.
     export_picker: Option<Receiver<Option<PathBuf>>>,
+    /// Optional external YARA scan, which can take time on large files.
+    yara: Option<Receiver<Result<Vec<yara::Match>, String>>>,
 }
 
-/// Result of the external decompiler, when one is selected.
+/// One in-flight analysis, and the flag the interface uses to abandon it.
+struct InspectionJob {
+    receiver: Receiver<(PathBuf, std::io::Result<Analysis>)>,
+    cancelled: Arc<AtomicBool>,
+}
+
+/// Result of the optional local YARA scan.
+#[derive(Default)]
+pub struct YaraScan {
+    pub matches: Vec<yara::Match>,
+    pub error: Option<String>,
+    pub running: bool,
+}
+
+/// Result of the selected external decompiler.
 #[derive(Default)]
 pub struct ExternalDecompilation {
     /// Engine and function the shown text came from, so a stale result is not
@@ -218,6 +246,10 @@ pub struct DesdecApp {
     pub selected_string: Option<u64>,
     /// Free-text filter applied to the extracted strings.
     pub strings_filter: String,
+    /// Highlight strings that do not belong to a mapped memory region.
+    pub strings_unmapped_only: bool,
+    /// Highlight strings without a direct reference in decoded code.
+    pub strings_unreferenced_only: bool,
     /// Pending byte patches, and the instruction being edited.
     pub patches: Patches,
     pub patch_editor: Option<Editor>,
@@ -235,6 +267,8 @@ pub struct DesdecApp {
     pub file_bytes: Vec<u8>,
     /// Text produced by the selected external decompiler.
     pub external: ExternalDecompilation,
+    /// Result of the optional local YARA scan.
+    pub yara: YaraScan,
     /// What was found for each engine, and for which configured path.
     ///
     /// Detecting an engine touches the file system, and `rz-ghidra` is probed
@@ -316,10 +350,16 @@ impl DesdecApp {
         if !command.implemented() {
             return false;
         }
+        if command == Command::CancelAnalysis {
+            return self.is_analysing();
+        }
         if command.needs_a_binary() && self.analysis.is_none() {
             return false;
         }
         if command.needs_patches() && self.patches.is_empty() {
+            return false;
+        }
+        if command == Command::RunYara && !self.preferences.yara_enabled {
             return false;
         }
         // Choosing an engine always does something — it records the choice —
@@ -340,6 +380,7 @@ impl DesdecApp {
         match command {
             Command::OpenBinary => self.choose_binary(ctx),
             Command::CloseBinary => self.close_binary(),
+            Command::CancelAnalysis => self.cancel_analysis(),
             Command::ToggleNavigation => self.navigation_open = !self.navigation_open,
             Command::ToggleToolbar => {
                 self.preferences.show_toolbar = !self.preferences.show_toolbar;
@@ -391,6 +432,14 @@ impl DesdecApp {
             Command::TogglePersistence => {
                 self.preferences.persistence_enabled = !self.preferences.persistence_enabled;
             }
+            Command::Yara => self.open_view(command),
+            Command::RunYara => self.request_yara_scan(ctx),
+            Command::ToggleYaraModule => {
+                self.preferences.yara_enabled = !self.preferences.yara_enabled;
+                if !self.preferences.yara_enabled {
+                    self.yara = YaraScan::default();
+                }
+            }
         }
     }
 
@@ -432,6 +481,23 @@ impl DesdecApp {
         }
     }
 
+    /// Recently and successfully analysed files, newest first.
+    #[must_use]
+    pub fn recent_binaries(&self) -> &[PathBuf] {
+        &self.preferences.recent_binaries
+    }
+
+    /// Forgets every remembered file without affecting the binary currently
+    /// open in the workspace.
+    pub fn clear_recent_binaries(&mut self) {
+        self.preferences.recent_binaries.clear();
+    }
+
+    /// Starts analysing an item chosen from the local history.
+    pub fn open_recent_binary(&mut self, ctx: &egui::Context, path: PathBuf) {
+        self.inspect_binary(ctx, path);
+    }
+
     pub fn choose_binary(&mut self, ctx: &egui::Context) {
         if self.jobs.file_picker.is_some() || self.jobs.inspection.is_some() {
             return;
@@ -459,9 +525,19 @@ impl DesdecApp {
         self.error = None;
         let repaint = ctx.clone();
         let (sender, receiver) = mpsc::channel();
-        self.jobs.inspection = Some(receiver);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.jobs.inspection = Some(InspectionJob {
+            receiver,
+            cancelled: Arc::clone(&cancelled),
+        });
         std::thread::spawn(move || {
-            let result = analyse_path(&path);
+            let result = analyse_path_cancellable(&path, &cancelled).and_then(|analysis| {
+                analysis.ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::Interrupted, "analysis cancelled")
+                })
+            });
+            // The receiver is deliberately dropped when the user cancels. A
+            // result that completed just before that point is then ignored.
             let _ = sender.send((path, result));
             repaint.request_repaint();
         });
@@ -470,6 +546,7 @@ impl DesdecApp {
     fn apply_inspection(&mut self, path: &Path, result: std::io::Result<Analysis>) {
         match result {
             Ok(analysis) => {
+                self.remember_recent_binary(path);
                 self.analysis = Some(analysis);
                 self.error = None;
                 self.reset_file_state();
@@ -487,6 +564,18 @@ impl DesdecApp {
         }
     }
 
+    /// Places `path` first, removes an older duplicate and caps the history.
+    fn remember_recent_binary(&mut self, path: &Path) {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.preferences
+            .recent_binaries
+            .retain(|known| known != &path);
+        self.preferences.recent_binaries.insert(0, path);
+        self.preferences
+            .recent_binaries
+            .truncate(RECENT_BINARY_LIMIT);
+    }
+
     fn poll_background_jobs(&mut self, ctx: &egui::Context) {
         let picked_file = self.jobs.file_picker.as_ref().map(Receiver::try_recv);
         match picked_file {
@@ -498,7 +587,11 @@ impl DesdecApp {
             Some(Err(TryRecvError::Empty)) | None => {}
         }
 
-        let inspection = self.jobs.inspection.as_ref().map(Receiver::try_recv);
+        let inspection = self
+            .jobs
+            .inspection
+            .as_ref()
+            .map(|job| job.receiver.try_recv());
         match inspection {
             Some(Ok((path, result))) => {
                 self.jobs.inspection = None;
@@ -525,6 +618,24 @@ impl DesdecApp {
             Some(Err(TryRecvError::Empty)) | None => {}
         }
 
+        let yara = self.jobs.yara.as_ref().map(Receiver::try_recv);
+        match yara {
+            Some(Ok(result)) => {
+                self.jobs.yara = None;
+                self.yara.running = false;
+                match result {
+                    Ok(matches) => self.yara.matches = matches,
+                    Err(error) => self.yara.error = Some(error),
+                }
+            }
+            Some(Err(TryRecvError::Disconnected)) => {
+                self.jobs.yara = None;
+                self.yara.running = false;
+                self.yara.error = Some("YARA scan did not return a result".to_owned());
+            }
+            Some(Err(TryRecvError::Empty)) | None => {}
+        }
+
         let export = self.jobs.export_picker.as_ref().map(Receiver::try_recv);
         match export {
             Some(Ok(Some(destination))) => {
@@ -543,6 +654,14 @@ impl DesdecApp {
     /// of a file the user had not chosen yet — and often would never choose.
     pub const fn is_analysing(&self) -> bool {
         self.jobs.inspection.is_some()
+    }
+
+    /// Requests the current analysis stop and discards any result it may finish
+    /// producing after this point.
+    pub fn cancel_analysis(&mut self) {
+        if let Some(job) = self.jobs.inspection.take() {
+            job.cancelled.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Whether the file dialog is open, waiting on the user.
@@ -664,7 +783,52 @@ impl DesdecApp {
         });
     }
 
-    /// Where this binary's answers are kept, and the digest that identifies
+    /// Starts a bounded, static scan with the local YARA command.
+    pub fn request_yara_scan(&mut self, ctx: &egui::Context) {
+        if !self.preferences.yara_enabled || self.jobs.yara.is_some() || self.yara.running {
+            return;
+        }
+        let Some(binary) = self
+            .analysis
+            .as_ref()
+            .map(|analysis| analysis.summary.path.clone())
+        else {
+            return;
+        };
+        let configured = (!self.preferences.yara_path.trim().is_empty())
+            .then(|| PathBuf::from(self.preferences.yara_path.trim()));
+        let Some(program) = yara::locate(configured.as_deref()) else {
+            self.yara = YaraScan {
+                error: Some("YARA executable was not found".to_owned()),
+                ..YaraScan::default()
+            };
+            return;
+        };
+        let rules = PathBuf::from(self.preferences.yara_rules_path.trim());
+        if self.preferences.yara_rules_path.trim().is_empty() || !rules.is_file() {
+            self.yara = YaraScan {
+                error: Some("YARA rules file was not found".to_owned()),
+                ..YaraScan::default()
+            };
+            return;
+        }
+
+        self.yara = YaraScan {
+            running: true,
+            ..YaraScan::default()
+        };
+        let repaint = ctx.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.jobs.yara = Some(receiver);
+        std::thread::spawn(move || {
+            let result = yara::scan(&program, &rules, &binary, yara::DEFAULT_TIMEOUT)
+                .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+            repaint.request_repaint();
+        });
+    }
+
+    /// Where this binary's answers are kept, and the digest that identifies it.
     /// them.
     ///
     /// `None` when caching must not happen: no digest means the file was only
@@ -744,6 +908,7 @@ impl DesdecApp {
     }
 
     pub fn close_binary(&mut self) {
+        self.cancel_analysis();
         self.analysis = None;
         self.error = None;
         self.reset_file_state();
@@ -757,6 +922,8 @@ impl DesdecApp {
     fn reset_file_state(&mut self) {
         self.active_view = WorkspaceView::Overview;
         self.strings_filter.clear();
+        self.strings_unmapped_only = false;
+        self.strings_unreferenced_only = false;
         self.selected_function = None;
         self.selected_instruction = None;
         self.pending_instruction_scroll = None;
@@ -768,6 +935,7 @@ impl DesdecApp {
         self.file_bytes.clear();
         self.export_report = None;
         self.external = ExternalDecompilation::default();
+        self.yara = YaraScan::default();
     }
 
     /// Opens whatever view a command declares, doing nothing for one that
@@ -1053,6 +1221,27 @@ mod tests {
     /// announce one the moment the dialog appeared, for a file the user had
     /// not chosen yet — and might never choose.
     #[test]
+    fn cancelling_an_analysis_drops_its_result_and_signals_its_worker() {
+        let (_sender, receiver) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut app = DesdecApp {
+            jobs: BackgroundJobs {
+                inspection: Some(InspectionJob {
+                    receiver,
+                    cancelled: Arc::clone(&cancelled),
+                }),
+                ..BackgroundJobs::default()
+            },
+            ..DesdecApp::default()
+        };
+
+        app.cancel_analysis();
+
+        assert!(cancelled.load(Ordering::Relaxed));
+        assert!(!app.is_analysing());
+    }
+
+    #[test]
     fn choosing_a_file_is_not_reported_as_an_analysis() {
         let app = DesdecApp::for_test_choosing_file();
 
@@ -1077,6 +1266,19 @@ mod tests {
         assert!(app.analysis.is_none());
         assert!(app.patches.is_empty(), "patches belong to the closed file");
         assert_eq!(app.active_view, WorkspaceView::Overview);
+    }
+
+    #[test]
+    fn yara_module_is_toggled_and_its_view_is_opened_by_commands() {
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::default();
+
+        app.run_command(&ctx, Command::ToggleYaraModule);
+        assert!(app.preferences.yara_enabled);
+        app.run_command(&ctx, Command::Yara);
+        assert_eq!(app.active_view, WorkspaceView::Yara);
+        app.run_command(&ctx, Command::ToggleYaraModule);
+        assert!(!app.preferences.yara_enabled);
     }
 
     #[test]
@@ -1105,6 +1307,29 @@ mod tests {
         app.dismiss_topmost_dialog();
         assert!(app.editing_shortcut.is_none());
         assert!(app.dialogs.preferences);
+    }
+
+    #[test]
+    fn recent_binaries_are_deduplicated_bounded_and_clearable() {
+        let mut app = DesdecApp::default();
+        for index in 0..=RECENT_BINARY_LIMIT {
+            app.remember_recent_binary(&PathBuf::from(format!("binary-{index}")));
+        }
+        // Reopening an existing item puts it first instead of adding a copy.
+        app.remember_recent_binary(&PathBuf::from("binary-4"));
+
+        assert_eq!(app.recent_binaries().len(), RECENT_BINARY_LIMIT);
+        assert_eq!(app.recent_binaries()[0], PathBuf::from("binary-4"));
+        assert_eq!(
+            app.recent_binaries()
+                .iter()
+                .filter(|path| *path == &PathBuf::from("binary-4"))
+                .count(),
+            1
+        );
+
+        app.clear_recent_binaries();
+        assert!(app.recent_binaries().is_empty());
     }
 
     #[test]

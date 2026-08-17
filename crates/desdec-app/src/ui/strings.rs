@@ -1,12 +1,14 @@
 //! Printable strings extracted from the loaded binary.
 
+use std::collections::BTreeSet;
+
 use desdec_core::{Analysis, ExtractedString, Instruction};
 use eframe::egui;
 
 use crate::{
     app::WorkspaceView,
     i18n::{Language, Text, text},
-    ui::{MUTED, card},
+    ui::{ERROR, MUTED, card},
 };
 
 /// Height of one row, needed up front so the list can be virtualised: only the
@@ -17,6 +19,8 @@ pub fn show(
     ui: &mut egui::Ui,
     analysis: &Analysis,
     filter: &mut String,
+    highlight_unmapped: &mut bool,
+    highlight_unreferenced: &mut bool,
     selected_string: &mut Option<u64>,
     selected_instruction: &mut Option<u64>,
     pending_instruction_scroll: &mut Option<u64>,
@@ -29,8 +33,21 @@ pub fn show(
         return;
     }
 
-    let matches = matching(analysis, filter);
-    header(ui, filter, matches.len(), analysis.strings.len(), language);
+    let matches = matching(
+        analysis,
+        filter,
+        *highlight_unmapped,
+        *highlight_unreferenced,
+    );
+    header(
+        ui,
+        filter,
+        highlight_unmapped,
+        highlight_unreferenced,
+        matches.len(),
+        analysis.strings.len(),
+        language,
+    );
     ui.add_space(8.0);
 
     if let Some(string) = selected_string.and_then(|offset| {
@@ -61,9 +78,14 @@ pub fn show(
                 .spacing([18.0, 4.0])
                 .min_row_height(ROW_HEIGHT)
                 .show(ui, |ui| {
-                    for string in &matches[range] {
-                        if row(ui, string, *selected_string == Some(string.file_offset)) {
-                            *selected_string = Some(string.file_offset);
+                    for item in &matches[range] {
+                        if row(
+                            ui,
+                            item,
+                            *selected_string == Some(item.string.file_offset),
+                            language,
+                        ) {
+                            *selected_string = Some(item.string.file_offset);
                         }
                         ui.end_row();
                     }
@@ -71,13 +93,30 @@ pub fn show(
         });
 }
 
-fn header(ui: &mut egui::Ui, filter: &mut String, shown: usize, total: usize, language: Language) {
-    ui.horizontal(|ui| {
+fn header(
+    ui: &mut egui::Ui,
+    filter: &mut String,
+    highlight_unmapped: &mut bool,
+    highlight_unreferenced: &mut bool,
+    shown: usize,
+    total: usize,
+    language: Language,
+) {
+    ui.horizontal_wrapped(|ui| {
         ui.label(text(language, Text::FilterStrings));
         ui.add(
             egui::TextEdit::singleline(filter)
                 .hint_text(text(language, Text::FilterHint))
                 .desired_width(240.0),
+        );
+        ui.separator();
+        ui.toggle_value(
+            highlight_unmapped,
+            text(language, Text::FilterUnmappedStrings),
+        );
+        ui.toggle_value(
+            highlight_unreferenced,
+            text(language, Text::FilterUnreferencedStrings),
         );
         ui.label(
             egui::RichText::new(format!(
@@ -95,19 +134,54 @@ fn header(ui: &mut egui::Ui, filter: &mut String, shown: usize, total: usize, la
     }
 }
 
-fn matching<'a>(analysis: &'a Analysis, filter: &str) -> Vec<&'a ExtractedString> {
-    if filter.is_empty() {
-        return analysis.strings.iter().collect();
-    }
+struct StringMatch<'a> {
+    string: &'a ExtractedString,
+    unmapped: bool,
+    unreferenced: bool,
+    highlight: bool,
+}
+
+fn matching<'a>(
+    analysis: &'a Analysis,
+    filter: &str,
+    highlight_unmapped: bool,
+    highlight_unreferenced: bool,
+) -> Vec<StringMatch<'a>> {
     let needle = filter.to_lowercase();
+    // Resolve decoded operands once, not once per string: a stripped binary can
+    // contain twenty thousand strings, while its instructions often outnumber
+    // them by an order of magnitude.
+    let referenced = direct_reference_addresses(analysis);
+
     analysis
         .strings
         .iter()
-        .filter(|string| string.value.to_lowercase().contains(&needle))
+        .filter(|string| filter.is_empty() || string.value.to_lowercase().contains(&needle))
+        .map(|string| {
+            let address = string_address(analysis, string);
+            let unmapped = address.is_none();
+            let unreferenced = !address.is_some_and(|address| referenced.contains(&address));
+            StringMatch {
+                string,
+                unmapped,
+                unreferenced,
+                highlight: (highlight_unmapped && unmapped)
+                    || (highlight_unreferenced && unreferenced),
+            }
+        })
         .collect()
 }
 
-fn row(ui: &mut egui::Ui, string: &ExtractedString, selected: bool) -> bool {
+fn direct_reference_addresses(analysis: &Analysis) -> BTreeSet<u64> {
+    analysis
+        .instructions
+        .iter()
+        .flat_map(instruction_addresses)
+        .collect()
+}
+
+fn row(ui: &mut egui::Ui, item: &StringMatch<'_>, selected: bool, language: Language) -> bool {
+    let string = item.string;
     ui.monospace(format!("{:#010x}", string.file_offset));
     ui.label(egui::RichText::new(string.encoding.label()).color(MUTED));
 
@@ -128,13 +202,27 @@ fn row(ui: &mut egui::Ui, string: &ExtractedString, selected: bool) -> bool {
             .sense(egui::Sense::click()),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    if response.hovered() {
+    if item.highlight || response.hovered() {
+        let color = item
+            .highlight
+            .then_some(ERROR)
+            .unwrap_or(egui::Color32::from_rgb(241, 169, 75));
         ui.painter().rect_stroke(
             response.rect.expand(1.0),
             2.0,
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(241, 169, 75)),
+            egui::Stroke::new(0.5_f32, color),
             egui::StrokeKind::Outside,
         );
+    }
+    if response.hovered() && item.highlight {
+        let mut reasons = Vec::new();
+        if item.unmapped {
+            reasons.push(text(language, Text::StringAddressUnavailable));
+        }
+        if item.unreferenced {
+            reasons.push(text(language, Text::NoStringReferences));
+        }
+        response.clone().on_hover_text(reasons.join("\n"));
     }
     response.clicked()
 }
@@ -257,6 +345,106 @@ fn rip_relative_target(instruction: &Instruction) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use desdec_core::{
+        Architecture, BinaryFormat, BinarySummary, Endianness, Permissions, Section, StringEncoding,
+    };
+    use std::path::PathBuf;
+
+    fn analysis_for_filters() -> Analysis {
+        Analysis {
+            summary: BinarySummary {
+                path: PathBuf::from("test.bin"),
+                size: 0,
+                format: BinaryFormat::Elf {
+                    bits: 64,
+                    endianness: Endianness::Little,
+                },
+                architecture: Architecture::X86_64,
+            },
+            entry_point: None,
+            sections: vec![Section {
+                name: ".rodata".to_owned(),
+                virtual_address: 0x4000,
+                file_offset: 0x100,
+                virtual_size: 0x100,
+                file_size: 0x100,
+                permissions: Permissions {
+                    read: true,
+                    ..Permissions::default()
+                },
+                entropy: None,
+            }],
+            strings: vec![
+                ExtractedString {
+                    file_offset: 0x110,
+                    encoding: StringEncoding::Ascii,
+                    value: "referenced".to_owned(),
+                    truncated: false,
+                },
+                ExtractedString {
+                    file_offset: 0x120,
+                    encoding: StringEncoding::Ascii,
+                    value: "unreferenced".to_owned(),
+                    truncated: false,
+                },
+                ExtractedString {
+                    file_offset: 0x20,
+                    encoding: StringEncoding::Ascii,
+                    value: "not mapped".to_owned(),
+                    truncated: false,
+                },
+            ],
+            symbols: Vec::new(),
+            instructions: vec![Instruction {
+                address: 0x5000,
+                bytes: vec![0x48, 0x8d, 0x05],
+                text: "mov $4010h,%rax".to_owned(),
+                section: ".text".to_owned(),
+            }],
+            details: Default::default(),
+            languages: Vec::new(),
+            sha256: None,
+            entropy: None,
+            analysed_bytes: 0,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn filters_highlight_their_matches_without_hiding_any_string() {
+        let analysis = analysis_for_filters();
+        let status = |unmapped, unreferenced| {
+            matching(&analysis, "", unmapped, unreferenced)
+                .into_iter()
+                .map(|item| (item.string.value.as_str(), item.highlight))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            status(false, false),
+            [
+                ("referenced", false),
+                ("unreferenced", false),
+                ("not mapped", false)
+            ]
+        );
+        assert_eq!(
+            status(true, false),
+            [
+                ("referenced", false),
+                ("unreferenced", false),
+                ("not mapped", true)
+            ]
+        );
+        assert_eq!(
+            status(false, true),
+            [
+                ("referenced", false),
+                ("unreferenced", true),
+                ("not mapped", true)
+            ]
+        );
+    }
 
     #[test]
     fn reads_direct_gas_hex_operands_for_string_references() {

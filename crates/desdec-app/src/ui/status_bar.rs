@@ -24,6 +24,9 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                         egui::RichText::new(app.t(Text::StatusWorking))
                             .color(accent(app.preferences.theme)),
                     );
+                    if ui.button(app.t(Text::CancelAnalysis)).clicked() {
+                        app.cancel_analysis();
+                    }
                     return;
                 }
                 if app.is_choosing_file() && app.analysis.is_none() {

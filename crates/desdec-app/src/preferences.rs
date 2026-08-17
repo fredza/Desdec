@@ -80,6 +80,15 @@ pub struct Preferences {
     pub engine_paths: EnginePaths,
     /// Whether decompiled functions are kept on disk between runs.
     pub cache_decompilations: bool,
+    /// Successfully analysed binaries, newest first. This is local UI state;
+    /// it is never sent anywhere and can be cleared from the open menu.
+    pub recent_binaries: Vec<std::path::PathBuf>,
+    /// Enables the optional, local YARA scanning module.
+    pub yara_enabled: bool,
+    /// Explicit path to the `yara` command, or empty to search `PATH`.
+    pub yara_path: String,
+    /// Rules file passed to YARA for every deliberate scan.
+    pub yara_rules_path: String,
     /// Whether the linked-library list offers an explanation for each name.
     pub explain_libraries: bool,
     pub shortcuts: ShortcutBindings,
@@ -97,6 +106,10 @@ impl Default for Preferences {
             decompiler: DecompilerPreference::Builtin,
             engine_paths: EnginePaths::default(),
             cache_decompilations: true,
+            recent_binaries: Vec::new(),
+            yara_enabled: false,
+            yara_path: String::new(),
+            yara_rules_path: String::new(),
             explain_libraries: true,
             shortcuts: ShortcutBindings::default(),
         }

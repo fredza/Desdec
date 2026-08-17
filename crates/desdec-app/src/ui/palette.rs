@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use eframe::egui;
 
 use crate::{app::DesdecApp, commands::Command, i18n::Text, ui::MUTED};
@@ -22,14 +24,24 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
             chosen = contents(app, ui);
         });
 
-    if let Some(command) = chosen {
-        app.run_command(ctx, command);
+    if let Some(chosen) = chosen {
+        match chosen {
+            PaletteChoice::Command(command) => app.run_command(ctx, command),
+            PaletteChoice::Recent(path) => app.open_recent_binary(ctx, path),
+            PaletteChoice::ClearHistory => app.clear_recent_binaries(),
+        }
         open = false;
     }
     app.dialogs.command_palette = open;
 }
 
-fn contents(app: &mut DesdecApp, ui: &mut egui::Ui) -> Option<Command> {
+enum PaletteChoice {
+    Command(Command),
+    Recent(PathBuf),
+    ClearHistory,
+}
+
+fn contents(app: &mut DesdecApp, ui: &mut egui::Ui) -> Option<PaletteChoice> {
     ui.label(app.t(Text::SearchAction));
     // The keys that drive the list are claimed before the search field is
     // drawn, so they only ever do one thing: the focused `TextEdit` would
@@ -46,10 +58,24 @@ fn contents(app: &mut DesdecApp, ui: &mut egui::Ui) -> Option<Command> {
     ui.add_space(8.0);
 
     let matches = matching_commands(app);
-    let mut chosen = keyboard_selection(app, &matches, keys);
+    let recent = matching_recent(app);
+    let mut chosen = keyboard_selection(app, &matches, keys).map(PaletteChoice::Command);
     egui::ScrollArea::vertical()
         .max_height(ui.available_height().max(160.0))
         .show(ui, |ui| {
+            if !recent.is_empty() {
+                ui.strong(app.t(Text::RecentBinaries));
+                for path in recent {
+                    let label = path.display().to_string();
+                    if ui.button(label).clicked() {
+                        chosen = Some(PaletteChoice::Recent(path));
+                    }
+                }
+                if ui.button(app.t(Text::ClearRecentBinaries)).clicked() {
+                    chosen = Some(PaletteChoice::ClearHistory);
+                }
+                ui.separator();
+            }
             for (index, command) in matches.iter().copied().enumerate() {
                 ui.horizontal(|ui| {
                     let selected = index == app.palette.selected;
@@ -59,7 +85,7 @@ fn contents(app: &mut DesdecApp, ui: &mut egui::Ui) -> Option<Command> {
                         egui::SelectableLabel::new(selected, label),
                     );
                     if entry.clicked() {
-                        chosen = Some(command);
+                        chosen = Some(PaletteChoice::Command(command));
                         app.palette.selected = index;
                     }
                     // Keep the highlight visible when the arrows walk past the
@@ -96,6 +122,15 @@ impl NavigationKeys {
     const fn moved(self) -> bool {
         self.up || self.down
     }
+}
+
+fn matching_recent(app: &DesdecApp) -> Vec<PathBuf> {
+    let query = app.palette.query.to_lowercase();
+    app.recent_binaries()
+        .iter()
+        .filter(|path| path.display().to_string().to_lowercase().contains(&query))
+        .cloned()
+        .collect()
 }
 
 fn matching_commands(app: &DesdecApp) -> Vec<Command> {
@@ -307,6 +342,21 @@ mod tests {
 
     /// The palette is the one place the whole application is visible, so an
     /// empty query must list every command there is — no hidden entries.
+    #[test]
+    fn recent_binaries_are_searchable_from_the_palette() {
+        let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
+        app.preferences.recent_binaries = vec![
+            std::path::PathBuf::from("/tmp/example.elf"),
+            std::path::PathBuf::from("/tmp/tool.exe"),
+        ];
+        app.palette.query = "elf".to_owned();
+
+        assert_eq!(
+            matching_recent(&app),
+            vec![std::path::PathBuf::from("/tmp/example.elf")]
+        );
+    }
+
     #[test]
     fn an_empty_query_lists_every_command() {
         let ctx = egui::Context::default();
