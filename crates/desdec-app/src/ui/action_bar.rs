@@ -12,10 +12,14 @@ const HEIGHT: f32 = 48.0;
 const HAMBURGER_SIZE: egui::Vec2 = egui::vec2(34.0, 30.0);
 const CLOSE_BUTTON_SIZE: egui::Vec2 = egui::vec2(26.0, 26.0);
 
-/// Views the toolbar offers directly, in reading order. Each one draws the
-/// icon and runs the command the view itself declares, so the toolbar and the
-/// menu can never come to name the same view differently.
-const VIEW_ACTIONS: &[WorkspaceView] = &[
+/// Views the toolbar offers directly, in reading order.
+///
+/// Each draws the icon and runs the command the view itself declares, so the
+/// toolbar can never come to name a view differently from anywhere else. The
+/// menu reads this list too, and leaves out whatever is already here: a view
+/// one click away in the toolbar does not need a second entry three rows down
+/// in the menu.
+pub const VIEW_ACTIONS: &[WorkspaceView] = &[
     WorkspaceView::Overview,
     WorkspaceView::Disassembly,
     WorkspaceView::Decompile,
@@ -25,7 +29,7 @@ const VIEW_ACTIONS: &[WorkspaceView] = &[
 ];
 
 /// Right-aligned actions, drawn right to left in this order.
-const TRAILING_ACTIONS: &[(Icon, Command)] = &[
+const ACTIONS: &[(Icon, Command)] = &[
     (Icon::Palette, Command::CommandPalette),
     (Icon::Open, Command::OpenBinary),
 ];
@@ -123,7 +127,7 @@ fn toolbar(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
     }
 
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        for (icon, command) in TRAILING_ACTIONS {
+        for (icon, command) in ACTIONS {
             if icons::button(
                 ui,
                 *icon,
@@ -138,4 +142,44 @@ fn toolbar(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        app::WorkspaceView,
+        testing::{opened_app, window_input},
+    };
+
+    /// The right-hand actions are actions, not views: a view there would be
+    /// offered twice over, since the row to their left already carries every
+    /// view the toolbar shows.
+    #[test]
+    fn the_trailing_actions_are_not_views() {
+        for (_, command) in ACTIONS {
+            assert!(
+                command.opens_view().is_none(),
+                "{command:?} opens a view, and the toolbar already lists those"
+            );
+        }
+    }
+
+    /// With a binary open and the toolbar on, the bar still draws: the name of
+    /// the file, the way to close it, and the actions.
+    #[test]
+    fn the_bar_draws_with_a_binary_open() {
+        let ctx = egui::Context::default();
+        let mut app = opened_app(WorkspaceView::Overview);
+        app.preferences.show_toolbar = true;
+
+        let output = ctx.run(window_input(), |ctx| show(&mut app, ctx));
+
+        let drawn = crate::testing::drawn_text(&output.shapes);
+        assert!(drawn.contains("Desdec"), "the bar names the application");
+        assert!(
+            !output.shapes.is_empty(),
+            "the bar must draw with a binary open"
+        );
+    }
 }
