@@ -327,7 +327,27 @@ fn recent_binaries(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) 
 }
 
 /// The workspace views: the part of the menu that survives at every width.
+/// The views the menu has to offer: the ones the toolbar does not.
+///
+/// A view already one click away in the toolbar does not need a second entry
+/// here — that was the same list twice, one of them longer to reach. When the
+/// toolbar is hidden the menu carries all of them, since otherwise those views
+/// would be reachable only by shortcut or through the command palette.
+fn views_to_offer(app: &DesdecApp) -> Vec<WorkspaceView> {
+    WorkspaceView::ALL
+        .iter()
+        .copied()
+        .filter(|view| {
+            !app.preferences.show_toolbar || !super::action_bar::VIEW_ACTIONS.contains(view)
+        })
+        .collect()
+}
+
 fn views_section(app: &mut DesdecApp, ui: &mut egui::Ui, density: Density) {
+    let views = views_to_offer(app);
+    if views.is_empty() {
+        return;
+    }
     if density.shows_sections() {
         ui.label(section_title(app.t(Text::Exploration)));
         ui.add_space(4.0);
@@ -335,13 +355,13 @@ fn views_section(app: &mut DesdecApp, ui: &mut egui::Ui, density: Density) {
         ui.separator();
     }
 
-    for view in WorkspaceView::ALL {
-        let selected = app.active_view == *view;
+    for view in views {
+        let selected = app.active_view == view;
         if entry(app, ui, view.glyph(), app.t(view.text()), selected, density)
             .on_hover_text(app.command_tooltip(view.command()))
             .clicked()
         {
-            app.select_view(*view);
+            app.select_view(view);
         }
     }
 }
@@ -472,7 +492,7 @@ mod tests {
     }
 
     /// The rail shows no labels — that is the whole point of it — and the wide
-    /// menu shows every one.
+    /// menu names every view it offers.
     #[test]
     fn labels_appear_only_once_there_is_room_for_them() {
         let ctx = egui::Context::default();
@@ -490,12 +510,43 @@ mod tests {
 
         app.preferences.navigation_width = DEFAULT_WIDTH;
         let wide = frame(&mut app, &ctx);
-        for view in WorkspaceView::ALL {
+        for view in views_to_offer(&app) {
             assert!(
                 wide.contains(app.t(view.text())),
                 "the wide menu must name {view:?}"
             );
         }
+    }
+
+    /// A view offered by the toolbar is not offered again by the menu: the
+    /// same list twice, one of them longer to reach, is not two ways of
+    /// getting somewhere but one way and a distraction.
+    #[test]
+    fn the_menu_leaves_out_what_the_toolbar_already_offers() {
+        let mut app = opened_app(WorkspaceView::Overview);
+        app.preferences.show_toolbar = true;
+
+        let offered = views_to_offer(&app);
+        for view in crate::ui::action_bar::VIEW_ACTIONS {
+            assert!(
+                !offered.contains(view),
+                "{view:?} is in the toolbar and in the menu"
+            );
+        }
+        assert!(
+            !offered.is_empty(),
+            "the views the toolbar does not carry must still be reachable"
+        );
+    }
+
+    /// With the toolbar hidden, the menu is the only place left, so it carries
+    /// every view rather than the handful the toolbar was not showing.
+    #[test]
+    fn hiding_the_toolbar_puts_every_view_back_in_the_menu() {
+        let mut app = opened_app(WorkspaceView::Overview);
+        app.preferences.show_toolbar = false;
+
+        assert_eq!(views_to_offer(&app), WorkspaceView::ALL.to_vec());
     }
 
     /// A dragged width is a choice, and choices are kept.
