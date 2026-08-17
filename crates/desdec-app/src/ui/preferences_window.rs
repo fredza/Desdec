@@ -17,6 +17,7 @@ pub enum PreferencesTab {
     Shortcuts,
     Behaviour,
     Decompiler,
+    Yara,
 }
 
 impl PreferencesTab {
@@ -25,6 +26,7 @@ impl PreferencesTab {
         Self::Shortcuts,
         Self::Behaviour,
         Self::Decompiler,
+        Self::Yara,
     ];
 
     const fn text(self) -> Text {
@@ -33,6 +35,7 @@ impl PreferencesTab {
             Self::Shortcuts => Text::Shortcuts,
             Self::Behaviour => Text::Behaviour,
             Self::Decompiler => Text::Decompiler,
+            Self::Yara => Text::Yara,
         }
     }
 }
@@ -76,6 +79,7 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                 PreferencesTab::Shortcuts => shortcuts(app, ctx, ui),
                 PreferencesTab::Behaviour => behaviour(app, ui),
                 PreferencesTab::Decompiler => decompiler(app, ui),
+                PreferencesTab::Yara => yara(app, ui),
             }
         });
     app.dialogs.preferences = open;
@@ -317,6 +321,33 @@ fn availability_badge(app: &DesdecApp, ui: &mut egui::Ui, availability: &Availab
             .color(color)
             .small(),
     );
+}
+
+fn yara(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    let language = app.preferences.language;
+    ui.heading(text(language, Text::Yara));
+    ui.checkbox(
+        &mut app.preferences.yara_enabled,
+        text(language, Text::EnableYara),
+    );
+    ui.small(text(language, Text::YaraInfo));
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label(text(language, Text::YaraProgramPath));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.preferences.yara_path)
+                .hint_text(text(language, Text::EnginePathHint))
+                .desired_width(230.0),
+        );
+    });
+    ui.horizontal(|ui| {
+        ui.label(text(language, Text::YaraRulesPath));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.preferences.yara_rules_path)
+                .hint_text(text(language, Text::YaraRulesHint))
+                .desired_width(230.0),
+        );
+    });
 }
 
 fn behaviour(app: &mut DesdecApp, ui: &mut egui::Ui) {

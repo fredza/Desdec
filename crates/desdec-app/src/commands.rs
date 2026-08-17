@@ -8,6 +8,9 @@ use crate::{
 
 /// Declares the command registry once.
 ///
+/// Every user-triggered feature must have an entry here, so the command palette
+/// remains a complete, keyboard-accessible index of the application.
+///
 /// Each entry names the [`Text`] fragments forming its visible label — several
 /// fragments are joined with `: ` — and its factory-default shortcut. The macro
 /// derives the enum, the ordered [`Command::ALL`] list used by the palette and
@@ -45,6 +48,7 @@ macro_rules! commands {
 
 commands! {
     OpenBinary => [OpenBinary], Some(Shortcut::ctrl(KeyName::O)),
+    CancelAnalysis => [CancelAnalysis], None,
     CloseBinary => [CloseBinary], Some(Shortcut::ctrl(KeyName::W)),
     ToggleNavigation => [ToggleMenu], Some(Shortcut::ctrl(KeyName::B)),
     ToggleToolbar => [ToggleToolbar], Some(Shortcut::ctrl_alt(KeyName::T)),
@@ -75,6 +79,9 @@ commands! {
     LanguageEnglish => [Language, English], None,
     LanguageSpanish => [Language, Spanish], None,
     TogglePersistence => [Persistence], None,
+    Yara => [Yara], None,
+    RunYara => [Yara, RunYara], None,
+    ToggleYaraModule => [Yara, ToggleYaraModule], None,
 }
 
 impl Command {
@@ -113,7 +120,7 @@ impl Command {
     pub const fn needs_a_binary(self) -> bool {
         matches!(
             self,
-            Self::CloseBinary | Self::ExportPatched | Self::DiscardPatches
+            Self::CloseBinary | Self::ExportPatched | Self::DiscardPatches | Self::RunYara
         )
     }
 
@@ -139,6 +146,7 @@ impl Command {
             Self::Decompile => WorkspaceView::Decompile,
             // Exporting shows the patches it is about to write.
             Self::Patches | Self::ExportPatched => WorkspaceView::Patches,
+            Self::Yara => WorkspaceView::Yara,
             _ => return None,
         })
     }

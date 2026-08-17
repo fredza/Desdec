@@ -20,6 +20,7 @@ pub mod status_bar;
 pub mod strings;
 pub mod syntax;
 pub mod views;
+pub mod yara;
 
 /// Secondary text: readable, never competing with the content.
 pub const MUTED: egui::Color32 = egui::Color32::from_rgb(145, 155, 178);
