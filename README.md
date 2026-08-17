@@ -54,10 +54,13 @@ together with their SHA-256 checksums.
 - **It reads, and writes only where you ask.** The analysed file is opened
   read-only; a patch is written to a separate copy you name yourself.
 - **It makes no network connection at all.**
-- Analysis is bounded by construction: at most 256 MiB read per file, 100 000
-  instructions decoded, 20 000 strings, 4 096 section entries. When a limit is
-  reached the interface says so rather than presenting a partial listing as if
-  it were the whole program.
+- **Every executable byte that was read is decoded** — there is no cap on the
+  number of instructions. A large shared library really does reach eighteen
+  million of them, and the listing is virtualised, so its length costs the
+  interface nothing.
+- What remains bounded is the reading itself: at most 256 MiB per file, 20 000
+  strings, 4 096 section entries. When a limit is reached the interface says
+  so rather than presenting a partial listing as if it were the whole program.
 - The only external programs it will start are the ones you choose: a
   decompiler (`rizin`, `retdec-decompiler`) or YARA. None is required, and none
   is started unless it is selected in the preferences.
@@ -111,4 +114,10 @@ DESDEC_ICON_SHEET=/tmp/icons.svg cargo test -p desdec-app icon_sheet
 
 ## Licence
 
-Apache-2.0 OR MIT, at your option.
+Apache-2.0 OR MIT, at your option: [LICENSE-APACHE](LICENSE-APACHE) and
+[LICENSE-MIT](LICENSE-MIT). Both are offered from the About window as well, so
+the terms are reachable from the application itself.
+
+Unless you state otherwise, any contribution you deliberately submit for
+inclusion in this work shall be dual-licensed as above, with no additional
+terms or conditions.

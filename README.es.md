@@ -56,10 +56,14 @@ por `v`, junto con sus sumas SHA-256.
   modo lectura; un parche se escribe en una copia aparte que usted mismo
   nombra.
 - **No establece ninguna conexión de red.**
-- El análisis está acotado por construcción: como máximo 256 MiB leídos por
-  archivo, 100 000 instrucciones decodificadas, 20 000 cadenas, 4 096 entradas
-  de sección. Cuando se alcanza un límite, la interfaz lo dice, en lugar de
-  presentar un listado parcial como si fuera todo el programa.
+- **Cada byte ejecutable leído se decodifica**: no hay tope alguno en el
+  número de instrucciones. Una biblioteca compartida grande alcanza realmente
+  dieciocho millones, y el listado está virtualizado: su longitud no le cuesta
+  nada a la interfaz.
+- Lo que sigue acotado es la lectura: como máximo 256 MiB por archivo, 20 000
+  cadenas, 4 096 entradas de sección. Cuando se alcanza un límite, la interfaz
+  lo dice, en lugar de presentar un listado parcial como si fuera todo el
+  programa.
 - Los únicos programas externos que inicia son los que usted elige: un
   descompilador (`rizin`, `retdec-decompiler`) o YARA. Ninguno es obligatorio,
   y ninguno se inicia sin haber sido seleccionado en las preferencias.
@@ -114,4 +118,10 @@ DESDEC_ICON_SHEET=/tmp/icons.svg cargo test -p desdec-app icon_sheet
 
 ## Licencia
 
-Apache-2.0 O MIT, a su elección.
+Apache-2.0 O MIT, a su elección: [LICENSE-APACHE](LICENSE-APACHE) y
+[LICENSE-MIT](LICENSE-MIT). Ambas son accesibles también desde la ventana
+Acerca de, de modo que los términos se alcanzan desde la propia aplicación.
+
+Salvo que usted indique lo contrario, cualquier contribución que envíe
+deliberadamente para su inclusión en este trabajo tendrá licencia doble como
+arriba, sin términos ni condiciones adicionales.
