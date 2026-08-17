@@ -37,7 +37,7 @@ impl Editor {
         Self {
             address: instruction.address,
             file_offset,
-            original: instruction.bytes.clone(),
+            original: instruction.bytes.to_vec(),
             input: to_hex(&instruction.bytes),
         }
     }
@@ -203,9 +203,9 @@ mod tests {
     fn instruction(address: u64, bytes: &[u8]) -> Instruction {
         Instruction {
             address,
-            bytes: bytes.to_vec(),
+            bytes: desdec_core::InstructionBytes::new(bytes).expect("test instructions are short"),
             text: "push %rbp".to_owned(),
-            section: ".text".to_owned(),
+            section: std::sync::Arc::from(".text"),
         }
     }
 

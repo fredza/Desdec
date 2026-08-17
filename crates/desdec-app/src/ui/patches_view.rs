@@ -317,7 +317,8 @@ mod tests {
                     .get(at..at + instruction.bytes.len())
                     .unwrap_or_else(|| panic!("{label}: {offset:#x} is outside the file"));
                 assert_eq!(
-                    found, instruction.bytes,
+                    found,
+                    instruction.bytes.as_slice(),
                     "{label}: {:#x} maps to {offset:#x}, which holds other bytes",
                     instruction.address
                 );

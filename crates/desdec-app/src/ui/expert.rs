@@ -246,12 +246,19 @@ fn mitigation_row(ui: &mut egui::Ui, mitigation: &Mitigation, language: Language
 ///
 /// Returns the library whose explanation was asked for, so the caller opens
 /// the window rather than this drawing code reaching into the application.
+/// A library the reader asked about, and where the button they pressed sits,
+/// so the explanation can be put where they were looking.
+pub struct LibraryQuestion {
+    pub library: String,
+    pub asked_at: egui::Rect,
+}
+
 pub fn libraries_card(
     ui: &mut egui::Ui,
     analysis: &Analysis,
     language: Language,
     explain: bool,
-) -> Option<String> {
+) -> Option<LibraryQuestion> {
     let mut asked = None;
     card(ui, text(language, Text::LinkedLibraries), |ui| {
         if analysis.details.linked_libraries.is_empty() {
@@ -261,13 +268,17 @@ pub fn libraries_card(
         for library in &analysis.details.linked_libraries {
             ui.horizontal(|ui| {
                 ui.monospace(library);
-                if explain
-                    && ui
-                        .small_button("?")
-                        .on_hover_text(text(language, Text::WhatIsThisFor))
-                        .clicked()
-                {
-                    asked = Some(library.clone());
+                if !explain {
+                    return;
+                }
+                let button = ui
+                    .small_button("?")
+                    .on_hover_text(text(language, Text::WhatIsThisFor));
+                if button.clicked() {
+                    asked = Some(LibraryQuestion {
+                        library: library.clone(),
+                        asked_at: button.rect,
+                    });
                 }
             });
         }

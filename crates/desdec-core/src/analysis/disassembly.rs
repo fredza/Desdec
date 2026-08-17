@@ -1,31 +1,107 @@
-//! Bounded x86/x86-64 and ARM64 decoding, independent of the host platform.
+//! x86/x86-64 and ARM64 decoding, independent of the host platform.
+//!
+//! Every executable byte that was read is decoded. There is no cap on the
+//! number of instructions: a listing that stopped after so many looked exactly
+//! like a program that ends there, and the reader had no way to reach the rest
+//! of the code. What bounds the work is the file itself — at most
+//! [`crate::ANALYSIS_BYTE_LIMIT`] is ever read from disk — and the listing is
+//! virtualised, so its length costs the interface nothing.
 use crate::{Architecture, analysis::Section, binary::BinaryFormat};
 use capstone::{
     Capstone,
     arch::{BuildsCapstone, arm64},
 };
 use iced_x86::{Decoder, DecoderOptions, Formatter, GasFormatter};
+use std::sync::Arc;
 
-pub const MAXIMUM_INSTRUCTIONS: usize = 100_000;
+/// The machine bytes of one instruction, held inline.
+///
+/// The longest x86-64 instruction is fifteen bytes and an `AArch64` one is
+/// always four, so a heap-allocated vector here meant one allocation per
+/// instruction to hold at most fifteen bytes — eighteen million allocations
+/// for a large shared library, and more memory spent on the pointer to the
+/// bytes than on the bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstructionBytes {
+    length: u8,
+    bytes: [u8; Self::MAXIMUM],
+}
+
+impl InstructionBytes {
+    /// The longest instruction any supported architecture encodes.
+    pub const MAXIMUM: usize = 15;
+
+    /// Keeps `bytes`, or as much of it as an instruction can be.
+    ///
+    /// A longer slice is not something a decoder produces; it is refused
+    /// rather than silently stored in part, so nothing can present a fragment
+    /// as an instruction.
+    #[must_use]
+    pub fn new(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() > Self::MAXIMUM {
+            return None;
+        }
+        let mut stored = [0_u8; Self::MAXIMUM];
+        stored[..bytes.len()].copy_from_slice(bytes);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the length was just checked against MAXIMUM, which is 15"
+        )]
+        let length = bytes.len() as u8;
+        Some(Self {
+            length,
+            bytes: stored,
+        })
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.length)]
+    }
+}
+
+impl std::ops::Deref for InstructionBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl<const N: usize> PartialEq<[u8; N]> for InstructionBytes {
+    fn eq(&self, other: &[u8; N]) -> bool {
+        self.as_slice() == other
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Instruction {
     pub address: u64,
-    pub bytes: Vec<u8>,
+    pub bytes: InstructionBytes,
     pub text: String,
-    pub section: String,
+    /// Name of the section this was decoded from, shared between every
+    /// instruction of that section.
+    ///
+    /// A section name copied into each instruction cost more than the
+    /// instruction's own bytes: a listing of eighteen million — which a large
+    /// shared library really does reach, now that nothing caps it — spent half
+    /// a gigabyte repeating `.text`.
+    pub section: Arc<str>,
 }
 
-/// Instructions decoded from a file, and whether the decoder ran out of room.
+/// Instructions decoded from a file, and whether any code was left undecoded.
 ///
-/// The flag is not cosmetic: a listing that stops at the limit looks exactly
-/// like a program that ends there, and a reader must not mistake the one for
-/// the other.
+/// The flag is not cosmetic: a listing that stops short looks exactly like a
+/// program that ends there, and a reader must not mistake the one for the
+/// other. It is set when an executable section lies beyond the bytes that were
+/// read — a file larger than the analysis limit — and never because the
+/// decoder gave up on its own.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Decoded {
     /// Ordered by address, so a listing reads like the image and a lookup can
     /// bisect instead of scanning.
     pub instructions: Vec<Instruction>,
-    /// Set when [`MAXIMUM_INSTRUCTIONS`] was reached with code left to decode.
+    /// Set when executable bytes existed that could not be read.
     pub truncated: bool,
 }
 
@@ -54,16 +130,20 @@ pub fn decode(
 }
 
 fn decode_x86(file: &[u8], sections: &[Section], bits: u32) -> Decoded {
-    let mut output = Vec::new();
-    let mut executable = sections.iter().filter(|s| s.permissions.execute).peekable();
-    while let Some(section) = executable.next() {
+    let mut output = Vec::with_capacity(estimated_instructions(sections, 3));
+    let mut truncated = false;
+    for section in sections.iter().filter(|s| s.permissions.execute) {
         let Some(bytes) = section.bytes_in(file) else {
+            // The section is past the end of what was read: its code exists,
+            // and is not in this listing.
+            truncated |= section.file_size > 0;
             continue;
         };
+        let name: Arc<str> = Arc::from(section.name.as_str());
         let mut decoder =
             Decoder::with_ip(bits, bytes, section.virtual_address, DecoderOptions::NONE);
         let mut formatter = GasFormatter::new();
-        while decoder.can_decode() && output.len() < MAXIMUM_INSTRUCTIONS {
+        while decoder.can_decode() {
             let instruction = decoder.decode();
             let length = instruction.len();
             if length == 0 {
@@ -73,33 +153,44 @@ fn decode_x86(file: &[u8], sections: &[Section], bits: u32) -> Decoded {
                 .unwrap_or(usize::MAX);
             let mut text = String::new();
             formatter.format(&instruction, &mut text);
+            let Some(machine_bytes) = bytes
+                .get(start..start.saturating_add(length))
+                .and_then(InstructionBytes::new)
+            else {
+                // Neither a short read nor an over-long encoding is an
+                // instruction; the listing takes what it can trust.
+                continue;
+            };
             output.push(Instruction {
                 address: instruction.ip(),
-                bytes: bytes
-                    .get(start..start.saturating_add(length))
-                    .unwrap_or_default()
-                    .to_vec(),
+                bytes: machine_bytes,
                 text,
-                section: section.name.clone(),
+                section: Arc::clone(&name),
             });
-        }
-        if output.len() == MAXIMUM_INSTRUCTIONS {
-            // Truncated only if something was actually left behind: this
-            // section still had bytes, or another executable one follows.
-            let truncated = decoder.can_decode() || executable.peek().is_some();
-            return Decoded {
-                instructions: output,
-                truncated,
-            };
         }
     }
     Decoded {
         instructions: output,
-        truncated: false,
+        truncated,
     }
 }
 
-/// Decodes AArch64 instructions for Apple Silicon Mach-O and ARM64 ELF/PE
+/// Roughly how many instructions the executable sections hold, to size the
+/// listing once instead of growing it a few thousand times on a large image.
+///
+/// `bytes_per_instruction` is a floor — 3 for x86, where instructions are
+/// rarely shorter, and 4 for `AArch64`, where they are exactly that — so the
+/// guess errs towards asking for slightly too much rather than reallocating.
+fn estimated_instructions(sections: &[Section], bytes_per_instruction: u64) -> usize {
+    let code: u64 = sections
+        .iter()
+        .filter(|section| section.permissions.execute)
+        .map(|section| section.file_size)
+        .sum();
+    usize::try_from(code / bytes_per_instruction.max(1)).unwrap_or(0)
+}
+
+/// Decodes `AArch64` instructions for Apple Silicon Mach-O and ARM64 ELF/PE
 /// files. Capstone is used only for this ISA; iced-x86 remains the x86 decoder.
 fn decode_arm64(file: &[u8], sections: &[Section]) -> Decoded {
     let Ok(engine) = Capstone::new()
@@ -110,26 +201,21 @@ fn decode_arm64(file: &[u8], sections: &[Section]) -> Decoded {
     else {
         return Decoded::default();
     };
-    let mut output = Vec::new();
+    let mut output = Vec::with_capacity(estimated_instructions(sections, 4));
+    let mut truncated = false;
     for section in sections
         .iter()
         .filter(|section| section.permissions.execute)
     {
         let Some(bytes) = section.bytes_in(file) else {
+            truncated |= section.file_size > 0;
             continue;
         };
         let Ok(instructions) = engine.disasm_all(bytes, section.virtual_address) else {
             continue;
         };
+        let name: Arc<str> = Arc::from(section.name.as_str());
         for instruction in instructions.iter() {
-            if output.len() == MAXIMUM_INSTRUCTIONS {
-                // This very instruction is being dropped, so something was
-                // certainly left behind.
-                return Decoded {
-                    instructions: output,
-                    truncated: true,
-                };
-            }
             let mnemonic = instruction.mnemonic().unwrap_or_default();
             let operands = instruction.op_str().unwrap_or_default();
             let text = if operands.is_empty() {
@@ -137,17 +223,20 @@ fn decode_arm64(file: &[u8], sections: &[Section]) -> Decoded {
             } else {
                 format!("{mnemonic} {operands}")
             };
+            let Some(machine_bytes) = InstructionBytes::new(instruction.bytes()) else {
+                continue;
+            };
             output.push(Instruction {
                 address: instruction.address(),
-                bytes: instruction.bytes().to_vec(),
+                bytes: machine_bytes,
                 text,
-                section: section.name.clone(),
+                section: Arc::clone(&name),
             });
         }
     }
     Decoded {
         instructions: output,
-        truncated: false,
+        truncated,
     }
 }
 
@@ -187,9 +276,9 @@ fn decode_one_x86(bytes: &[u8], address: u64, bits: u32) -> Option<Instruction> 
     GasFormatter::new().format(&instruction, &mut text);
     Some(Instruction {
         address,
-        bytes: bytes.get(..length)?.to_vec(),
+        bytes: InstructionBytes::new(bytes.get(..length)?)?,
         text,
-        section: String::new(),
+        section: Arc::from(""),
     })
 }
 
@@ -206,13 +295,13 @@ fn decode_one_arm64(bytes: &[u8], address: u64) -> Option<Instruction> {
     let operands = instruction.op_str().unwrap_or_default();
     Some(Instruction {
         address,
-        bytes: instruction.bytes().to_vec(),
+        bytes: InstructionBytes::new(instruction.bytes())?,
         text: if operands.is_empty() {
             mnemonic.to_owned()
         } else {
             format!("{mnemonic} {operands}")
         },
-        section: String::new(),
+        section: Arc::from(""),
     })
 }
 
@@ -283,6 +372,83 @@ mod tests {
         assert_eq!(decoded.instructions[0].address, 0x1_0000_0000);
         assert_eq!(decoded.instructions[0].text, "ret");
         assert!(!decoded.truncated, "one instruction is the whole section");
+    }
+
+    /// Every executable byte that was read is decoded, however many that is.
+    ///
+    /// There used to be a cap of a hundred thousand instructions, which a
+    /// medium-sized program passes: the rest of its code simply could not be
+    /// reached from the interface, and the listing looked complete.
+    #[test]
+    fn a_long_program_is_decoded_to_its_last_instruction() {
+        const COUNT: usize = 250_000;
+        let file = vec![0x90; COUNT]; // One `nop` per byte.
+        let sections = [Section {
+            name: ".text".to_owned(),
+            virtual_address: 0x40_1000,
+            file_offset: 0,
+            virtual_size: file.len() as u64,
+            file_size: file.len() as u64,
+            permissions: Permissions {
+                read: true,
+                execute: true,
+                ..Permissions::default()
+            },
+            entropy: None,
+        }];
+
+        let decoded = decode(
+            &file,
+            BinaryFormat::Elf {
+                bits: 64,
+                endianness: Endianness::Little,
+            },
+            Architecture::X86_64,
+            &sections,
+        );
+
+        assert_eq!(decoded.instructions.len(), COUNT);
+        assert!(!decoded.truncated, "nothing was left out");
+        let last = decoded
+            .instructions
+            .last()
+            .expect("the listing is not empty");
+        assert_eq!(last.address, 0x40_1000 + COUNT as u64 - 1);
+    }
+
+    /// Code that lies past the bytes the analysis read is another matter: it
+    /// really is missing, and the listing has to say so.
+    #[test]
+    fn code_beyond_what_was_read_is_reported_as_missing() {
+        let file = vec![0x90; 16];
+        let sections = [Section {
+            name: ".text".to_owned(),
+            virtual_address: 0x40_1000,
+            // The header claims far more than the file holds, as a truncated
+            // read of a large binary leaves it.
+            file_offset: 0,
+            virtual_size: 4096,
+            file_size: 4096,
+            permissions: Permissions {
+                read: true,
+                execute: true,
+                ..Permissions::default()
+            },
+            entropy: None,
+        }];
+
+        let decoded = decode(
+            &file,
+            BinaryFormat::Elf {
+                bits: 64,
+                endianness: Endianness::Little,
+            },
+            Architecture::X86_64,
+            &sections,
+        );
+
+        assert!(decoded.instructions.is_empty());
+        assert!(decoded.truncated, "the missing code must be announced");
     }
 
     /// Sections are decoded in table order; the listing must still come out in
