@@ -48,6 +48,21 @@ translations! {
     Preferences => ["Préférences", "Preferences", "Preferencias"],
     About => ["À propos de Desdec", "About Desdec", "Acerca de Desdec"],
     CollapseMenu => ["Réduire le menu", "Collapse menu", "Contraer menú"],
+    NarrowMenu => [
+        "Réduire le menu aux icônes",
+        "Narrow the menu to icons",
+        "Reducir el menú a iconos",
+    ],
+    WidenMenu => [
+        "Élargir le menu et afficher les libellés",
+        "Widen the menu and show the labels",
+        "Ampliar el menú y mostrar las etiquetas",
+    ],
+    DragToResizeMenu => [
+        "Le bord du menu se tire à la largeur voulue ; elle est conservée.",
+        "Drag the menu's edge to the width you want; it is kept.",
+        "Arrastre el borde del menú al ancho que quiera; se conserva.",
+    ],
     MenuHint => [
         "Le menu est réduit au lancement. Utilisez ☰ pour le rouvrir.",
         "The menu is collapsed at startup. Use ☰ to reopen it.",
@@ -316,6 +331,23 @@ translations! {
         "Traduction déterministe du flot observé, sans code source inventé.",
         "Deterministic translation of the observed flow, with no invented source.",
         "Traducción determinista del flujo observado, sin código fuente inventado.",
+    ],
+    AssemblyPreview => ["Désassemblage correspondant", "Corresponding disassembly", "Ensamblado correspondiente"],
+    JumpToAssembly => ["Sauter vers l’assembleur", "Jump to assembly", "Saltar al ensamblador"],
+    WholeFunctionAssembly => [
+        "Ces moteurs décompilent une fonction entière et n’associent aucune ligne à une adresse : c’est le désassemblage de toute la fonction choisie qui s’ouvre.",
+        "These engines decompile a whole function and map no line to an address: what opens is the assembly of the whole selected function.",
+        "Estos motores descompilan una función entera y no asocian ninguna línea a una dirección: se abre el ensamblado de toda la función elegida.",
+    ],
+    TruncatedDisassembly => [
+        "Le décodage s’est arrêté à la limite de 100 000 instructions : le code au-delà n’a pas été désassemblé.",
+        "Decoding stopped at the 100 000 instruction limit; code past that point was not disassembled.",
+        "La decodificación se detuvo en el límite de 100 000 instrucciones; el código posterior no se desensambló.",
+    ],
+    MoreInstructions => [
+        "instructions supplémentaires, non affichées ici.",
+        "further instructions, not shown here.",
+        "instrucciones más, no mostradas aquí.",
     ],
     NoDisassembly => [
         "Le désassemblage est disponible pour les binaires x86, x86-64 et ARM64 ; ce fichier utilise une autre architecture ou ne contient aucune section exécutable lisible.",

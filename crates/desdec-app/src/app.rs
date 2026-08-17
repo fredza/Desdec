@@ -15,6 +15,7 @@ use eframe::{Storage, egui};
 use crate::{
     commands::{Command, Shortcut},
     i18n::{Language, Text, text},
+    icons::Icon,
     patches::{Editor, Patches},
     preferences::{DecompilerPreference, Preferences, ThemePreference, apply_theme},
     ui::{self, preferences_window::PreferencesTab},
@@ -22,19 +23,26 @@ use crate::{
 
 pub const PREFERENCES_KEY: &str = "desdec.preferences";
 
-/// How long an edited preference may stay in memory before `eframe` writes it
-/// to disk.
+/// How often the host is allowed to save on its own.
 ///
-/// `eframe` only persists during an automatic save or a clean shutdown, and a
-/// shutdown that is not clean — a forced close, a driver reset, a session that
-/// ends with the window still open — loses everything since the last one. The
-/// default interval of 30 seconds made that window wide enough to routinely
-/// lose a theme change on Windows, so we shorten it and, in [`DesdecApp::update`],
-/// schedule a repaint whenever preferences differ from the saved snapshot: the
-/// frame that follows triggers the save even if the application is otherwise
-/// idle. Storage is only written when a value actually changed, so a short
-/// interval costs nothing while nothing is edited.
+/// This is the safety net, not the mechanism: preferences are written by
+/// [`DesdecApp::persist_settled_preferences`] as soon as they settle. The
+/// host's own saving happens on an automatic interval and at a clean
+/// shutdown, and a shutdown that is not clean — a forced close, a driver
+/// reset, a session ending with the window still open — loses everything
+/// since its last write. Its default of 30 seconds was wide enough to lose a
+/// theme chosen a moment earlier, which is what made Windows users see their
+/// preferences vanish; it is shortened here in case the direct write ever
+/// cannot happen.
 pub const AUTO_SAVE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How long the preferences must hold still before they are written.
+///
+/// Long enough that a gesture which changes one continuously — dragging the
+/// navigation menu's edge — is one write rather than one per frame, short
+/// enough that a choice made just before the window is closed is already on
+/// disk.
+pub const SETTLE_DELAY: Duration = Duration::from_millis(400);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum WorkspaceView {
@@ -74,18 +82,33 @@ impl WorkspaceView {
         }
     }
 
-    /// Short label used by the navigation menu, chosen because the native font
-    /// does not cover every pictogram uniformly.
-    pub const fn icon(self) -> &'static str {
+    /// The drawn symbol standing for this view, wherever it is offered — the
+    /// toolbar, the navigation menu, and the menu's icon-only rail.
+    pub const fn glyph(self) -> Icon {
         match self {
-            Self::Overview => "ACC",
-            Self::Segments => "SEG",
-            Self::Functions => "Fn",
-            Self::Strings => "STR",
-            Self::Disassembly => "ASM",
-            Self::Decompile => "DEC",
-            Self::Patches => "PATCH",
-            Self::Yara => "YARA",
+            Self::Overview => Icon::Overview,
+            Self::Segments => Icon::Segments,
+            Self::Functions => Icon::Functions,
+            Self::Strings => Icon::Strings,
+            Self::Disassembly => Icon::Disassembly,
+            Self::Decompile => Icon::Decompile,
+            Self::Patches => Icon::Patches,
+            Self::Yara => Icon::Yara,
+        }
+    }
+
+    /// The command that opens this view, so a menu entry and a shortcut are
+    /// never two different ways of saying different things.
+    pub const fn command(self) -> Command {
+        match self {
+            Self::Overview => Command::Overview,
+            Self::Segments => Command::Segments,
+            Self::Functions => Command::Functions,
+            Self::Strings => Command::Strings,
+            Self::Disassembly => Command::Disassembly,
+            Self::Decompile => Command::Decompile,
+            Self::Patches => Command::Patches,
+            Self::Yara => Command::Yara,
         }
     }
 
@@ -99,20 +122,48 @@ impl WorkspaceView {
     }
 }
 
-const DIALOG_COUNT: usize = 5;
+/// One modal window the interface can put on screen.
+///
+/// Naming the windows in an enum, rather than giving [`Dialogs`] one field per
+/// window, is what keeps them consistent: adding one used to mean editing a
+/// count, a flag list and two index tables in step, and forgetting any of them
+/// still compiled — the new window simply never took part in `Escape`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Dialog {
+    CommandPalette,
+    Preferences,
+    About,
+    /// Explanation of one linked library.
+    Library,
+    /// What an instruction's operand designates.
+    Operand,
+    /// The assembly behind a pseudo-code line.
+    Assembly,
+}
 
-/// Modal windows. Each one is opened by simply setting its flag, from wherever
-/// in the interface; [`Dialogs::track_openings`] turns those flags into an
-/// order so `Escape` closes the window the user is actually looking at.
+impl Dialog {
+    pub const ALL: [Self; 6] = [
+        Self::CommandPalette,
+        Self::Preferences,
+        Self::About,
+        Self::Library,
+        Self::Operand,
+        Self::Assembly,
+    ];
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+const DIALOG_COUNT: usize = Dialog::ALL.len();
+
+/// Modal windows. Each one is opened from wherever in the interface needs it;
+/// [`Dialogs::track_openings`] turns those openings into an order so `Escape`
+/// closes the window the user is actually looking at.
 #[derive(Default)]
 pub struct Dialogs {
-    pub command_palette: bool,
-    pub preferences: bool,
-    pub about: bool,
-    /// Explanation of one linked library.
-    pub library: bool,
-    /// What an instruction's operand designates.
-    pub operand: bool,
+    open: [bool; DIALOG_COUNT],
     /// Opening rank of each dialog, the highest being the topmost.
     ranks: [u64; DIALOG_COUNT],
     /// Flags as of the previous frame, to spot the ones that just opened.
@@ -121,49 +172,48 @@ pub struct Dialogs {
 }
 
 impl Dialogs {
-    fn flags(&self) -> [bool; DIALOG_COUNT] {
-        [
-            self.command_palette,
-            self.preferences,
-            self.about,
-            self.library,
-            self.operand,
-        ]
+    #[must_use]
+    pub const fn is_open(&self, dialog: Dialog) -> bool {
+        self.open[dialog.index()]
     }
 
-    fn flag_mut(&mut self, index: usize) -> &mut bool {
-        match index {
-            0 => &mut self.command_palette,
-            1 => &mut self.preferences,
-            2 => &mut self.about,
-            3 => &mut self.library,
-            _ => &mut self.operand,
-        }
+    pub const fn set(&mut self, dialog: Dialog, open: bool) {
+        self.open[dialog.index()] = open;
+    }
+
+    pub const fn open(&mut self, dialog: Dialog) {
+        self.set(dialog, true);
+    }
+
+    pub const fn close(&mut self, dialog: Dialog) {
+        self.set(dialog, false);
+    }
+
+    pub const fn toggle(&mut self, dialog: Dialog) {
+        self.set(dialog, !self.is_open(dialog));
     }
 
     /// Stamps every dialog opened since the last frame.
     fn track_openings(&mut self) {
-        let open = self.flags();
-        for (index, opened) in open.iter().enumerate() {
+        for (index, opened) in self.open.iter().enumerate() {
             if *opened && !self.was_open[index] {
                 self.clock += 1;
                 self.ranks[index] = self.clock;
             }
         }
-        self.was_open = open;
+        self.was_open = self.open;
     }
 
     /// Closes the most recently opened dialog and reports whether one was
     /// closed.
     fn dismiss_topmost(&mut self) -> bool {
-        let open = self.flags();
         let topmost = (0..DIALOG_COUNT)
-            .filter(|index| open[*index])
+            .filter(|index| self.open[*index])
             .max_by_key(|index| self.ranks[*index]);
         let Some(index) = topmost else {
             return false;
         };
-        *self.flag_mut(index) = false;
+        self.open[index] = false;
         self.was_open[index] = false;
         true
     }
@@ -173,6 +223,14 @@ impl Dialogs {
 pub struct PaletteState {
     pub query: String,
     pub selected: usize,
+}
+
+/// What a pseudo-code click can be mapped to without inventing source-line
+/// addresses for an external decompiler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PseudocodeAssembly {
+    Instruction(u64),
+    Function(u64),
 }
 
 /// The history stays useful without letting a long-lived preferences file grow
@@ -234,6 +292,12 @@ pub struct DesdecApp {
     pub preferences_tab: PreferencesTab,
     pub editing_shortcut: Option<Command>,
     pub palette: PaletteState,
+    /// Named functions of the open binary, with their bodies and basic blocks.
+    ///
+    /// Derived from the analysis and rebuilt only when one is installed: the
+    /// Functions view reads it every frame, and finding basic blocks for a
+    /// whole symbol table is not frame work.
+    pub functions: Vec<crate::ui::functions::Function>,
     /// Address of the function currently inspected in the Functions view.
     pub selected_function: Option<u64>,
     /// Instruction selected in the disassembly or local pseudo-code view.
@@ -242,6 +306,8 @@ pub struct DesdecApp {
     pub pending_instruction_scroll: Option<u64>,
     /// Temporarily draws attention to an instruction reached from another view.
     pub instruction_attention: Option<(u64, f64)>,
+    /// The assembly bubble opened from a pseudo-code line.
+    pub pseudocode_assembly: Option<PseudocodeAssembly>,
     /// File offset of the string inspected in the Strings view.
     pub selected_string: Option<u64>,
     /// Free-text filter applied to the extracted strings.
@@ -276,6 +342,10 @@ pub struct DesdecApp {
     /// is open would spawn a process sixty times a second.
     engine_availability: HashMap<&'static str, (String, decompiler::Availability)>,
     jobs: BackgroundJobs,
+    /// Preferences as of the previous frame, and the time they last changed,
+    /// so a burst of changes is written once rather than frame by frame.
+    preferences_last_seen: Preferences,
+    preferences_changed_at: Option<f64>,
     /// Last state handed to storage, used to detect unsaved preferences.
     persisted_preferences: Preferences,
 }
@@ -289,6 +359,7 @@ impl DesdecApp {
         apply_theme(&creation_context.egui_ctx, preferences.theme);
         let mut app = Self {
             persisted_preferences: preferences.clone(),
+            preferences_last_seen: preferences.clone(),
             preferences,
             ..Self::default()
         };
@@ -389,13 +460,13 @@ impl DesdecApp {
                 self.preferences.show_tooltips = !self.preferences.show_tooltips;
             }
             Command::CommandPalette => {
-                self.dialogs.command_palette = !self.dialogs.command_palette;
-                if self.dialogs.command_palette {
+                self.dialogs.toggle(Dialog::CommandPalette);
+                if self.dialogs.is_open(Dialog::CommandPalette) {
                     self.palette = PaletteState::default();
                 }
             }
-            Command::Preferences => self.dialogs.preferences = true,
-            Command::About => self.dialogs.about = true,
+            Command::Preferences => self.dialogs.open(Dialog::Preferences),
+            Command::About => self.dialogs.open(Dialog::About),
             Command::Overview | Command::Segments => self.open_view(command),
             Command::ExportPatched => {
                 self.open_view(command);
@@ -547,9 +618,12 @@ impl DesdecApp {
         match result {
             Ok(analysis) => {
                 self.remember_recent_binary(path);
+                // Cleared first: what follows describes the new file, and
+                // resetting afterwards would throw the function index away.
+                self.reset_file_state();
+                self.functions = crate::ui::functions::all(&analysis);
                 self.analysis = Some(analysis);
                 self.error = None;
-                self.reset_file_state();
                 // Kept so an operand's target can be read without going back
                 // to the disk on every inspection.
                 self.file_bytes = std::fs::read(path).unwrap_or_default();
@@ -921,6 +995,7 @@ impl DesdecApp {
     /// something else entirely.
     fn reset_file_state(&mut self) {
         self.active_view = WorkspaceView::Overview;
+        self.functions.clear();
         self.strings_filter.clear();
         self.strings_unmapped_only = false;
         self.strings_unreferenced_only = false;
@@ -928,6 +1003,8 @@ impl DesdecApp {
         self.selected_instruction = None;
         self.pending_instruction_scroll = None;
         self.instruction_attention = None;
+        self.pseudocode_assembly = None;
+        self.dialogs.close(Dialog::Assembly);
         self.selected_string = None;
         self.patches.clear();
         self.patch_editor = None;
@@ -976,6 +1053,54 @@ impl DesdecApp {
         }
         self.persisted_preferences = self.preferences.clone();
     }
+
+    /// Writes the preferences to disk once they stop changing.
+    ///
+    /// The host writes them on a timer of its own and at a clean shutdown, and
+    /// a shutdown that is not clean loses everything since its last write —
+    /// which on Windows routinely meant losing a theme chosen a moment before
+    /// closing the window. This does not wait for that timer: it writes, and
+    /// flushes, as soon as the preferences have held still for
+    /// [`SETTLE_DELAY`].
+    ///
+    /// Settling matters as much as writing. Dragging the menu's edge changes a
+    /// preference on every frame of the drag, and a write per frame would be
+    /// hundreds of writes for one gesture; waiting for the change to stop
+    /// turns the whole drag into a single write, when the reader lets go.
+    pub fn persist_settled_preferences(
+        &mut self,
+        ctx: &egui::Context,
+        storage: Option<&mut (dyn Storage + 'static)>,
+    ) {
+        let now = ctx.input(|input| input.time);
+        if self.preferences != self.preferences_last_seen {
+            self.preferences_last_seen = self.preferences.clone();
+            self.preferences_changed_at = Some(now);
+        }
+        if !self.has_unsaved_preferences() {
+            self.preferences_changed_at = None;
+            return;
+        }
+        let Some(changed_at) = self.preferences_changed_at else {
+            // Unsaved but unchanged since the last frame: nothing has moved
+            // for a while, so this is a leftover from a write that could not
+            // happen — storage missing at the time, most likely.
+            self.preferences_changed_at = Some(now);
+            return;
+        };
+        if now - changed_at < SETTLE_DELAY.as_secs_f64() {
+            // Come back when the delay is up, even if nothing else asks for a
+            // frame: an idle application must still save what it was given.
+            ctx.request_repaint_after(SETTLE_DELAY);
+            return;
+        }
+        let Some(storage) = storage else {
+            return; // No storage at all: nothing to write to, and nothing to retry.
+        };
+        self.persist_preferences(storage);
+        storage.flush();
+        self.preferences_changed_at = None;
+    }
 }
 
 /// Where decompiled functions are kept between runs.
@@ -1018,6 +1143,13 @@ impl DesdecApp {
     /// modules that cannot reach the private fields.
     pub fn for_test(analysis: Option<Analysis>, active_view: WorkspaceView) -> Self {
         Self {
+            // Derived exactly as opening a binary derives it, or the views
+            // under test would read an index the real application would have
+            // filled.
+            functions: analysis
+                .as_ref()
+                .map(crate::ui::functions::all)
+                .unwrap_or_default(),
             analysis,
             active_view,
             ..Self::default()
@@ -1039,8 +1171,11 @@ impl DesdecApp {
 }
 
 impl eframe::App for DesdecApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.run_frame(ctx);
+        // Written here rather than left to `save`: see
+        // [`DesdecApp::persist_settled_preferences`].
+        self.persist_settled_preferences(ctx, frame.storage_mut());
     }
 
     fn save(&mut self, storage: &mut dyn Storage) {
@@ -1094,6 +1229,9 @@ mod tests {
     #[derive(Default)]
     struct MemoryStorage {
         values: HashMap<String, String>,
+        /// How many times the contents were pushed out — on the real thing,
+        /// how many times the file was written.
+        flushes: usize,
     }
 
     impl Storage for MemoryStorage {
@@ -1105,7 +1243,9 @@ mod tests {
             self.values.insert(key.to_owned(), value);
         }
 
-        fn flush(&mut self) {}
+        fn flush(&mut self) {
+            self.flushes += 1;
+        }
     }
 
     /// Escape closes what is on top, which is whatever was opened last — not a
@@ -1113,23 +1253,23 @@ mod tests {
     #[test]
     fn escape_dismisses_dialogs_from_the_newest_to_the_oldest() {
         let mut app = DesdecApp::default();
-        app.dialogs.preferences = true;
+        app.dialogs.open(Dialog::Preferences);
         app.dialogs.track_openings();
-        app.dialogs.about = true;
+        app.dialogs.open(Dialog::About);
         app.dialogs.track_openings();
-        app.dialogs.command_palette = true;
+        app.dialogs.open(Dialog::CommandPalette);
         app.dialogs.track_openings();
 
         assert!(app.dismiss_topmost_dialog());
-        assert!(!app.dialogs.command_palette);
-        assert!(app.dialogs.about);
+        assert!(!app.dialogs.is_open(Dialog::CommandPalette));
+        assert!(app.dialogs.is_open(Dialog::About));
 
         assert!(app.dismiss_topmost_dialog());
-        assert!(!app.dialogs.about);
-        assert!(app.dialogs.preferences);
+        assert!(!app.dialogs.is_open(Dialog::About));
+        assert!(app.dialogs.is_open(Dialog::Preferences));
 
         assert!(app.dismiss_topmost_dialog());
-        assert!(!app.dialogs.preferences);
+        assert!(!app.dialogs.is_open(Dialog::Preferences));
 
         assert!(!app.dismiss_topmost_dialog());
     }
@@ -1138,19 +1278,19 @@ mod tests {
     #[test]
     fn a_reopened_dialog_becomes_the_topmost_one() {
         let mut app = DesdecApp::default();
-        app.dialogs.about = true;
+        app.dialogs.open(Dialog::About);
         app.dialogs.track_openings();
-        app.dialogs.preferences = true;
+        app.dialogs.open(Dialog::Preferences);
         app.dialogs.track_openings();
 
-        app.dialogs.about = false;
+        app.dialogs.close(Dialog::About);
         app.dialogs.track_openings();
-        app.dialogs.about = true;
+        app.dialogs.open(Dialog::About);
         app.dialogs.track_openings();
 
         assert!(app.dismiss_topmost_dialog());
-        assert!(!app.dialogs.about);
-        assert!(app.dialogs.preferences);
+        assert!(!app.dialogs.is_open(Dialog::About));
+        assert!(app.dialogs.is_open(Dialog::Preferences));
     }
 
     /// A cached answer must be found again for the same binary and function,
@@ -1158,11 +1298,11 @@ mod tests {
     /// than the cache module alone, so the key it builds is exercised too.
     #[test]
     fn a_cached_function_is_reused_and_never_confused_with_another() {
-        let path = std::env::current_exe().expect("the test binary has a path");
-        let analysis = desdec_core::analyse_path(&path).expect("the test binary is analysable");
-        let digest = analysis.sha256.expect("a whole file has a digest");
+        let digest = crate::testing::reference_analysis()
+            .sha256
+            .expect("a whole file has a digest");
 
-        let mut app = DesdecApp::for_test(Some(analysis), WorkspaceView::Decompile);
+        let mut app = crate::testing::opened_app(WorkspaceView::Decompile);
         app.preferences.decompiler = DecompilerPreference::RzGhidra;
         let (directory, keyed) = app.cache_target().expect("caching is on by default");
         assert_eq!(keyed, digest, "the binary's digest is what keys the cache");
@@ -1196,8 +1336,7 @@ mod tests {
     /// one binary's decompilation for another.
     #[test]
     fn a_binary_without_a_digest_is_never_cached() {
-        let path = std::env::current_exe().expect("the test binary has a path");
-        let mut analysis = desdec_core::analyse_path(&path).expect("analysable");
+        let mut analysis = crate::testing::reference_analysis().clone();
         analysis.sha256 = None;
         analysis.truncated = true;
 
@@ -1208,9 +1347,7 @@ mod tests {
 
     #[test]
     fn turning_the_cache_off_stops_it_being_used() {
-        let path = std::env::current_exe().expect("the test binary has a path");
-        let analysis = desdec_core::analyse_path(&path).expect("analysable");
-        let mut app = DesdecApp::for_test(Some(analysis), WorkspaceView::Decompile);
+        let mut app = crate::testing::opened_app(WorkspaceView::Decompile);
 
         assert!(app.cache_target().is_some());
         app.preferences.cache_decompilations = false;
@@ -1256,16 +1393,44 @@ mod tests {
     /// so the action bar carries it whenever a binary is open.
     #[test]
     fn a_loaded_binary_can_be_closed_from_the_keyboard() {
-        let path = std::env::current_exe().expect("the test binary has a path");
-        let analysis = desdec_core::analyse_path(&path).expect("the test binary is analysable");
         let ctx = egui::Context::default();
-        let mut app = DesdecApp::for_test(Some(analysis), WorkspaceView::Disassembly);
+        let mut app = crate::testing::opened_app(WorkspaceView::Disassembly);
 
         app.run_command(&ctx, Command::CloseBinary);
 
         assert!(app.analysis.is_none());
         assert!(app.patches.is_empty(), "patches belong to the closed file");
         assert_eq!(app.active_view, WorkspaceView::Overview);
+    }
+
+    /// The function index is derived from the analysis, so opening a binary
+    /// must fill it and closing one must drop it: a stale index would describe
+    /// a file that is no longer open.
+    #[test]
+    fn opening_a_binary_indexes_its_functions_and_closing_forgets_them() {
+        let path = crate::testing::reference_path();
+        let mut app = DesdecApp::default();
+
+        app.apply_inspection(path, Ok(crate::testing::reference_analysis().clone()));
+
+        let functions = &app.functions;
+        assert!(
+            !functions.is_empty(),
+            "the reference binary names functions"
+        );
+        assert!(
+            functions.iter().all(|function| function.instructions.end
+                <= app
+                    .analysis
+                    .as_ref()
+                    .expect("the analysis was installed")
+                    .instructions
+                    .len()),
+            "every indexed body must point inside the listing it indexes"
+        );
+
+        app.close_binary();
+        assert!(app.functions.is_empty());
     }
 
     #[test]
@@ -1287,26 +1452,23 @@ mod tests {
         let mut app = DesdecApp::default();
 
         app.run_command(&ctx, Command::CommandPalette);
-        assert!(app.dialogs.command_palette);
+        assert!(app.dialogs.is_open(Dialog::CommandPalette));
 
         app.run_command(&ctx, Command::CommandPalette);
-        assert!(!app.dialogs.command_palette);
+        assert!(!app.dialogs.is_open(Dialog::CommandPalette));
     }
 
     #[test]
     fn escape_leaves_a_shortcut_capture_before_closing_its_dialog() {
         let mut app = DesdecApp {
-            dialogs: Dialogs {
-                preferences: true,
-                ..Dialogs::default()
-            },
             editing_shortcut: Some(Command::OpenBinary),
             ..Default::default()
         };
+        app.dialogs.open(Dialog::Preferences);
 
         app.dismiss_topmost_dialog();
         assert!(app.editing_shortcut.is_none());
-        assert!(app.dialogs.preferences);
+        assert!(app.dialogs.is_open(Dialog::Preferences));
     }
 
     #[test]
@@ -1413,6 +1575,91 @@ mod tests {
         );
     }
 
+    /// Runs the frames of one stretch of time, as the interface really would.
+    ///
+    /// Time is the application's own clock, so it has to run forward across
+    /// the whole test: a fresh context starting at zero would place the last
+    /// change in the future and nothing would ever settle.
+    fn frames(
+        app: &mut DesdecApp,
+        storage: &mut MemoryStorage,
+        ctx: &egui::Context,
+        from: f64,
+        to: f64,
+    ) -> f64 {
+        let mut time = from;
+        while time <= to {
+            let input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.persist_settled_preferences(ctx, Some(storage));
+            });
+            time += 0.1;
+        }
+        time
+    }
+
+    /// A preference must reach the disk on its own, shortly after it is set,
+    /// without waiting for the host's auto-save or a clean shutdown: on
+    /// Windows that wait routinely lost a theme chosen a moment before the
+    /// window was closed.
+    #[test]
+    fn a_changed_preference_is_written_shortly_after_it_settles() {
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::default();
+        let mut storage = MemoryStorage::default();
+        app.preferences.theme = ThemePreference::Catppuccin;
+
+        frames(
+            &mut app,
+            &mut storage,
+            &ctx,
+            0.0,
+            SETTLE_DELAY.as_secs_f64() * 2.0,
+        );
+
+        assert!(!app.has_unsaved_preferences(), "the change was not written");
+        assert_eq!(storage.flushes, 1, "the write must reach the disk, once");
+        let written: Preferences =
+            eframe::get_value(&storage, PREFERENCES_KEY).expect("preferences were stored");
+        assert_eq!(written.theme, ThemePreference::Catppuccin);
+    }
+
+    /// A gesture that changes a preference on every frame — dragging the
+    /// menu's edge — must cost one write, not one per frame.
+    #[test]
+    fn a_continuous_change_is_written_once_when_it_stops() {
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::default();
+        let mut storage = MemoryStorage::default();
+
+        let mut time = 0.0;
+        for width in 120..160 {
+            app.preferences.navigation_width = width;
+            let input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                app.persist_settled_preferences(ctx, Some(&mut storage));
+            });
+            time += 0.05;
+        }
+        assert_eq!(storage.flushes, 0, "nothing is written mid-gesture");
+
+        frames(
+            &mut app,
+            &mut storage,
+            &ctx,
+            time,
+            time + SETTLE_DELAY.as_secs_f64() * 2.0,
+        );
+        assert_eq!(storage.flushes, 1, "the finished gesture is one write");
+        assert!(!app.has_unsaved_preferences());
+    }
+
     /// Views backed by real data must not announce themselves as planned, and
     /// planned ones must always carry an explanation.
     #[test]
@@ -1425,14 +1672,14 @@ mod tests {
             WorkspaceView::Decompile,
             WorkspaceView::Strings,
             WorkspaceView::Patches,
+            WorkspaceView::Yara,
         ];
 
         for view in WorkspaceView::ALL {
             assert_eq!(
                 view.planned_explanation().is_none(),
                 IMPLEMENTED.contains(view),
-                "{} is inconsistent",
-                view.icon()
+                "{view:?} is inconsistent"
             );
         }
     }

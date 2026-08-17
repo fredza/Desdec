@@ -2,7 +2,7 @@ use desdec_core::{Analysis, entropy};
 use eframe::egui;
 
 use crate::{
-    app::{DesdecApp, WorkspaceView},
+    app::{DesdecApp, Dialog, WorkspaceView},
     i18n::{Language, Text, text},
     preferences::accent,
     ui::{
@@ -69,7 +69,7 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
             let explain = app.preferences.explain_libraries;
             if let Some(library) = overview(ui, analysis, language, explain) {
                 app.explaining_library = Some(library);
-                app.dialogs.library = true;
+                app.dialogs.open(Dialog::Library);
             }
         }
         WorkspaceView::Segments => segments::show(ui, analysis, language),
@@ -88,9 +88,13 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 language,
             );
         }
-        WorkspaceView::Functions => {
-            functions::show(ui, analysis, &mut app.selected_function, language)
-        }
+        WorkspaceView::Functions => functions::show(
+            ui,
+            analysis,
+            &app.functions,
+            &mut app.selected_function,
+            language,
+        ),
         WorkspaceView::Disassembly => {
             let action = disassembly::show(
                 ui,
@@ -103,7 +107,7 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
             );
             if let Some(address) = action.inspect {
                 app.inspecting_operand = Some(address);
-                app.dialogs.operand = true;
+                app.dialogs.open(Dialog::Operand);
             }
             if let Some(address) = action.edit {
                 // Editing happens where the patches live, so the pending list
@@ -223,6 +227,15 @@ fn alerts(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
             ui.add_space(8.0);
         }
         ui.colored_label(ERROR, text(language, Text::TruncatedAnalysis));
+        shown = true;
+    }
+    // A separate limit from the one above: the file may have been read whole
+    // and the decoder still have stopped short of the end of the code.
+    if analysis.code_truncated {
+        if shown {
+            ui.add_space(8.0);
+        }
+        ui.colored_label(ERROR, text(language, Text::TruncatedDisassembly));
         shown = true;
     }
     if shown {

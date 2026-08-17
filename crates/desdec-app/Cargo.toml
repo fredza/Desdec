@@ -13,6 +13,9 @@ rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
+# Synthetic ELF, PE and Mach-O binaries, so the interface tests do not depend
+# on the format and architecture of the machine they happen to run on.
+desdec-core = { path = "../desdec-core", features = ["fixtures"] }
 # Same format eframe uses for its native storage file.
 ron = "0.8"
 

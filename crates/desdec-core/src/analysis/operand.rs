@@ -227,10 +227,7 @@ pub fn last_write(
     register: &str,
     architecture: Architecture,
 ) -> Option<LastWrite> {
-    let position = analysis
-        .instructions
-        .iter()
-        .position(|instruction| instruction.address == address)?;
+    let position = analysis.instruction_index(address)?;
 
     for instruction in analysis.instructions[..position]
         .iter()

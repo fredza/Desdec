@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use crate::{
-    app::{DesdecApp, WorkspaceView},
+    app::{DesdecApp, Dialog, WorkspaceView},
     commands::Command,
     i18n::Text,
     icons::{self, Icon},
@@ -12,26 +12,16 @@ const HEIGHT: f32 = 48.0;
 const HAMBURGER_SIZE: egui::Vec2 = egui::vec2(34.0, 30.0);
 const CLOSE_BUTTON_SIZE: egui::Vec2 = egui::vec2(26.0, 26.0);
 
-/// Toolbar actions that switch the workspace view.
-const VIEW_ACTIONS: &[(Icon, Command, WorkspaceView)] = &[
-    (Icon::Overview, Command::Overview, WorkspaceView::Overview),
-    (
-        Icon::Disassembly,
-        Command::Disassembly,
-        WorkspaceView::Disassembly,
-    ),
-    (
-        Icon::Decompile,
-        Command::Decompile,
-        WorkspaceView::Decompile,
-    ),
-    (
-        Icon::Functions,
-        Command::Functions,
-        WorkspaceView::Functions,
-    ),
-    (Icon::Strings, Command::Strings, WorkspaceView::Strings),
-    (Icon::Patches, Command::Patches, WorkspaceView::Patches),
+/// Views the toolbar offers directly, in reading order. Each one draws the
+/// icon and runs the command the view itself declares, so the toolbar and the
+/// menu can never come to name the same view differently.
+const VIEW_ACTIONS: &[WorkspaceView] = &[
+    WorkspaceView::Overview,
+    WorkspaceView::Disassembly,
+    WorkspaceView::Decompile,
+    WorkspaceView::Functions,
+    WorkspaceView::Strings,
+    WorkspaceView::Patches,
 ];
 
 /// Right-aligned actions, drawn right to left in this order.
@@ -45,8 +35,17 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         .exact_height(HEIGHT)
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
+                // Drawn rather than typed: the three-bar character is missing
+                // from some system fonts and rendered as a blank box there.
                 let hamburger = app.tooltip(
-                    ui.add(egui::Button::new("☰").min_size(HAMBURGER_SIZE).frame(false)),
+                    icons::sized_button(
+                        ui,
+                        Icon::Menu,
+                        None,
+                        app.navigation_open,
+                        accent(app.preferences.theme),
+                        HAMBURGER_SIZE,
+                    ),
                     app.t(Text::Menu),
                 );
                 if hamburger.clicked() {
@@ -89,7 +88,14 @@ fn open_binary(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let active_file = app.t(Text::ActiveFile);
     app.tooltip(ui.label(egui::RichText::new(name).monospace()), active_file);
     let close = app.tooltip(
-        ui.add(egui::Button::new("×").min_size(CLOSE_BUTTON_SIZE)),
+        icons::sized_button(
+            ui,
+            Icon::Close,
+            None,
+            false,
+            accent(app.preferences.theme),
+            CLOSE_BUTTON_SIZE,
+        ),
         &app.command_tooltip(Command::CloseBinary),
     );
     if close.clicked() {
@@ -100,18 +106,19 @@ fn open_binary(app: &mut DesdecApp, ui: &mut egui::Ui) {
 fn toolbar(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
     let accent = accent(app.preferences.theme);
 
-    for (icon, command, view) in VIEW_ACTIONS {
+    for view in VIEW_ACTIONS {
+        let command = view.command();
         let selected = app.active_view == *view;
         if icons::button(
             ui,
-            *icon,
-            app.optional_command_tooltip(*command),
+            view.glyph(),
+            app.optional_command_tooltip(command),
             selected,
             accent,
         )
         .clicked()
         {
-            app.run_command(ctx, *command);
+            app.run_command(ctx, command);
         }
     }
 
@@ -121,7 +128,8 @@ fn toolbar(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
                 ui,
                 *icon,
                 app.optional_command_tooltip(*command),
-                matches!(command, Command::CommandPalette) && app.dialogs.command_palette,
+                matches!(command, Command::CommandPalette)
+                    && app.dialogs.is_open(Dialog::CommandPalette),
                 accent,
             )
             .clicked()

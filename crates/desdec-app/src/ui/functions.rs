@@ -10,7 +10,7 @@ use eframe::egui;
 
 use crate::{
     i18n::{Language, Text, text},
-    ui::{MUTED, card, format_size, syntax},
+    ui::{MUTED, ROW_HEIGHT, card, format_size, syntax},
 };
 
 const GRAPH_NODE_SIZE: egui::Vec2 = egui::vec2(230.0, 42.0);
@@ -19,17 +19,31 @@ const GRAPH_ROW_HEIGHT: f32 = 68.0;
 /// A function selected from the symbol table, with its decoded body and basic
 /// blocks. Function boundaries are exact when the symbol gives a size; for
 /// zero-sized symbols the next function symbol bounds the decoded body.
-struct Function<'a> {
-    symbol: &'a Symbol,
-    start: u64,
-    end: u64,
-    instructions: Vec<&'a Instruction>,
+///
+/// The body is a position in [`Analysis::instructions`] and the whole list is
+/// owned, so it can be built once when a binary is opened. Rebuilding it per
+/// frame meant sorting the listing and finding the basic blocks of every
+/// function sixty times a second, for a table that never changes.
+pub struct Function {
+    pub name: String,
+    pub start: u64,
+    pub end: u64,
+    /// Position of the decoded body inside [`Analysis::instructions`].
+    pub instructions: Range<usize>,
     blocks: Vec<BasicBlock>,
 }
 
-impl Function<'_> {
+impl Function {
     fn size(&self) -> u64 {
         self.end.saturating_sub(self.start)
+    }
+
+    /// The decoded body, read back from the analysis it indexes.
+    fn body<'a>(&self, analysis: &'a Analysis) -> &'a [Instruction] {
+        analysis
+            .instructions
+            .get(self.instructions.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -49,10 +63,10 @@ impl BasicBlock {
 pub fn show(
     ui: &mut egui::Ui,
     analysis: &Analysis,
+    functions: &[Function],
     selected_function: &mut Option<u64>,
     language: Language,
 ) {
-    let functions = functions(analysis);
     if functions.is_empty() {
         ui.label(egui::RichText::new(text(language, Text::NoFunctionSymbols)).color(MUTED));
         return;
@@ -63,38 +77,48 @@ pub fn show(
     }
 
     ui.columns(2, |columns| {
-        function_list(&mut columns[0], &functions, selected_function, language);
+        function_list(&mut columns[0], functions, selected_function, language);
         let selected = selected_function
             .and_then(|address| functions.iter().find(|function| function.start == address));
-        function_details(&mut columns[1], selected, language);
+        function_details(&mut columns[1], analysis, selected, language);
     });
 }
 
 fn function_list(
     ui: &mut egui::Ui,
-    functions: &[Function<'_>],
+    functions: &[Function],
     selected_function: &mut Option<u64>,
     language: Language,
 ) {
     card(ui, text(language, Text::Functions), |ui| {
+        // Virtualised like the listings: a stripped-nothing binary declares
+        // tens of thousands of function symbols, and the table never changes
+        // between frames, so only what the reader can see is laid out.
+        let row_spacing = ui.spacing().item_spacing.y;
         egui::ScrollArea::both()
             .id_salt("function_list")
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .show_rows(ui, ROW_HEIGHT, functions.len() + 1, |ui, rows| {
                 egui::Grid::new("function_symbols")
                     .num_columns(3)
                     .striped(true)
-                    .spacing([14.0, 6.0])
+                    // Vertical spacing must be the one the virtualiser assumed
+                    // when it placed this batch of rows, or they drift.
+                    .spacing([14.0, row_spacing])
+                    .min_row_height(ROW_HEIGHT)
                     .show(ui, |ui| {
-                        for title in [Text::Name, Text::Size, Text::Blocks] {
-                            ui.strong(text(language, title));
+                        if rows.start == 0 {
+                            for title in [Text::Name, Text::Size, Text::Blocks] {
+                                ui.strong(text(language, title));
+                            }
+                            ui.end_row();
                         }
-                        ui.end_row();
-
-                        for function in functions {
+                        let first = rows.start.saturating_sub(1).min(functions.len());
+                        let last = rows.end.saturating_sub(1).min(functions.len());
+                        for function in &functions[first..last.max(first)] {
                             let selected = *selected_function == Some(function.start);
                             if ui
-                                .selectable_label(selected, &function.symbol.name)
+                                .selectable_label(selected, &function.name)
                                 .on_hover_text(format!("{:#018x}", function.start))
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .clicked()
@@ -110,25 +134,31 @@ fn function_list(
     });
 }
 
-fn function_details(ui: &mut egui::Ui, selected: Option<&Function<'_>>, language: Language) {
+fn function_details(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    selected: Option<&Function>,
+    language: Language,
+) {
     let Some(function) = selected else {
         ui.label(egui::RichText::new(text(language, Text::SelectFunction)).color(MUTED));
         return;
     };
 
-    ui.heading(&function.symbol.name);
+    ui.heading(&function.name);
     ui.monospace(format!("{:#018x}", function.start));
     ui.add_space(8.0);
-    let hovered_block = control_flow_graph(ui, function, language);
+    let hovered_block = control_flow_graph(ui, analysis, function, language);
     ui.add_space(12.0);
-    pseudocode(ui, function, hovered_block, language);
+    pseudocode(ui, analysis, function, hovered_block, language);
 }
 
 /// Returns the block currently under the pointer so the pseudo-code can follow
 /// the graph without making a click change the selected function.
 fn control_flow_graph(
     ui: &mut egui::Ui,
-    function: &Function<'_>,
+    analysis: &Analysis,
+    function: &Function,
     language: Language,
 ) -> Option<u64> {
     let mut hovered_block = None;
@@ -177,7 +207,7 @@ fn control_flow_graph(
                     );
                     if response.hovered() {
                         hovered_block = Some(block.start);
-                        response.on_hover_ui(|ui| block_details(ui, function, block));
+                        response.on_hover_ui(|ui| block_details(ui, analysis, function, block));
                     }
                 }
 
@@ -240,11 +270,12 @@ fn control_flow_graph(
     hovered_block
 }
 
-fn block_details(ui: &mut egui::Ui, function: &Function<'_>, block: &BasicBlock) {
+fn block_details(ui: &mut egui::Ui, analysis: &Analysis, function: &Function, block: &BasicBlock) {
     ui.strong(format!("Bloc {:#x}", block.start));
     ui.separator();
     let transparent = egui::Color32::TRANSPARENT;
-    for instruction in &function.instructions[block.instructions.clone()] {
+    let body = function.body(analysis);
+    for instruction in body.get(block.instructions.clone()).unwrap_or_default() {
         ui.horizontal(|ui| {
             ui.label(syntax::dim(
                 ui,
@@ -265,10 +296,12 @@ fn block_details(ui: &mut egui::Ui, function: &Function<'_>, block: &BasicBlock)
 
 fn pseudocode(
     ui: &mut egui::Ui,
-    function: &Function<'_>,
+    analysis: &Analysis,
+    function: &Function,
     hovered_block: Option<u64>,
     language: Language,
 ) {
+    let body = function.body(analysis);
     let highlighted_instructions = hovered_block.and_then(|address| {
         function
             .blocks
@@ -281,7 +314,7 @@ fn pseudocode(
         ui.set_width(ui.available_width());
         ui.strong(text(language, Text::PseudoCode));
         ui.add_space(8.0);
-        if function.instructions.is_empty() {
+        if body.is_empty() {
             ui.label(egui::RichText::new(text(language, Text::NoFunctionBody)).color(MUTED));
             return;
         }
@@ -292,13 +325,13 @@ fn pseudocode(
             .id_salt(("function_pseudocode", function.start))
             .max_height(available_height)
             .show(ui, |ui| {
-                let signature = format!("void {}(void) {{", function.symbol.name);
+                let signature = format!("void {}(void) {{", function.name);
                 ui.label(syntax::pseudo_code(
                     ui,
                     &signature,
                     egui::Color32::TRANSPARENT,
                 ));
-                for (index, instruction) in function.instructions.iter().enumerate() {
+                for (index, instruction) in body.iter().enumerate() {
                     let highlighted = highlighted_instructions
                         .as_ref()
                         .is_some_and(|range| range.contains(&index));
@@ -329,7 +362,12 @@ fn pseudocode(
     });
 }
 
-fn functions(analysis: &Analysis) -> Vec<Function<'_>> {
+/// Every named function defined in this binary, in address order.
+///
+/// Built once when a binary is opened — see [`Function`] — and read from the
+/// Functions and pseudo-code views alike, so both bound a body the same way.
+#[must_use]
+pub fn all(analysis: &Analysis) -> Vec<Function> {
     let mut symbols: Vec<&Symbol> = analysis
         .symbols
         .iter()
@@ -339,9 +377,8 @@ fn functions(analysis: &Analysis) -> Vec<Function<'_>> {
     symbols.sort_by_key(|symbol| symbol.address);
     symbols.dedup_by_key(|symbol| symbol.address);
 
-    let mut instructions: Vec<&Instruction> = analysis.instructions.iter().collect();
-    instructions.sort_by_key(|instruction| instruction.address);
-    let decoded_end = instructions
+    let decoded_end = analysis
+        .instructions
         .iter()
         .map(|instruction| {
             instruction
@@ -365,24 +402,21 @@ fn functions(analysis: &Analysis) -> Vec<Function<'_>> {
                     .get(index + 1)
                     .and_then(|next| next.address)
                     .unwrap_or(decoded_end)
-            };
-            let body: Vec<&Instruction> = instructions
-                .iter()
-                .copied()
-                .filter(|instruction| (start..end).contains(&instruction.address))
-                .collect();
+            }
+            .max(start);
+            let instructions = analysis.instruction_span(start..end);
             Function {
-                symbol,
+                name: symbol.name.clone(),
                 start,
                 end,
-                blocks: basic_blocks(&body),
-                instructions: body,
+                blocks: basic_blocks(&analysis.instructions[instructions.clone()]),
+                instructions,
             }
         })
         .collect()
 }
 
-fn basic_blocks(instructions: &[&Instruction]) -> Vec<BasicBlock> {
+fn basic_blocks(instructions: &[Instruction]) -> Vec<BasicBlock> {
     if instructions.is_empty() {
         return Vec::new();
     }
@@ -415,7 +449,7 @@ fn basic_blocks(instructions: &[&Instruction]) -> Vec<BasicBlock> {
                 .get(block_index + 1)
                 .copied()
                 .unwrap_or(instructions.len());
-            let last = instructions[end_index - 1];
+            let last = &instructions[end_index - 1];
             let mut successors = Vec::new();
             if is_conditional_branch(last) {
                 push_branch_target(&mut successors, last, &block_by_address);
@@ -449,7 +483,7 @@ fn push_fallthrough(
     successors: &mut Vec<u64>,
     block_index: usize,
     leaders: &[usize],
-    instructions: &[&Instruction],
+    instructions: &[Instruction],
 ) {
     if let Some(next) = leaders.get(block_index + 1) {
         successors.push(instructions[*next].address);
@@ -521,9 +555,7 @@ mod tests {
             instruction(0x1004, "ret"),
             instruction(0x1006, "ret"),
         ];
-        let references: Vec<&Instruction> = instructions.iter().collect();
-
-        let blocks = basic_blocks(&references);
+        let blocks = basic_blocks(&instructions);
 
         assert_eq!(blocks.len(), 3);
         assert_eq!(blocks[0].instructions, 0..2);
@@ -532,5 +564,65 @@ mod tests {
         assert_eq!(blocks[0].successors, [0x1006, 0x1004]);
         assert!(blocks[1].successors.is_empty());
         assert!(blocks[2].successors.is_empty());
+    }
+
+    /// Basic blocks are found from mnemonics, and the ARM ones look nothing
+    /// like the x86 ones. Every fixture's `main` branches, so every reader has
+    /// to end up with a function split into more than one block.
+    #[test]
+    fn a_branching_function_is_split_into_blocks_in_every_format() {
+        for sample in crate::testing::samples() {
+            let label = sample.fixture.label;
+            let functions = all(&sample.analysis);
+            let main = functions
+                .iter()
+                .find(|function| function.name == "main")
+                .unwrap_or_else(|| panic!("{label}: the fixture defines main"));
+
+            assert!(
+                main.blocks.len() > 1,
+                "{label}: main came out as {} block(s); its branch was not seen",
+                main.blocks.len()
+            );
+            assert!(
+                main.blocks.iter().any(|block| !block.successors.is_empty()),
+                "{label}: no block leads anywhere"
+            );
+        }
+    }
+
+    /// The symbol table of a real binary runs to thousands of names. The list
+    /// must lay out only what is on screen, or the view pays for every symbol
+    /// on every frame.
+    #[test]
+    fn only_the_visible_function_rows_are_laid_out() {
+        use crate::{
+            app::WorkspaceView,
+            testing::{drawn_text, opened_app, window_input},
+        };
+
+        let mut app = opened_app(WorkspaceView::Functions);
+        let total = app.functions.len();
+        if total < 200 {
+            return; // Too few symbols on this host for the question to arise.
+        }
+        let names: Vec<String> = app
+            .functions
+            .iter()
+            .map(|function| function.name.clone())
+            .collect();
+
+        let ctx = egui::Context::default();
+        let output = ctx.run(window_input(), |ctx| {
+            crate::ui::views::show_central_panel(&mut app, ctx);
+        });
+
+        let drawn = drawn_text(&output.shapes);
+        let shown = names.iter().filter(|name| drawn.contains(*name)).count();
+        assert!(shown > 0, "the list must show the functions it has");
+        assert!(
+            shown < total / 4,
+            "{shown} of {total} names were laid out: the list is not virtualised"
+        );
     }
 }

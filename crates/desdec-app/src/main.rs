@@ -9,6 +9,8 @@ mod icons;
 mod libraries;
 mod patches;
 mod preferences;
+#[cfg(test)]
+mod testing;
 mod ui;
 
 use app::DesdecApp;
