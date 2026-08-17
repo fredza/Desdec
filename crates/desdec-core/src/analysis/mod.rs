@@ -31,7 +31,7 @@ pub mod strings;
 pub mod symbols;
 
 pub use details::{BinaryDetails, FileKind, Hardening, Relro, Segment};
-pub use disassembly::{Decoded, Instruction, decode_one};
+pub use disassembly::{Decoded, Instruction, InstructionBytes, decode_one};
 pub use language::{Confidence, LanguageEvidence, SourceLanguage};
 pub use operand::{LastWrite, Target};
 pub use sections::{Permissions, Section};
@@ -56,9 +56,10 @@ pub struct Analysis {
     pub symbols: Vec<Symbol>,
     /// Decoded instructions, ordered by address.
     pub instructions: Vec<Instruction>,
-    /// Set when decoding stopped at [`disassembly::MAXIMUM_INSTRUCTIONS`]:
-    /// code past that point was never decoded, and the listing is not the
-    /// whole program.
+    /// Set when executable bytes were never read — a file larger than
+    /// [`ANALYSIS_BYTE_LIMIT`] — so the listing is not the whole program.
+    /// Nothing else stops the decoder: every executable byte that was read is
+    /// decoded, however many instructions that turns out to be.
     pub code_truncated: bool,
     /// Loader-level facts: file kind, mapping, dependencies, hardening.
     pub details: BinaryDetails,

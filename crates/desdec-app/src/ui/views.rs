@@ -67,8 +67,9 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
     match view {
         WorkspaceView::Overview => {
             let explain = app.preferences.explain_libraries;
-            if let Some(library) = overview(ui, analysis, language, explain) {
-                app.explaining_library = Some(library);
+            if let Some(question) = overview(ui, analysis, language, explain) {
+                app.explaining_library = Some(question.library);
+                app.explaining_library_at = Some(question.asked_at);
                 app.dialogs.open(Dialog::Library);
             }
         }
@@ -174,7 +175,7 @@ fn overview(
     analysis: &Analysis,
     language: Language,
     explain: bool,
-) -> Option<String> {
+) -> Option<expert::LibraryQuestion> {
     // `auto_shrink` off makes the panels span the window instead of hugging
     // their own content.
     egui::ScrollArea::vertical()
@@ -193,7 +194,7 @@ fn expert_layout(
     analysis: &Analysis,
     language: Language,
     explain: bool,
-) -> Option<String> {
+) -> Option<expert::LibraryQuestion> {
     let mut asked = None;
     columns(
         ui,

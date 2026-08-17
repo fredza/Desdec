@@ -13,6 +13,40 @@ use crate::{
     ui::{MUTED, section_title},
 };
 
+const WIDTH: f32 = 430.0;
+/// Gap between the button that asked and the answer.
+const GAP: f32 = 6.0;
+
+/// Where to put the window so it sits above `asked_at`, and on screen.
+///
+/// The height comes from the last time the window was laid out; the first
+/// opening has none, so a plausible one is assumed and corrected on the frame
+/// after — which is what the reader would see either way, since a window has
+/// to be measured before it can be placed by its bottom edge.
+fn above(ctx: &egui::Context, asked_at: egui::Rect) -> egui::Pos2 {
+    const ASSUMED_HEIGHT: f32 = 180.0;
+    let height = ctx
+        .memory(|memory| memory.area_rect(egui::Id::new("desdec.library_note")))
+        .map_or(ASSUMED_HEIGHT, |rect| rect.height());
+    let screen = ctx.screen_rect();
+    let wanted = egui::Rect::from_min_size(
+        egui::pos2(asked_at.left(), asked_at.top() - height - GAP),
+        egui::vec2(WIDTH, height),
+    );
+    // Below the button instead, when there is no room above it: an explanation
+    // pushed off the top of the window is no explanation.
+    let top = if wanted.top() < screen.top() {
+        asked_at.bottom() + GAP
+    } else {
+        wanted.top()
+    };
+    let left = wanted
+        .left()
+        .min(screen.right() - WIDTH - GAP)
+        .max(screen.left() + GAP);
+    egui::pos2(left, top)
+}
+
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     if !app.dialogs.is_open(Dialog::Library) {
         return;
@@ -25,40 +59,45 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     let language = app.preferences.language;
     let note = app.library_notes.note(&library, language);
     let mut open = true;
-    egui::Window::new(app.t(Text::LibraryExplanation))
+    let mut window = egui::Window::new(app.t(Text::LibraryExplanation))
         // A stable id keeps the window in place as the subject changes.
         .id(egui::Id::new("desdec.library_note"))
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_width(430.0)
-        .show(ctx, |ui| {
-            ui.label(egui::RichText::new(&library).monospace().strong());
+        .default_width(WIDTH);
+    // Opened over the button that asked, so the answer appears where the
+    // reader is looking rather than wherever the window was last dragged.
+    if let Some(asked_at) = app.explaining_library_at.take() {
+        window = window.current_pos(above(ctx, asked_at));
+    }
+    window.show(ctx, |ui| {
+        ui.label(egui::RichText::new(&library).monospace().strong());
+        ui.add_space(10.0);
+
+        let Some(note) = note else {
+            // Naming the library is all that can honestly be done:
+            // guessing from the name would send the reader looking in the
+            // wrong place.
+            ui.label(
+                egui::RichText::new(app.t(Text::LibraryUndescribed))
+                    .color(MUTED)
+                    .italics(),
+            );
             ui.add_space(10.0);
+            ui.small(app.t(Text::DescribeItYourself));
+            return;
+        };
 
-            let Some(note) = note else {
-                // Naming the library is all that can honestly be done:
-                // guessing from the name would send the reader looking in the
-                // wrong place.
-                ui.label(
-                    egui::RichText::new(app.t(Text::LibraryUndescribed))
-                        .color(MUTED)
-                        .italics(),
-                );
-                ui.add_space(10.0);
-                ui.small(app.t(Text::DescribeItYourself));
-                return;
-            };
-
-            ui.label(&note.summary);
-            ui.add_space(12.0);
-            ui.separator();
-            ui.add_space(4.0);
-            ui.label(section_title(app.t(match note.source {
-                NoteSource::Builtin => Text::NoteFromCatalogue,
-                NoteSource::UserFile => Text::NoteFromYourFile,
-            })));
-        });
+        ui.label(&note.summary);
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.label(section_title(app.t(match note.source {
+            NoteSource::Builtin => Text::NoteFromCatalogue,
+            NoteSource::UserFile => Text::NoteFromYourFile,
+        })));
+    });
 
     app.dialogs.set(Dialog::Library, open);
     if !open {
@@ -111,6 +150,62 @@ mod tests {
             described > 0 || analysis.details.linked_libraries.is_empty(),
             "none of {:?} reached the catalogue",
             analysis.details.linked_libraries
+        );
+    }
+
+    /// The answer opens over the button that asked for it, not wherever the
+    /// window was last left: on the overview, that button is one of a column
+    /// of identical `?`s, and an explanation appearing elsewhere leaves the
+    /// reader to work out which one it belongs to.
+    #[test]
+    fn the_explanation_opens_above_the_button_that_asked() {
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
+        app.explaining_library = Some("libc.so.6".to_owned());
+        app.dialogs.open(Dialog::Library);
+
+        // A button low on the screen: there is room above it for the answer.
+        let button = egui::Rect::from_min_size(egui::pos2(700.0, 600.0), egui::vec2(18.0, 18.0));
+        app.explaining_library_at = Some(button);
+        let _ = ctx.run(crate::testing::window_input(), |ctx| show(&mut app, ctx));
+        let placed = ctx
+            .memory(|memory| memory.area_rect(egui::Id::new("desdec.library_note")))
+            .expect("the window was laid out");
+
+        assert!(
+            placed.bottom() <= button.top(),
+            "the answer ({placed:?}) must sit above the button ({button:?})"
+        );
+        assert!(
+            (placed.left() - button.left()).abs() < 1.0,
+            "the answer must line up with the button it belongs to"
+        );
+        assert!(
+            app.explaining_library_at.is_none(),
+            "the position is consumed, so the reader can then move the window"
+        );
+    }
+
+    /// A button near the top has no room above it; the answer goes below
+    /// rather than off the screen.
+    #[test]
+    fn an_answer_that_would_not_fit_above_opens_below() {
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
+        app.explaining_library = Some("libc.so.6".to_owned());
+        app.dialogs.open(Dialog::Library);
+
+        let button = egui::Rect::from_min_size(egui::pos2(40.0, 12.0), egui::vec2(18.0, 18.0));
+        app.explaining_library_at = Some(button);
+        let _ = ctx.run(crate::testing::window_input(), |ctx| show(&mut app, ctx));
+        let placed = ctx
+            .memory(|memory| memory.area_rect(egui::Id::new("desdec.library_note")))
+            .expect("the window was laid out");
+
+        assert!(placed.top() >= button.bottom(), "{placed:?}");
+        assert!(
+            placed.right() <= ctx.screen_rect().right(),
+            "the answer must stay on screen"
         );
     }
 

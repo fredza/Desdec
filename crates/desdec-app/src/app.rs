@@ -327,6 +327,9 @@ pub struct DesdecApp {
     pub library_notes: crate::libraries::Catalogue,
     /// The library whose explanation is on screen.
     pub explaining_library: Option<String>,
+    /// Where the button that asked sits, so the explanation opens over it
+    /// rather than wherever the window happened to be left.
+    pub explaining_library_at: Option<egui::Rect>,
     /// The instruction whose operand is being inspected.
     pub inspecting_operand: Option<u64>,
     /// The bytes of the open file, kept for reading what an operand points at.
@@ -1009,6 +1012,7 @@ impl DesdecApp {
         self.patches.clear();
         self.patch_editor = None;
         self.inspecting_operand = None;
+        self.explaining_library_at = None;
         self.file_bytes.clear();
         self.export_report = None;
         self.external = ExternalDecompilation::default();
