@@ -363,6 +363,10 @@ pub fn rows_of<'a>(
 /// A window and not a bubble following the pointer: the reader has to reach the
 /// button inside it, which a surface anchored to the mouse never lets them do.
 fn show_assembly_preview(app: &mut DesdecApp, ctx: &egui::Context) {
+    /// Size assumed the first time the window opens, before egui has measured
+    /// it.
+    const ASSEMBLY_SIZE: egui::Vec2 = egui::vec2(620.0, 400.0);
+
     if !app.dialogs.is_open(Dialog::Assembly) {
         return;
     }
@@ -378,53 +382,57 @@ fn show_assembly_preview(app: &mut DesdecApp, ctx: &egui::Context) {
     let mut jump = None;
     let language = app.preferences.language;
 
+    // A stable id keeps the window where the reader put it as the inspected
+    // line changes.
+    let id = egui::Id::new("desdec.pseudocode_assembly");
     let mut open = true;
-    egui::Window::new(text(language, Text::AssemblyPreview))
-        // A stable id keeps the window where the reader put it as the
-        // inspected line changes.
-        .id(egui::Id::new("desdec.pseudocode_assembly"))
+    let mut window = egui::Window::new(text(language, Text::AssemblyPreview))
+        .id(id)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_width(620.0)
-        .show(ctx, |ui| {
-            if rows.is_empty() {
-                ui.label(egui::RichText::new(text(language, Text::NoFunctionBody)).color(MUTED));
-                return;
-            }
-            egui::ScrollArea::vertical()
-                .max_height(320.0)
-                .show(ui, |ui| {
-                    for instruction in rows {
-                        ui.horizontal(|ui| {
-                            ui.label(syntax::dim(
-                                ui,
-                                &format!("{:#018x}", instruction.address),
-                                egui::Color32::TRANSPARENT,
-                            ));
-                            ui.label(syntax::assembly(
-                                ui,
-                                &instruction.text,
-                                egui::Color32::TRANSPARENT,
-                            ));
-                        });
-                    }
-                    // Silently cutting the body would read as a short function.
-                    if hidden > 0 {
-                        ui.small(
-                            egui::RichText::new(format!(
-                                "… {hidden} {}",
-                                text(language, Text::MoreInstructions)
-                            ))
-                            .color(MUTED),
-                        );
-                    }
-                });
-            ui.add_space(8.0);
-            if ui.button(text(language, Text::JumpToAssembly)).clicked() {
-                jump = rows.first().map(|instruction| instruction.address);
-            }
-        });
+        .default_width(ASSEMBLY_SIZE.x);
+    if let Some(step) = app.dialogs.opening_step(Dialog::Assembly) {
+        window = window.current_pos(crate::ui::opening_position(ctx, id, step, ASSEMBLY_SIZE));
+    }
+    window.show(ctx, |ui| {
+        if rows.is_empty() {
+            ui.label(egui::RichText::new(text(language, Text::NoFunctionBody)).color(MUTED));
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .show(ui, |ui| {
+                for instruction in rows {
+                    ui.horizontal(|ui| {
+                        ui.label(syntax::dim(
+                            ui,
+                            &format!("{:#018x}", instruction.address),
+                            egui::Color32::TRANSPARENT,
+                        ));
+                        ui.label(syntax::assembly(
+                            ui,
+                            &instruction.text,
+                            egui::Color32::TRANSPARENT,
+                        ));
+                    });
+                }
+                // Silently cutting the body would read as a short function.
+                if hidden > 0 {
+                    ui.small(
+                        egui::RichText::new(format!(
+                            "… {hidden} {}",
+                            text(language, Text::MoreInstructions)
+                        ))
+                        .color(MUTED),
+                    );
+                }
+            });
+        ui.add_space(8.0);
+        if ui.button(text(language, Text::JumpToAssembly)).clicked() {
+            jump = rows.first().map(|instruction| instruction.address);
+        }
+    });
 
     app.dialogs.set(Dialog::Assembly, open);
     if !open {

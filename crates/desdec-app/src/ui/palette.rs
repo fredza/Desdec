@@ -9,25 +9,32 @@ use crate::{
     ui::MUTED,
 };
 
+/// Opening size, also the one assumed before egui has measured the window.
+const SIZE: egui::Vec2 = egui::vec2(520.0, 420.0);
+
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     if !app.dialogs.is_open(Dialog::CommandPalette) {
         return;
     }
 
+    // A stable id keeps the window in place when the title is translated.
+    let id = egui::Id::new("desdec.command_palette");
     let mut open = true;
     let mut chosen = None;
-    egui::Window::new(app.t(Text::PaletteTitle))
-        // A stable id keeps the window in place when the title is translated.
-        .id(egui::Id::new("desdec.command_palette"))
+    let mut window = egui::Window::new(app.t(Text::PaletteTitle))
+        .id(id)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_size(egui::vec2(520.0, 420.0))
+        .default_size(SIZE)
         .min_width(360.0)
-        .min_height(260.0)
-        .show(ctx, |ui| {
-            chosen = contents(app, ui);
-        });
+        .min_height(260.0);
+    if let Some(step) = app.dialogs.opening_step(Dialog::CommandPalette) {
+        window = window.current_pos(crate::ui::opening_position(ctx, id, step, SIZE));
+    }
+    window.show(ctx, |ui| {
+        chosen = contents(app, ui);
+    });
 
     if let Some(chosen) = chosen {
         match chosen {

@@ -3,54 +3,62 @@ use eframe::egui;
 use crate::{
     app::{DesdecApp, Dialog},
     i18n::Text,
+    ui::opening_position,
 };
 
 /// Where the source and the licences live. Written once here and shown in the
 /// About window, so a reader can always find the code that read their file.
 pub const REPOSITORY: &str = "https://github.com/fredza/Desdec";
 
+/// Size assumed the first time the window opens, before egui has measured it.
+const ASSUMED_SIZE: egui::Vec2 = egui::vec2(400.0, 260.0);
+
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     if !app.dialogs.is_open(Dialog::About) {
         return;
     }
 
+    // A stable id keeps the window in place when the title is translated.
+    let id = egui::Id::new("desdec.about");
     let mut open = true;
-    egui::Window::new(app.t(Text::AboutTitle))
-        // A stable id keeps the window in place when the title is translated.
-        .id(egui::Id::new("desdec.about"))
+    let mut window = egui::Window::new(app.t(Text::AboutTitle))
+        .id(id)
         .open(&mut open)
-        .collapsible(false)
-        .show(ctx, |ui| {
-            ui.heading("Desdec");
-            ui.small(version_line());
-            ui.add_space(6.0);
-            ui.label(app.t(Text::AboutDescription));
+        .collapsible(false);
+    if let Some(step) = app.dialogs.opening_step(Dialog::About) {
+        window = window.current_pos(opening_position(ctx, id, step, ASSUMED_SIZE));
+    }
+    window.show(ctx, |ui| {
+        ui.heading("Desdec");
+        ui.small(version_line());
+        ui.add_space(6.0);
+        ui.label(app.t(Text::AboutDescription));
 
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(6.0);
-            // Where the source, the licences and the issue tracker are. An
-            // application that reads other people's binaries should be easy to
-            // read in turn.
-            ui.horizontal(|ui| {
-                ui.small(format!("{} :", app.t(Text::Repository)));
-                ui.hyperlink_to(egui::RichText::new(REPOSITORY).small(), REPOSITORY);
-            });
-            ui.horizontal(|ui| {
-                ui.small(app.t(Text::LicenceLine));
-                ui.hyperlink_to(
-                    egui::RichText::new("Apache-2.0").small(),
-                    format!("{REPOSITORY}/blob/main/LICENSE-APACHE"),
-                );
-                ui.hyperlink_to(
-                    egui::RichText::new("MIT").small(),
-                    format!("{REPOSITORY}/blob/main/LICENSE-MIT"),
-                );
-            });
-
-            ui.add_space(8.0);
-            ui.small(app.t(Text::LegalNotice));
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+        // Where the source, the licences and the issue tracker are. An
+        // application that reads other people's binaries should be easy to
+        // read in turn.
+        ui.horizontal(|ui| {
+            ui.small(format!("{} :", app.t(Text::Repository)));
+            ui.hyperlink_to(egui::RichText::new(REPOSITORY).small(), REPOSITORY);
         });
+        ui.horizontal(|ui| {
+            ui.small(app.t(Text::LicenceLine));
+            ui.hyperlink_to(
+                egui::RichText::new("Apache-2.0").small(),
+                format!("{REPOSITORY}/blob/main/LICENSE-APACHE"),
+            );
+            ui.hyperlink_to(
+                egui::RichText::new("MIT").small(),
+                format!("{REPOSITORY}/blob/main/LICENSE-MIT"),
+            );
+        });
+
+        ui.add_space(8.0);
+        ui.small(app.t(Text::LegalNotice));
+    });
     app.dialogs.set(Dialog::About, open);
 }
 

@@ -37,6 +37,49 @@ pub fn section_title(label: &str) -> egui::RichText {
 /// layout falls back to a single column.
 pub const TWO_COLUMN_WIDTH: f32 = 900.0;
 
+/// How far each window steps aside from the one under it: enough that the
+/// title bar and the close button of the window underneath stay reachable.
+const CASCADE_STEP: f32 = 34.0;
+
+/// Where a window opens: in the middle, then stepped aside once for every
+/// window already on screen.
+///
+/// Windows egui is not told where to put land in the same corner, so a second
+/// one covers the first exactly and the reader is left with a stack they
+/// cannot see into. `step` is how many were already open, from
+/// [`crate::app::Dialogs::opening_step`].
+///
+/// The size comes from the last time the window was laid out; the first
+/// opening has none, so `assumed` stands in and is corrected on the frame
+/// after — a window has to be measured before it can be centred.
+pub fn opening_position(
+    ctx: &egui::Context,
+    id: egui::Id,
+    step: usize,
+    assumed: egui::Vec2,
+) -> egui::Pos2 {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the step counts open windows, of which there are six"
+    )]
+    let offset = CASCADE_STEP * step as f32;
+    let size = ctx
+        .memory(|memory| memory.area_rect(id))
+        .map_or(assumed, |rect| rect.size());
+    let screen = ctx.screen_rect();
+    let centred = screen.center() - size / 2.0;
+    // Stepping a window off the screen would be worse than covering another,
+    // so the last of a long cascade is brought back inside.
+    egui::pos2(
+        (centred.x + offset)
+            .min(screen.right() - size.x)
+            .max(screen.left()),
+        (centred.y + offset)
+            .min(screen.bottom() - size.y)
+            .max(screen.top()),
+    )
+}
+
 /// Height of one row in the long monospace listings.
 ///
 /// Every such listing is virtualised — a decoded binary reaches a hundred

@@ -53,35 +53,42 @@ const LANGUAGE_CHOICES: &[(Language, Text)] = &[
     (Language::Spanish, Text::Spanish),
 ];
 
+/// Size assumed the first time the window opens, before egui has measured it.
+const ASSUMED_SIZE: egui::Vec2 = egui::vec2(410.0, 420.0);
+
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     if !app.dialogs.is_open(Dialog::Preferences) {
         return;
     }
 
+    // A stable id keeps the window in place when the title is translated.
+    let id = egui::Id::new("desdec.preferences");
     let mut open = true;
-    egui::Window::new(app.t(Text::Preferences))
-        // A stable id keeps the window in place when the title is translated.
-        .id(egui::Id::new("desdec.preferences"))
+    let mut window = egui::Window::new(app.t(Text::Preferences))
+        .id(id)
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
-        .default_width(410.0)
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                for tab in PreferencesTab::ALL {
-                    let label = app.t(tab.text());
-                    ui.selectable_value(&mut app.preferences_tab, *tab, label);
-                }
-            });
-            ui.separator();
-            match app.preferences_tab {
-                PreferencesTab::Appearance => appearance(app, ctx, ui),
-                PreferencesTab::Shortcuts => shortcuts(app, ctx, ui),
-                PreferencesTab::Behaviour => behaviour(app, ui),
-                PreferencesTab::Decompiler => decompiler(app, ui),
-                PreferencesTab::Yara => yara(app, ui),
+        .default_width(ASSUMED_SIZE.x);
+    if let Some(step) = app.dialogs.opening_step(Dialog::Preferences) {
+        window = window.current_pos(crate::ui::opening_position(ctx, id, step, ASSUMED_SIZE));
+    }
+    window.show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            for tab in PreferencesTab::ALL {
+                let label = app.t(tab.text());
+                ui.selectable_value(&mut app.preferences_tab, *tab, label);
             }
         });
+        ui.separator();
+        match app.preferences_tab {
+            PreferencesTab::Appearance => appearance(app, ctx, ui),
+            PreferencesTab::Shortcuts => shortcuts(app, ctx, ui),
+            PreferencesTab::Behaviour => behaviour(app, ui),
+            PreferencesTab::Decompiler => decompiler(app, ui),
+            PreferencesTab::Yara => yara(app, ui),
+        }
+    });
     app.dialogs.set(Dialog::Preferences, open);
 }
 

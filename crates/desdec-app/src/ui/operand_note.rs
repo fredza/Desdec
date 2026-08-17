@@ -16,6 +16,9 @@ use crate::{
     ui::{MUTED, syntax},
 };
 
+/// Size assumed the first time the window opens, before egui has measured it.
+const ASSUMED_SIZE: egui::Vec2 = egui::vec2(520.0, 340.0);
+
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     if !app.dialogs.is_open(Dialog::Operand) {
         return;
@@ -25,14 +28,18 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         return;
     };
 
+    let id = egui::Id::new("desdec.operand_note");
     let mut open = true;
-    egui::Window::new(app.t(Text::OperandInspection))
-        .id(egui::Id::new("desdec.operand_note"))
+    let mut window = egui::Window::new(app.t(Text::OperandInspection))
+        .id(id)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_width(520.0)
-        .show(ctx, |ui| contents(app, ui, address));
+        .default_width(ASSUMED_SIZE.x);
+    if let Some(step) = app.dialogs.opening_step(Dialog::Operand) {
+        window = window.current_pos(crate::ui::opening_position(ctx, id, step, ASSUMED_SIZE));
+    }
+    window.show(ctx, |ui| contents(app, ui, address));
 
     app.dialogs.set(Dialog::Operand, open);
     if !open {

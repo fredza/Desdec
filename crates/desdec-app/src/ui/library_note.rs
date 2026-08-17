@@ -16,6 +16,8 @@ use crate::{
 const WIDTH: f32 = 430.0;
 /// Gap between the button that asked and the answer.
 const GAP: f32 = 6.0;
+/// Height assumed before the window has been laid out once.
+const ASSUMED_HEIGHT: f32 = 180.0;
 
 /// Where to put the window so it sits above `asked_at`, and on screen.
 ///
@@ -24,7 +26,6 @@ const GAP: f32 = 6.0;
 /// after — which is what the reader would see either way, since a window has
 /// to be measured before it can be placed by its bottom edge.
 fn above(ctx: &egui::Context, asked_at: egui::Rect) -> egui::Pos2 {
-    const ASSUMED_HEIGHT: f32 = 180.0;
     let height = ctx
         .memory(|memory| memory.area_rect(egui::Id::new("desdec.library_note")))
         .map_or(ASSUMED_HEIGHT, |rect| rect.height());
@@ -58,18 +59,29 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
 
     let language = app.preferences.language;
     let note = app.library_notes.note(&library, language);
+    // A stable id keeps the window in place as the subject changes.
+    let id = egui::Id::new("desdec.library_note");
     let mut open = true;
     let mut window = egui::Window::new(app.t(Text::LibraryExplanation))
-        // A stable id keeps the window in place as the subject changes.
-        .id(egui::Id::new("desdec.library_note"))
+        .id(id)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
         .default_width(WIDTH);
     // Opened over the button that asked, so the answer appears where the
     // reader is looking rather than wherever the window was last dragged.
+    // Without a button to answer — which only happens in a test — it opens
+    // like any other window, clear of those already on screen.
+    let step = app.dialogs.opening_step(Dialog::Library);
     if let Some(asked_at) = app.explaining_library_at.take() {
         window = window.current_pos(above(ctx, asked_at));
+    } else if let Some(step) = step {
+        window = window.current_pos(crate::ui::opening_position(
+            ctx,
+            id,
+            step,
+            egui::vec2(WIDTH, ASSUMED_HEIGHT),
+        ));
     }
     window.show(ctx, |ui| {
         ui.label(egui::RichText::new(&library).monospace().strong());

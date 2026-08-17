@@ -93,6 +93,24 @@ pub fn window_input() -> eframe::egui::RawInput {
     }
 }
 
+/// A frame of that window in which the primary button is pressed somewhere.
+///
+/// The press, not the release: that is what the interface reacts to, and it is
+/// what lets a window be dragged by its title bar and let go anywhere.
+pub fn press_at(position: eframe::egui::Pos2) -> eframe::egui::RawInput {
+    let mut input = window_input();
+    input.events = vec![
+        eframe::egui::Event::PointerMoved(position),
+        eframe::egui::Event::PointerButton {
+            pos: position,
+            button: eframe::egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: eframe::egui::Modifiers::NONE,
+        },
+    ];
+    input
+}
+
 /// Every string a frame actually drew, with where it was drawn.
 ///
 /// What a virtualised view leaves out is as much of its behaviour as what it

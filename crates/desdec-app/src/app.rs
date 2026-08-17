@@ -159,15 +159,19 @@ impl Dialog {
 const DIALOG_COUNT: usize = Dialog::ALL.len();
 
 /// Modal windows. Each one is opened from wherever in the interface needs it;
-/// [`Dialogs::track_openings`] turns those openings into an order so `Escape`
-/// closes the window the user is actually looking at.
+/// opening one is stamped here, which is what lets `Escape` close the window
+/// the user is actually looking at and lets a new window step aside from the
+/// ones already on screen.
 #[derive(Default)]
 pub struct Dialogs {
     open: [bool; DIALOG_COUNT],
     /// Opening rank of each dialog, the highest being the topmost.
     ranks: [u64; DIALOG_COUNT],
-    /// Flags as of the previous frame, to spot the ones that just opened.
-    was_open: [bool; DIALOG_COUNT],
+    /// How many windows were already on screen when each one opened, kept
+    /// until the window that owns it has placed itself.
+    steps: [Option<usize>; DIALOG_COUNT],
+    /// The window a press outside closed this frame; see [`Self::toggle`].
+    dismissed_by_press: Option<Dialog>,
     clock: u64,
 }
 
@@ -177,45 +181,53 @@ impl Dialogs {
         self.open[dialog.index()]
     }
 
-    pub const fn set(&mut self, dialog: Dialog, open: bool) {
-        self.open[dialog.index()] = open;
+    /// Every window calls this once a frame with the state of its close
+    /// button, so only a change from shut to open counts as an opening.
+    pub fn set(&mut self, dialog: Dialog, open: bool) {
+        let index = dialog.index();
+        if open && !self.open[index] {
+            self.clock += 1;
+            self.ranks[index] = self.clock;
+            self.steps[index] = Some(self.open.iter().filter(|open| **open).count());
+        }
+        self.open[index] = open;
     }
 
-    pub const fn open(&mut self, dialog: Dialog) {
+    pub fn open(&mut self, dialog: Dialog) {
         self.set(dialog, true);
     }
 
-    pub const fn close(&mut self, dialog: Dialog) {
+    pub fn close(&mut self, dialog: Dialog) {
         self.set(dialog, false);
     }
 
-    pub const fn toggle(&mut self, dialog: Dialog) {
+    /// A window that the press now being handled has just closed stays closed.
+    ///
+    /// The toolbar's palette button sits behind the palette it opens: the same
+    /// press closes the window and then reaches the button, and without this
+    /// the button would reopen what the press just dismissed — leaving a
+    /// palette that cannot be closed by the button that opened it.
+    pub fn toggle(&mut self, dialog: Dialog) {
+        if self.dismissed_by_press == Some(dialog) {
+            return;
+        }
         self.set(dialog, !self.is_open(dialog));
     }
 
-    /// Stamps every dialog opened since the last frame.
-    fn track_openings(&mut self) {
-        for (index, opened) in self.open.iter().enumerate() {
-            if *opened && !self.was_open[index] {
-                self.clock += 1;
-                self.ranks[index] = self.clock;
-            }
-        }
-        self.was_open = self.open;
+    /// How many windows this one has to step aside from, taken once by the
+    /// window as it opens so the reader can then move it where they like.
+    pub fn opening_step(&mut self, dialog: Dialog) -> Option<usize> {
+        self.steps[dialog.index()].take()
     }
 
-    /// Closes the most recently opened dialog and reports whether one was
-    /// closed.
-    fn dismiss_topmost(&mut self) -> bool {
-        let topmost = (0..DIALOG_COUNT)
-            .filter(|index| self.open[*index])
-            .max_by_key(|index| self.ranks[*index]);
-        let Some(index) = topmost else {
-            return false;
-        };
-        self.open[index] = false;
-        self.was_open[index] = false;
-        true
+    /// Closes the most recently opened dialog and says which it was.
+    fn dismiss_topmost(&mut self) -> Option<Dialog> {
+        let topmost = Dialog::ALL
+            .into_iter()
+            .filter(|dialog| self.is_open(*dialog))
+            .max_by_key(|dialog| self.ranks[dialog.index()])?;
+        self.open[topmost.index()] = false;
+        Some(topmost)
     }
 }
 
@@ -546,12 +558,47 @@ impl DesdecApp {
             self.editing_shortcut = None;
             return true;
         }
-        self.dialogs.dismiss_topmost()
+        self.dialogs.dismiss_topmost().is_some()
     }
 
     fn dismiss_dialog_with_escape(&mut self, ctx: &egui::Context) {
         if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.dismiss_topmost_dialog();
+        }
+    }
+
+    /// A press on the workspace behind the windows closes the topmost one.
+    ///
+    /// Read from the layers of the previous frame, before the panels are drawn:
+    /// a window sits in [`egui::Order::Middle`] and a menu or a drop-down in
+    /// [`egui::Order::Foreground`], so only a press that reaches the panels
+    /// underneath — the background layer — counts as a press outside. That
+    /// distinction is what keeps a window's own drop-down from closing it.
+    /// Pressing rather than clicking is what lets a window be dragged by its
+    /// title bar and released anywhere.
+    ///
+    /// Doing it before the panels also means a press on the `?` of another
+    /// library closes the explanation on screen and the panel then reopens it
+    /// on the new one, rather than the two fighting over the same press.
+    fn dismiss_dialog_clicked_outside(&mut self, ctx: &egui::Context) {
+        // Only for as long as the press it belongs to is being handled.
+        self.dialogs.dismissed_by_press = None;
+        let pressed_at = ctx.input(|input| {
+            input
+                .pointer
+                .any_pressed()
+                .then(|| input.pointer.interact_pos())
+                .flatten()
+        });
+        let outside = pressed_at.is_some_and(|position| {
+            ctx.layer_id_at(position)
+                .is_none_or(|layer| layer.order == egui::Order::Background)
+        });
+        if outside {
+            // A press elsewhere gives up on capturing a shortcut as well as
+            // closing the window that was asking for it.
+            self.editing_shortcut = None;
+            self.dialogs.dismissed_by_press = self.dialogs.dismiss_topmost();
         }
     }
 
@@ -1202,8 +1249,8 @@ impl DesdecApp {
             apply_theme(ctx, ThemePreference::System);
         }
         self.process_shortcuts(ctx);
-        self.dialogs.track_openings();
         self.dismiss_dialog_with_escape(ctx);
+        self.dismiss_dialog_clicked_outside(ctx);
         self.poll_background_jobs(ctx);
         let dropped_files = ctx.input(|input| input.raw.dropped_files.clone());
         if let Some(path) = dropped_files.into_iter().find_map(|file| file.path) {
@@ -1258,11 +1305,8 @@ mod tests {
     fn escape_dismisses_dialogs_from_the_newest_to_the_oldest() {
         let mut app = DesdecApp::default();
         app.dialogs.open(Dialog::Preferences);
-        app.dialogs.track_openings();
         app.dialogs.open(Dialog::About);
-        app.dialogs.track_openings();
         app.dialogs.open(Dialog::CommandPalette);
-        app.dialogs.track_openings();
 
         assert!(app.dismiss_topmost_dialog());
         assert!(!app.dialogs.is_open(Dialog::CommandPalette));
@@ -1278,19 +1322,93 @@ mod tests {
         assert!(!app.dismiss_topmost_dialog());
     }
 
+    /// A press on the workspace behind the windows closes the topmost one, and
+    /// a press inside a window leaves it alone — otherwise reading the thing
+    /// the window is there to show would shut it.
+    #[test]
+    fn a_press_outside_a_dialog_closes_it_and_a_press_inside_does_not() {
+        let ctx = egui::Context::default();
+        let mut app = crate::testing::opened_app(WorkspaceView::Overview);
+        app.dialogs.open(Dialog::About);
+        // One frame so the window is laid out and its layer known.
+        let _ = ctx.run(crate::testing::window_input(), |ctx| app.run_frame(ctx));
+        let window = ctx
+            .memory(|memory| memory.area_rect(egui::Id::new("desdec.about")))
+            .expect("the About window was laid out");
+
+        let _ = ctx.run(crate::testing::press_at(window.center()), |ctx| {
+            app.run_frame(ctx);
+        });
+        assert!(
+            app.dialogs.is_open(Dialog::About),
+            "a press inside the window must not close it"
+        );
+
+        let outside = egui::pos2(window.right() + 40.0, window.center().y);
+        let _ = ctx.run(crate::testing::press_at(outside), |ctx| app.run_frame(ctx));
+        assert!(
+            !app.dialogs.is_open(Dialog::About),
+            "a press at {outside:?}, outside {window:?}, must close it"
+        );
+    }
+
+    /// The toolbar's palette button sits behind the palette it opens, so one
+    /// press both closes the window and reaches the button. The button must
+    /// not undo the closing, or the palette could never be shut from it.
+    #[test]
+    fn the_press_that_closes_a_window_is_not_the_one_that_reopens_it() {
+        let mut app = DesdecApp::default();
+        app.dialogs.open(Dialog::CommandPalette);
+
+        // The press lands on the toolbar behind the palette …
+        app.dialogs.dismissed_by_press = app.dialogs.dismiss_topmost();
+        // … and then reaches the button under it.
+        app.dialogs.toggle(Dialog::CommandPalette);
+        assert!(!app.dialogs.is_open(Dialog::CommandPalette));
+
+        // The next press is free to open it again.
+        app.dialogs.dismissed_by_press = None;
+        app.dialogs.toggle(Dialog::CommandPalette);
+        assert!(app.dialogs.is_open(Dialog::CommandPalette));
+    }
+
+    /// A second window opens beside the first rather than exactly on top of
+    /// it: two windows in the same corner leave a stack the reader cannot see
+    /// into, and no way to reach the one underneath.
+    #[test]
+    fn a_second_window_opens_clear_of_the_first() {
+        let ctx = egui::Context::default();
+        let mut app = crate::testing::opened_app(WorkspaceView::Overview);
+
+        app.dialogs.open(Dialog::Preferences);
+        let _ = ctx.run(crate::testing::window_input(), |ctx| app.run_frame(ctx));
+        app.dialogs.open(Dialog::About);
+        // Twice: the first opening has no measured size to be placed by.
+        let _ = ctx.run(crate::testing::window_input(), |ctx| app.run_frame(ctx));
+        let _ = ctx.run(crate::testing::window_input(), |ctx| app.run_frame(ctx));
+
+        let rect = |id| {
+            ctx.memory(|memory| memory.area_rect(egui::Id::new(id)))
+                .expect("the window was laid out")
+        };
+        let preferences = rect("desdec.preferences");
+        let about = rect("desdec.about");
+        assert!(
+            about.left_top().y - preferences.left_top().y >= 30.0
+                || about.left_top().x - preferences.left_top().x >= 30.0,
+            "About ({about:?}) opened on top of the preferences ({preferences:?})"
+        );
+    }
+
     /// Reopening a dialog puts it back on top of the ones already open.
     #[test]
     fn a_reopened_dialog_becomes_the_topmost_one() {
         let mut app = DesdecApp::default();
         app.dialogs.open(Dialog::About);
-        app.dialogs.track_openings();
         app.dialogs.open(Dialog::Preferences);
-        app.dialogs.track_openings();
 
         app.dialogs.close(Dialog::About);
-        app.dialogs.track_openings();
         app.dialogs.open(Dialog::About);
-        app.dialogs.track_openings();
 
         assert!(app.dismiss_topmost_dialog());
         assert!(!app.dialogs.is_open(Dialog::About));
