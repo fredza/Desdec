@@ -2,6 +2,9 @@
 
 **English** · [Français](README.fr.md) · [Español](README.es.md)
 
+Release and pre-release versions are signed with a private key; this is currently required.
+The public key is distributed free of charge with the binary.
+
 Desdec is a local, open-source binary explorer for reading executables you are
 allowed to read. It opens an ELF, PE or Mach-O file, tells you what is inside
 it, and never runs it.
