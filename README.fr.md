@@ -15,6 +15,8 @@ deviner.
 > N'analysez et ne modifiez que des binaires qui vous appartiennent ou que vous
 > êtes explicitement autorisé à étudier.
 
+![La vue Désassemblage, avec le pseudo-code local à côté](docs/screenshots/disassembly.png)
+
 ## Ce qu'il montre
 
 | Vue | Ce qu'on y trouve |
@@ -30,6 +32,46 @@ deviner.
 
 Tout est disponible en français, en anglais et en espagnol, depuis une palette
 de commandes (`Ctrl+Maj+P`) dont les raccourcis sont réassignables.
+
+## Captures d'écran
+
+**Avant d'ouvrir un fichier.** Le menu garde les fichiers récents et les vues ;
+la barre d'actions reste disponible, que le menu soit ouvert ou replié.
+
+![L'état vide, le menu de navigation ouvert](docs/screenshots/start.png)
+
+**Fonctions.** Les fonctions nommées avec leur taille et leur nombre de blocs,
+le graphe de flot de contrôle local de celle qui est sélectionnée, et son
+pseudo-code en dessous.
+
+![La vue Fonctions : la liste, un graphe de flot de contrôle et du pseudo-code](docs/screenshots/functions.png)
+
+**Chaînes.** Chaque chaîne imprimable avec son décalage et son encodage,
+filtrable, et réductible à celles qui ne sont pas mappées ou jamais
+référencées.
+
+![La vue Chaînes, avec son filtre et ses deux restrictions](docs/screenshots/strings.png)
+
+**Décompilateur externe.** Rizin avec rz-ghidra, ou RetDec, quand l'un d'eux
+est installé et choisi — le moteur qui a produit le texte est toujours nommé,
+et le désassemblage correspondant est à un bouton de là.
+
+![Du pseudo-code produit par rizin et rz-ghidra, le moteur nommé au-dessus](docs/screenshots/decompile.png)
+
+**Correctifs.** Les modifications d'octets attendent ici jusqu'à l'export, et
+l'export écrit une copie : le fichier analysé n'est jamais modifié.
+
+![La vue Correctifs, vide, expliquant d'où viennent les modifications](docs/screenshots/patches.png)
+
+**Palette de commandes** (`Ctrl+Maj+P`). Toutes les commandes, leur raccourci
+et les fichiers récemment ouverts, dans une seule liste cherchable.
+
+![La palette de commandes, listant les commandes et leurs raccourcis](docs/screenshots/command-palette.png)
+
+**Préférences.** Les moteurs externes sont cherchés dans le `PATH` ou pointés
+par un chemin à vous, et ne sont lancés qu'une fois l'un d'eux sélectionné.
+
+![La fenêtre Préférences, sur son onglet Décompilateur](docs/screenshots/preferences.png)
 
 ## Installer et lancer
 

@@ -14,6 +14,8 @@ so. Where it does not know, it says that instead of guessing.
 > Only analyse and modify binaries you own or are explicitly authorised to
 > study.
 
+![The disassembly view, with the local pseudo-code beside it](docs/screenshots/disassembly.png)
+
 ## What it shows
 
 | View | What you get |
@@ -29,6 +31,46 @@ so. Where it does not know, it says that instead of guessing.
 
 Everything is available in French, English and Spanish, from a command palette
 (`Ctrl+Shift+P`) with rebindable shortcuts.
+
+## Screenshots
+
+The interface is in French here; English and Spanish are one preference away.
+
+**Before a file is opened.** The menu keeps the recent files and the views;
+the action bar stays available whether the menu is open or shut.
+
+![The empty state, with the navigation menu open](docs/screenshots/start.png)
+
+**Functions.** Named functions with their size and block count, the local
+control-flow graph of the selected one, and its pseudo-code underneath.
+
+![The Functions view: the function list, a control-flow graph and pseudo-code](docs/screenshots/functions.png)
+
+**Strings.** Every printable string with its offset and encoding, filterable,
+and narrowed down to those that are unmapped or never referenced.
+
+![The Strings view, with its filter and its two narrowing toggles](docs/screenshots/strings.png)
+
+**External decompiler.** Rizin with rz-ghidra, or RetDec, when one is
+installed and chosen — the engine that produced the text is always named, and
+the matching assembly is one button away.
+
+![Pseudo-code produced by rizin and rz-ghidra, with the engine named above it](docs/screenshots/decompile.png)
+
+**Patches.** Byte edits wait here until you export them, and the export writes
+a copy: the analysed file is never modified.
+
+![The Patches view, empty, saying where edits come from](docs/screenshots/patches.png)
+
+**Command palette** (`Ctrl+Shift+P`). Every command, its shortcut, and the
+recently opened files, in one searchable list.
+
+![The command palette, listing commands with their shortcuts](docs/screenshots/command-palette.png)
+
+**Preferences.** External engines are found on the `PATH` or given a path of
+your own, and are only ever started once you select one.
+
+![The Preferences window, on its Decompiler tab](docs/screenshots/preferences.png)
 
 ## Install and run
 

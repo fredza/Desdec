@@ -14,6 +14,8 @@ dice. Cuando no lo sabe, también lo dice, en lugar de adivinar.
 > Analice y modifique únicamente binarios que le pertenezcan o que esté
 > explícitamente autorizado a estudiar.
 
+![La vista Desensamblado, con el pseudocódigo local al lado](docs/screenshots/disassembly.png)
+
 ## Lo que muestra
 
 | Vista | Lo que se encuentra |
@@ -29,6 +31,47 @@ dice. Cuando no lo sabe, también lo dice, en lugar de adivinar.
 
 Todo está disponible en francés, inglés y español, desde una paleta de comandos
 (`Ctrl+Mayús+P`) cuyos atajos se pueden reasignar.
+
+## Capturas de pantalla
+
+Aquí la interfaz está en francés; el inglés y el español están a una
+preferencia de distancia.
+
+**Antes de abrir un archivo.** El menú conserva los archivos recientes y las
+vistas; la barra de acciones sigue disponible, esté el menú abierto o plegado.
+
+![El estado vacío, con el menú de navegación abierto](docs/screenshots/start.png)
+
+**Funciones.** Las funciones con nombre, su tamaño y su número de bloques, el
+grafo de flujo de control local de la seleccionada, y su pseudocódigo debajo.
+
+![La vista Funciones: la lista, un grafo de flujo de control y pseudocódigo](docs/screenshots/functions.png)
+
+**Cadenas.** Cada cadena imprimible con su desplazamiento y su codificación,
+filtrable, y reducible a las que no están mapeadas o nunca se referencian.
+
+![La vista Cadenas, con su filtro y sus dos restricciones](docs/screenshots/strings.png)
+
+**Decompilador externo.** Rizin con rz-ghidra, o RetDec, cuando alguno está
+instalado y elegido —el motor que produjo el texto siempre se nombra, y el
+desensamblado correspondiente está a un botón.
+
+![Pseudocódigo producido por rizin y rz-ghidra, con el motor nombrado encima](docs/screenshots/decompile.png)
+
+**Parches.** Las modificaciones de bytes esperan aquí hasta la exportación, y
+la exportación escribe una copia: el archivo analizado nunca se modifica.
+
+![La vista Parches, vacía, explicando de dónde vienen las modificaciones](docs/screenshots/patches.png)
+
+**Paleta de comandos** (`Ctrl+Mayús+P`). Todos los comandos, su atajo y los
+archivos abiertos recientemente, en una sola lista buscable.
+
+![La paleta de comandos, con los comandos y sus atajos](docs/screenshots/command-palette.png)
+
+**Preferencias.** Los motores externos se buscan en el `PATH` o se apuntan con
+una ruta propia, y solo se ejecutan una vez que se selecciona uno.
+
+![La ventana Preferencias, en su pestaña Decompilador](docs/screenshots/preferences.png)
 
 ## Instalar y ejecutar
 
