@@ -57,10 +57,14 @@ commençant par `v`, avec leurs sommes SHA-256.
   ouvert en lecture seule ; un correctif est écrit dans une copie distincte que
   vous nommez vous-même.
 - **Il n'établit aucune connexion réseau.**
-- L'analyse est bornée par construction : au plus 256 Mio lus par fichier,
-  100 000 instructions décodées, 20 000 chaînes, 4 096 entrées de section.
-  Quand une limite est atteinte, l'interface le dit, au lieu de présenter une
-  liste partielle comme si c'était tout le programme.
+- **Chaque octet exécutable lu est décodé** : il n'y a aucun plafond sur le
+  nombre d'instructions. Une grande bibliothèque partagée en atteint réellement
+  dix-huit millions, et la liste est virtualisée : sa longueur ne coûte rien à
+  l'interface.
+- Ce qui reste borné, c'est la lecture : au plus 256 Mio par fichier, 20 000
+  chaînes, 4 096 entrées de section. Quand une limite est atteinte, l'interface
+  le dit, au lieu de présenter une liste partielle comme si c'était tout le
+  programme.
 - Les seuls programmes externes qu'il démarre sont ceux que vous choisissez :
   un décompilateur (`rizin`, `retdec-decompiler`) ou YARA. Aucun n'est requis,
   aucun n'est lancé sans avoir été sélectionné dans les préférences.
@@ -116,4 +120,10 @@ DESDEC_ICON_SHEET=/tmp/icons.svg cargo test -p desdec-app icon_sheet
 
 ## Licence
 
-Apache-2.0 OU MIT, au choix.
+Apache-2.0 OU MIT, au choix : [LICENSE-APACHE](LICENSE-APACHE) et
+[LICENSE-MIT](LICENSE-MIT). Les deux sont également accessibles depuis la
+fenêtre À propos, afin que les termes soient atteignables depuis l'application.
+
+Sauf mention contraire de votre part, toute contribution que vous soumettez
+délibérément pour inclusion dans ce travail sera doublement licenciée comme
+ci-dessus, sans terme ni condition supplémentaire.
