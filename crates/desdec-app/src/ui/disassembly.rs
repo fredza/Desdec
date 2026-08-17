@@ -291,7 +291,7 @@ mod tests {
         let mut rows: Vec<f32> = drawn(&output.shapes)
             .into_iter()
             .filter(|(text, _)| text.starts_with("0x00"))
-            .map(|(_, y)| y)
+            .map(|(_, position)| position.y)
             .collect();
         rows.sort_by(f32::total_cmp);
         rows.dedup_by(|a, b| (*a - *b).abs() < 0.5);

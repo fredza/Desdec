@@ -57,13 +57,13 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                 }
 
                 ui.separator();
-                ui.label(
-                    egui::RichText::new("D")
-                        .color(accent(app.preferences.theme))
-                        .strong()
-                        .size(20.0),
-                );
-                ui.strong("Desdec");
+                // The name is the way to About: an application's own identity
+                // is where a reader looks for its version, its source and its
+                // licence, and it was previously only reachable through the
+                // menu or a function key.
+                if name(app, ui).clicked() {
+                    app.dialogs.open(Dialog::About);
+                }
                 // The open file, and the way to close it. Closing used to live
                 // only in the collapsed side menu, which made it look as if a
                 // binary could not be closed at all.
@@ -75,6 +75,35 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                 }
             });
         });
+}
+
+/// The mark and the name, as one button: two labels side by side would be two
+/// things to click, one of which would do nothing.
+fn name(app: &DesdecApp, ui: &mut egui::Ui) -> egui::Response {
+    let mut job = egui::text::LayoutJob::default();
+    let colour = ui.visuals().text_color();
+    job.append(
+        "D",
+        0.0,
+        egui::TextFormat {
+            font_id: egui::FontId::proportional(20.0),
+            color: accent(app.preferences.theme),
+            ..egui::TextFormat::default()
+        },
+    );
+    job.append(
+        " Desdec",
+        0.0,
+        egui::TextFormat {
+            font_id: egui::TextStyle::Body.resolve(ui.style()),
+            color: colour,
+            ..egui::TextFormat::default()
+        },
+    );
+    let response = ui
+        .add(egui::Button::new(job).frame(false))
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    app.tooltip(response, app.t(Text::About))
 }
 
 /// Name of the loaded binary, with the button that closes it.
@@ -163,6 +192,46 @@ mod tests {
                 "{command:?} opens a view, and the toolbar already lists those"
             );
         }
+    }
+
+    /// Clicking the application's own name opens About — where its version,
+    /// its source and its licence are. That is where a reader looks for them,
+    /// and they were otherwise a menu entry or a function key away.
+    #[test]
+    fn clicking_the_name_opens_about() {
+        let ctx = egui::Context::default();
+        let mut app = opened_app(WorkspaceView::Overview);
+        assert!(!app.dialogs.is_open(Dialog::About));
+
+        // A first frame to find out where the name landed, then a click on it.
+        let output = ctx.run(window_input(), |ctx| show(&mut app, ctx));
+        let (_, at) = crate::testing::drawn(&output.shapes)
+            .into_iter()
+            .find(|(text, _)| text.contains("Desdec"))
+            .expect("the bar draws the application's name");
+        let at = at + egui::vec2(20.0, 8.0);
+        let mut input = window_input();
+        input.events = vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ];
+        let _ = ctx.run(input, |ctx| show(&mut app, ctx));
+
+        assert!(
+            app.dialogs.is_open(Dialog::About),
+            "the name must be the way to About"
+        );
     }
 
     /// With a binary open and the toolbar on, the bar still draws: the name of

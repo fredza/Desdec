@@ -327,19 +327,31 @@ fn recent_binaries(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) 
 }
 
 /// The workspace views: the part of the menu that survives at every width.
-/// The views the menu has to offer: the ones the toolbar does not.
+/// Views the toolbar keeps to itself.
 ///
-/// A view already one click away in the toolbar does not need a second entry
-/// here — that was the same list twice, one of them longer to reach. When the
-/// toolbar is hidden the menu carries all of them, since otherwise those views
-/// would be reachable only by shortcut or through the command palette.
+/// Each is one click away up there, and repeating it in the menu made the two
+/// into copies of one another — the menu's copy being the one you have to open
+/// something to reach. The overview is deliberately not among them: it is
+/// where a reader starts, and a menu with no way back to it is a menu you have
+/// to leave in order to use.
+const TOOLBAR_ONLY: &[WorkspaceView] = &[
+    WorkspaceView::Disassembly,
+    WorkspaceView::Decompile,
+    WorkspaceView::Functions,
+    WorkspaceView::Strings,
+    WorkspaceView::Patches,
+];
+
+/// The views the menu offers.
+///
+/// With the toolbar hidden it offers all of them: it is then the only place
+/// left that shows them, and the rest would be reachable by shortcut or the
+/// command palette alone.
 fn views_to_offer(app: &DesdecApp) -> Vec<WorkspaceView> {
     WorkspaceView::ALL
         .iter()
         .copied()
-        .filter(|view| {
-            !app.preferences.show_toolbar || !super::action_bar::VIEW_ACTIONS.contains(view)
-        })
+        .filter(|view| !app.preferences.show_toolbar || !TOOLBAR_ONLY.contains(view))
         .collect()
 }
 
@@ -518,25 +530,41 @@ mod tests {
         }
     }
 
-    /// A view offered by the toolbar is not offered again by the menu: the
-    /// same list twice, one of them longer to reach, is not two ways of
-    /// getting somewhere but one way and a distraction.
+    /// The menu leaves the toolbar's own views to the toolbar, and keeps the
+    /// rest — including the overview, which is where a reader starts.
     #[test]
     fn the_menu_leaves_out_what_the_toolbar_already_offers() {
         let mut app = opened_app(WorkspaceView::Overview);
         app.preferences.show_toolbar = true;
 
         let offered = views_to_offer(&app);
-        for view in crate::ui::action_bar::VIEW_ACTIONS {
+        for view in TOOLBAR_ONLY {
             assert!(
                 !offered.contains(view),
                 "{view:?} is in the toolbar and in the menu"
             );
         }
         assert!(
-            !offered.is_empty(),
-            "the views the toolbar does not carry must still be reachable"
+            offered.contains(&WorkspaceView::Overview),
+            "the way back to the overview must stay in the menu"
         );
+        assert_eq!(
+            offered.len(),
+            WorkspaceView::ALL.len() - TOOLBAR_ONLY.len(),
+            "every other view belongs to the menu"
+        );
+    }
+
+    /// What the menu hands to the toolbar, the toolbar must actually show, or
+    /// a view would be offered in neither.
+    #[test]
+    fn everything_the_menu_defers_is_in_the_toolbar() {
+        for view in TOOLBAR_ONLY {
+            assert!(
+                crate::ui::action_bar::VIEW_ACTIONS.contains(view),
+                "{view:?} is in neither the toolbar nor the menu"
+            );
+        }
     }
 
     /// With the toolbar hidden, the menu is the only place left, so it carries

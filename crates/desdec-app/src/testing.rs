@@ -93,15 +93,16 @@ pub fn window_input() -> eframe::egui::RawInput {
     }
 }
 
-/// Every string a frame actually drew, with the height it was drawn at.
+/// Every string a frame actually drew, with where it was drawn.
 ///
 /// What a virtualised view leaves out is as much of its behaviour as what it
-/// shows, and only the shapes say which is which.
-pub fn drawn(shapes: &[eframe::egui::epaint::ClippedShape]) -> Vec<(String, f32)> {
-    fn walk(shape: &eframe::egui::Shape, out: &mut Vec<(String, f32)>) {
+/// shows, and only the shapes say which is which. The position is what lets a
+/// test click on what it can see.
+pub fn drawn(shapes: &[eframe::egui::epaint::ClippedShape]) -> Vec<(String, eframe::egui::Pos2)> {
+    fn walk(shape: &eframe::egui::Shape, out: &mut Vec<(String, eframe::egui::Pos2)>) {
         match shape {
             eframe::egui::Shape::Text(text) => {
-                out.push((text.galley.text().to_owned(), text.pos.y));
+                out.push((text.galley.text().to_owned(), text.pos));
             }
             eframe::egui::Shape::Vec(shapes) => {
                 for shape in shapes {
