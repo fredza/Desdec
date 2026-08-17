@@ -1,0 +1,119 @@
+# Desdec
+
+[English](README.md) · **Français** · [Español](README.es.md)
+
+Desdec est un explorateur de binaires local et open source, fait pour lire les
+exécutables qu'on a le droit de lire. Il ouvre un fichier ELF, PE ou Mach-O,
+dit ce qu'il contient, et ne l'exécute jamais.
+
+Sa règle de conduite est de ne rien inventer. Quand une réponse est exacte —
+l'adresse que désigne un opérande, les octets qu'un correctif écrirait — elle
+est donnée telle quelle. Quand c'est une lecture locale qu'un branchement peut
+invalider, il le dit. Quand il ne sait pas, il le dit aussi plutôt que de
+deviner.
+
+> N'analysez et ne modifiez que des binaires qui vous appartiennent ou que vous
+> êtes explicitement autorisé à étudier.
+
+## Ce qu'il montre
+
+| Vue | Ce qu'on y trouve |
+| --- | --- |
+| **Aperçu** | Format, architecture, point d'entrée, SHA-256, entropie, durcissement (RELRO, canari, NX, PIE, CFG), langage source détecté, et chaque bibliothèque liée — avec l'explication de ce à quoi elle sert. |
+| **Segments** | La table des sections : adresses, tailles, permissions et entropie par section, pour qu'une zone compressée ou chiffrée saute aux yeux. |
+| **Fonctions** | Les fonctions nommées, leur corps, leurs blocs de base et un graphe de flot de contrôle local. |
+| **Chaînes** | Les chaînes imprimables avec leur décalage et leur encodage, filtrables, et les instructions qui les référencent. |
+| **Désassemblage** | Listings x86, x86-64 (iced-x86) et AArch64 (Capstone), avec édition des octets d'une instruction. Un clic droit explique ce que désigne l'opérande et ce qui a écrit en dernier dans chaque registre nommé. |
+| **Pseudo-code** | Une traduction prudente du flot décodé, intégrée à l'outil — ou la sortie de Rizin/rz-ghidra ou de RetDec si l'un d'eux est installé et choisi. |
+| **Correctifs** | Les modifications d'octets en attente, et l'export qui les écrit dans une **copie**. Le fichier analysé n'est jamais modifié. |
+| **YARA** | Optionnel. Lance un `yara` ou `yr` installé localement sur le fichier ouvert, avec vos propres règles. Désactivé par défaut. |
+
+Tout est disponible en français, en anglais et en espagnol, depuis une palette
+de commandes (`Ctrl+Maj+P`) dont les raccourcis sont réassignables.
+
+## Installer et lancer
+
+Rust 1.85 ou plus récent.
+
+```sh
+git clone https://github.com/fredza/Desdec.git
+cd Desdec
+cargo run --release -p desdec-app            # ouvrir la fenêtre
+cargo run --release -p desdec-app -- /bin/ls # ou analyser un fichier tout de suite
+```
+
+On peut aussi déposer un binaire sur la fenêtre, ou utiliser **Ouvrir un
+binaire** (`Ctrl+O`).
+
+Des archives précompilées pour Windows x86-64, macOS Apple Silicon et Linux
+x86-64 sont publiées par le workflow `Platform binaries` à chaque étiquette
+commençant par `v`, avec leurs sommes SHA-256.
+
+## Ce qu'il fait de vos fichiers et de votre machine
+
+- **Il n'exécute jamais le binaire analysé.** Rien n'en est lancé, ni mappé, ni
+  chargé.
+- **Il lit, et n'écrit que là où vous le demandez.** Le fichier analysé est
+  ouvert en lecture seule ; un correctif est écrit dans une copie distincte que
+  vous nommez vous-même.
+- **Il n'établit aucune connexion réseau.**
+- L'analyse est bornée par construction : au plus 256 Mio lus par fichier,
+  100 000 instructions décodées, 20 000 chaînes, 4 096 entrées de section.
+  Quand une limite est atteinte, l'interface le dit, au lieu de présenter une
+  liste partielle comme si c'était tout le programme.
+- Les seuls programmes externes qu'il démarre sont ceux que vous choisissez :
+  un décompilateur (`rizin`, `retdec-decompiler`) ou YARA. Aucun n'est requis,
+  aucun n'est lancé sans avoir été sélectionné dans les préférences.
+
+### Où il range ses affaires
+
+| | Préférences | Décompilations en cache |
+| --- | --- | --- |
+| Linux | `$XDG_DATA_HOME/desdec/app.ron` ou `~/.local/share/desdec/app.ron` | `$XDG_CACHE_HOME/desdec/decompiled` ou `~/.cache/desdec/decompiled` |
+| macOS | `~/Library/Application Support/Desdec/app.ron` | `~/Library/Caches/desdec/decompiled` |
+| Windows | `%APPDATA%\Desdec\data\app.ron` | `%LOCALAPPDATA%\desdec\decompiled` |
+
+Les préférences sont écrites une fraction de seconde après avoir cessé de
+changer, et poussées sur le disque à ce moment-là — sans attendre une
+sauvegarde périodique ni une fermeture propre. Une fenêtre fermée brutalement
+sous Windows perdait le thème choisi quelques instants plus tôt ; ce n'est plus
+le cas. La persistance peut être désactivée entièrement, ce qui efface aussi ce
+qui était déjà enregistré. Les décompilations sont mises en cache sous le
+SHA-256 du fichier dont elles viennent : un fichier tronqué, qui n'a pas
+d'empreinte digne de confiance, n'est jamais mis en cache.
+
+## Développement
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets
+cargo fmt --all
+```
+
+La suite de tests tourne en une vingtaine de secondes et n'exige rien
+d'installé. Elle analyse des binaires ELF, PE et Mach-O AArch64 synthétiques,
+forgés octet par octet dans `desdec-core::fixtures` : les lecteurs des formats
+absents de la machine hôte sont donc exercés à chaque exécution, sur toutes les
+plateformes.
+
+Pour revoir le jeu d'icônes après avoir modifié un glyphe :
+
+```sh
+DESDEC_ICON_SHEET=/tmp/icons.svg cargo test -p desdec-app icon_sheet
+```
+
+### Organisation
+
+- `crates/desdec-core` — inspection et analyse des binaires. Ne sait rien
+  d'aucune interface. La lecture d'entrées non fiables est bornée et totale :
+  chaque lecture passe par des accesseurs vérifiés, chaque parcours de table
+  est plafonné, et aucune entrée ne peut provoquer de panique.
+- `crates/desdec-app` — l'application native `egui`.
+- `docs/ARCHITECTURE.md` — le sens des dépendances et ce qui est délibérément
+  hors du cœur.
+- `docs/ai-collaboration/WORKLOG.md` — les règles de travail communes aux
+  contributeurs humains et aux assistants IA.
+
+## Licence
+
+Apache-2.0 OU MIT, au choix.
