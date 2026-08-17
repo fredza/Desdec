@@ -2,6 +2,9 @@
 
 [English](README.md) · [Français](README.fr.md) · **Español**
 
+Las versiones «release» y «pre-release» se firman con una clave privada; actualmente es obligatorio.
+La clave pública se distribuye de forma gratuita junto con el binario.  
+
 Desdec es un explorador de binarios local y de código abierto, hecho para leer
 los ejecutables que uno tiene derecho a leer. Abre un archivo ELF, PE o Mach-O,
 dice qué contiene, y nunca lo ejecuta.
