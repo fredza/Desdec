@@ -298,9 +298,10 @@ mod tests {
     fn instruction(address: u64, text: &str, length: usize) -> Instruction {
         Instruction {
             address,
-            bytes: vec![0x90; length],
+            bytes: crate::analysis::disassembly::InstructionBytes::new(&vec![0x90; length])
+                .expect("test instructions are short"),
             text: text.to_owned(),
-            section: ".text".to_owned(),
+            section: std::sync::Arc::from(".text"),
         }
     }
 

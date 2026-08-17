@@ -104,9 +104,12 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
             ui.add_space(8.0);
             tools_section(app, ctx, ui, density);
 
+            // One line of help, and only the part a reader cannot discover by
+            // looking: that the edge is draggable and the width is kept. The
+            // second line explained how to reopen a menu that is, at that
+            // moment, open.
             if density.shows_sections() {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.small(app.t(Text::MenuHint));
                     ui.small(egui::RichText::new(app.t(Text::DragToResizeMenu)).color(MUTED));
                     ui.separator();
                 });
@@ -175,14 +178,19 @@ fn store_panel_width(ctx: &egui::Context, width: f32) {
     });
 }
 
+/// The controls that size and close the menu, and nothing else.
+///
+/// The mark and the name used to sit here too, an arm's length below the same
+/// mark and name in the action bar. Repeating them cost the menu a row of
+/// height at every width and told the reader nothing they were not already
+/// looking at, so the header is now only what the action bar cannot offer:
+/// the width of this panel.
 fn header(app: &mut DesdecApp, ui: &mut egui::Ui, density: Density) {
     let accent = accent(app.preferences.theme);
-    ui.add_space(6.0);
+    ui.add_space(4.0);
 
     if !density.shows_labels() {
-        // A rail has room for the mark and one button, one under the other.
         ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new("D").color(accent).strong().size(20.0));
             let widen = app.tooltip(
                 icons::sized_button(ui, Icon::ExpandRight, None, false, accent, ICON_BUTTON),
                 app.t(Text::WidenMenu),
@@ -191,37 +199,28 @@ fn header(app: &mut DesdecApp, ui: &mut egui::Ui, density: Density) {
                 set_width(app, ui.ctx(), f32::from(DEFAULT_WIDTH));
             }
         });
-        ui.add_space(6.0);
+        ui.add_space(4.0);
         ui.separator();
         return;
     }
 
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("D").color(accent).strong().size(22.0));
-        ui.vertical(|ui| {
-            ui.strong("Desdec");
-            if density.shows_sections() {
-                ui.small(egui::RichText::new(app.t(Text::Menu)).color(MUTED));
-            }
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let close = app.tooltip(
-                icons::sized_button(ui, Icon::Close, None, false, accent, ICON_BUTTON),
-                app.t(Text::CollapseMenu),
-            );
-            if close.clicked() {
-                app.navigation_open = false;
-            }
-            let narrow = app.tooltip(
-                icons::sized_button(ui, Icon::CollapseLeft, None, false, accent, ICON_BUTTON),
-                app.t(Text::NarrowMenu),
-            );
-            if narrow.clicked() {
-                set_width(app, ui.ctx(), MINIMUM_WIDTH);
-            }
-        });
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let close = app.tooltip(
+            icons::sized_button(ui, Icon::Close, None, false, accent, ICON_BUTTON),
+            app.t(Text::CollapseMenu),
+        );
+        if close.clicked() {
+            app.navigation_open = false;
+        }
+        let narrow = app.tooltip(
+            icons::sized_button(ui, Icon::CollapseLeft, None, false, accent, ICON_BUTTON),
+            app.t(Text::NarrowMenu),
+        );
+        if narrow.clicked() {
+            set_width(app, ui.ctx(), MINIMUM_WIDTH);
+        }
     });
-    ui.add_space(8.0);
+    ui.add_space(4.0);
     ui.separator();
 }
 

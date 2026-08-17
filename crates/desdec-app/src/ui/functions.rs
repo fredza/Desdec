@@ -541,9 +541,9 @@ mod tests {
     fn instruction(address: u64, text: &str) -> Instruction {
         Instruction {
             address,
-            bytes: vec![0x90],
+            bytes: desdec_core::InstructionBytes::new(&[0x90]).expect("one byte"),
             text: text.to_owned(),
-            section: ".text".to_owned(),
+            section: std::sync::Arc::from(".text"),
         }
     }
 

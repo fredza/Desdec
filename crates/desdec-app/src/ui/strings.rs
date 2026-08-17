@@ -396,9 +396,9 @@ mod tests {
             symbols: Vec::new(),
             instructions: vec![Instruction {
                 address: 0x5000,
-                bytes: vec![0x48, 0x8d, 0x05],
+                bytes: desdec_core::InstructionBytes::new(&[0x48, 0x8d, 0x05]).expect("short"),
                 text: "mov $4010h,%rax".to_owned(),
-                section: ".text".to_owned(),
+                section: std::sync::Arc::from(".text"),
             }],
             code_truncated: false,
             details: Default::default(),
@@ -450,9 +450,9 @@ mod tests {
     fn reads_direct_gas_hex_operands_for_string_references() {
         let instruction = Instruction {
             address: 0x401000,
-            bytes: vec![0x48, 0x8d, 0x05],
+            bytes: desdec_core::InstructionBytes::new(&[0x48, 0x8d, 0x05]).expect("short"),
             text: "mov $402000h,%rax".to_owned(),
-            section: ".text".to_owned(),
+            section: std::sync::Arc::from(".text"),
         };
 
         assert_eq!(instruction_addresses(&instruction), [0x402000]);
@@ -462,9 +462,10 @@ mod tests {
     fn resolves_rip_relative_string_references() {
         let instruction = Instruction {
             address: 0x400ff0,
-            bytes: vec![0x48, 0x8d, 0x05, 0x09, 0x10, 0x00, 0x00],
+            bytes: desdec_core::InstructionBytes::new(&[0x48, 0x8d, 0x05, 0x09, 0x10, 0x00, 0x00])
+                .expect("short"),
             text: "leaq 0x1009(%rip),%rax".to_owned(),
-            section: ".text".to_owned(),
+            section: std::sync::Arc::from(".text"),
         };
 
         assert_eq!(instruction_addresses(&instruction), [0x402000]);

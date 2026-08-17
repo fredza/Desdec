@@ -335,7 +335,7 @@ pub fn listing_area(
     // hundred thousand of them is a seventh of the listing.
     #[expect(
         clippy::cast_precision_loss,
-        reason = "the decoder stops at 100 000 instructions, well inside f32's exact range"
+        reason = "a listing long enough to lose f32 precision is far beyond what a file can hold"
     )]
     let row = (index + leading) as f32 * (ROW_HEIGHT + ui.spacing().item_spacing.y);
     // Centred rather than pinned to the top, so the instructions around the

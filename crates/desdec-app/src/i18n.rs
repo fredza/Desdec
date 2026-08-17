@@ -63,11 +63,6 @@ translations! {
         "Drag the menu's edge to the width you want; it is kept.",
         "Arrastre el borde del menú al ancho que quiera; se conserva.",
     ],
-    MenuHint => [
-        "Le menu est réduit au lancement. Utilisez ☰ pour le rouvrir.",
-        "The menu is collapsed at startup. Use ☰ to reopen it.",
-        "El menú está contraído al iniciar. Use ☰ para abrirlo.",
-    ],
     ReadyToOpen => [
         "Prêt à ouvrir un binaire",
         "Ready to open a binary",
@@ -119,9 +114,15 @@ translations! {
         "Arrastre aquí un archivo ELF, PE o Mach-O, o ábralo desde la barra de acciones.",
     ],
     MenuAvailable => [
-        "☰ révèle le menu complet. La barre d’actions reste toujours disponible.",
-        "☰ reveals the full menu. The action bar always stays available.",
-        "☰ muestra el menú completo. La barra de acciones siempre está disponible.",
+        "Le bouton en haut à gauche ouvre le menu complet. La barre d’actions reste toujours disponible.",
+        "The button at the top left opens the full menu. The action bar always stays available.",
+        "El botón de arriba a la izquierda abre el menú completo. La barra de acciones siempre está disponible.",
+    ],
+    Repository => ["Dépôt du projet", "Project repository", "Repositorio del proyecto"],
+    LicenceLine => [
+        "Sous licence Apache-2.0 ou MIT, au choix.",
+        "Licensed under Apache-2.0 or MIT, at your option.",
+        "Bajo licencia Apache-2.0 o MIT, a su elección.",
     ],
     LegalNotice => [
         "Utilisez uniquement des binaires que vous pouvez légalement analyser.",
@@ -340,9 +341,9 @@ translations! {
         "Estos motores descompilan una función entera y no asocian ninguna línea a una dirección: se abre el ensamblado de toda la función elegida.",
     ],
     TruncatedDisassembly => [
-        "Le décodage s’est arrêté à la limite de 100 000 instructions : le code au-delà n’a pas été désassemblé.",
-        "Decoding stopped at the 100 000 instruction limit; code past that point was not disassembled.",
-        "La decodificación se detuvo en el límite de 100 000 instrucciones; el código posterior no se desensambló.",
+        "Une partie du code se trouve au-delà des octets analysés : elle n’a pas été désassemblée.",
+        "Some of the code lies beyond the analysed bytes and was not disassembled.",
+        "Parte del código está más allá de los bytes analizados y no se desensambló.",
     ],
     MoreInstructions => [
         "instructions supplémentaires, non affichées ici.",
