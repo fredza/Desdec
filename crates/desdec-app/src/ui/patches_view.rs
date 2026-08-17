@@ -277,9 +277,7 @@ mod tests {
 
     /// A real analysis of a real binary: the test executable itself.
     fn opened() -> DesdecApp {
-        let path = std::env::current_exe().expect("the test binary has a path");
-        let analysis = desdec_core::analyse_path(&path).expect("the test binary is analysable");
-        DesdecApp::for_test(Some(analysis), WorkspaceView::Patches)
+        crate::testing::opened_app(WorkspaceView::Patches)
     }
 
     /// First instruction whose bytes actually exist in the file.
@@ -294,6 +292,39 @@ mod tests {
             .map(|instruction| instruction.address)
             .find(|address| crate::patches::file_offset_of(analysis, *address).is_some())
             .expect("the host binary must decode a patchable instruction")
+    }
+
+    /// An instruction's address becomes a place in the file differently in
+    /// each format — sections are padded differently on disk, and a Mach-O
+    /// segment is not a PE section. Patching the wrong offset would write
+    /// plausible bytes into the wrong part of the file, so the mapping is held
+    /// to the bytes it lands on, for every format.
+    #[test]
+    fn an_instruction_maps_back_to_its_own_bytes_in_every_format() {
+        for sample in crate::testing::samples() {
+            let label = sample.fixture.label;
+            let analysis = &sample.analysis;
+            let file = &sample.fixture.bytes;
+            let mut checked = 0;
+
+            for instruction in &analysis.instructions {
+                let Some(offset) = crate::patches::file_offset_of(analysis, instruction.address)
+                else {
+                    continue;
+                };
+                let at = usize::try_from(offset).expect("fixtures stay small");
+                let found = file
+                    .get(at..at + instruction.bytes.len())
+                    .unwrap_or_else(|| panic!("{label}: {offset:#x} is outside the file"));
+                assert_eq!(
+                    found, instruction.bytes,
+                    "{label}: {:#x} maps to {offset:#x}, which holds other bytes",
+                    instruction.address
+                );
+                checked += 1;
+            }
+            assert!(checked > 0, "{label}: no instruction was patchable at all");
+        }
     }
 
     /// The whole path: open an editor, type new bytes, record the patch.
@@ -373,8 +404,8 @@ mod tests {
     /// bytes, and leaves the analysed file untouched.
     #[test]
     fn the_exported_copy_differs_only_where_it_was_patched() {
-        let source = std::env::current_exe().expect("the test binary has a path");
-        let original = std::fs::read(&source).expect("the test binary is readable");
+        let source = crate::testing::reference_path();
+        let original = crate::testing::reference_bytes().to_vec();
         let mut app = opened();
         let address = first_patchable(&app);
         assert!(open_editor(&mut app, address));
@@ -387,7 +418,7 @@ mod tests {
 
         let destination = std::env::temp_dir().join("desdec-export-roundtrip.bin");
         let written =
-            desdec_core::patch::write_patched_copy(&source, &destination, app.patches.entries())
+            desdec_core::patch::write_patched_copy(source, &destination, app.patches.entries())
                 .expect("the copy is writable");
         let copy = std::fs::read(&destination).expect("the copy is readable");
 
@@ -403,7 +434,7 @@ mod tests {
             "only the patched bytes may differ"
         );
         assert_eq!(
-            std::fs::read(&source).expect("the source is readable"),
+            std::fs::read(source).expect("the source is readable"),
             original,
             "the analysed file must be untouched"
         );

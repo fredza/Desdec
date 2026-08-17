@@ -11,17 +11,17 @@ use desdec_core::operand;
 use eframe::egui;
 
 use crate::{
-    app::DesdecApp,
+    app::{DesdecApp, Dialog},
     i18n::Text,
     ui::{MUTED, syntax},
 };
 
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
-    if !app.dialogs.operand {
+    if !app.dialogs.is_open(Dialog::Operand) {
         return;
     }
     let Some(address) = app.inspecting_operand else {
-        app.dialogs.operand = false;
+        app.dialogs.close(Dialog::Operand);
         return;
     };
 
@@ -34,7 +34,7 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         .default_width(520.0)
         .show(ctx, |ui| contents(app, ui, address));
 
-    app.dialogs.operand = open;
+    app.dialogs.set(Dialog::Operand, open);
     if !open {
         app.inspecting_operand = None;
     }
@@ -45,11 +45,7 @@ fn contents(app: &DesdecApp, ui: &mut egui::Ui, address: u64) {
     let Some(analysis) = app.analysis.as_ref() else {
         return;
     };
-    let Some(instruction) = analysis
-        .instructions
-        .iter()
-        .find(|instruction| instruction.address == address)
-    else {
+    let Some(instruction) = analysis.instruction_at(address) else {
         return;
     };
     let architecture = analysis.summary.architecture;
@@ -198,9 +194,7 @@ mod tests {
     /// including for instructions whose operand resolves to nothing.
     #[test]
     fn the_inspection_lays_out_on_a_real_binary() {
-        let path = std::env::current_exe().expect("the test binary has a path");
-        let analysis = desdec_core::analyse_path(&path).expect("analysable");
-        let addresses: Vec<u64> = analysis
+        let addresses: Vec<u64> = crate::testing::reference_analysis()
             .instructions
             .iter()
             .take(40)
@@ -209,12 +203,11 @@ mod tests {
         assert!(!addresses.is_empty(), "the host binary must decode");
 
         let ctx = egui::Context::default();
-        let mut app = DesdecApp::for_test(Some(analysis), WorkspaceView::Disassembly);
-        app.file_bytes = std::fs::read(&path).expect("readable");
+        let mut app = crate::testing::opened_app(WorkspaceView::Disassembly);
 
         for address in addresses {
             app.inspecting_operand = Some(address);
-            app.dialogs.operand = true;
+            app.dialogs.open(Dialog::Operand);
             for language in crate::i18n::Language::ALL {
                 app.preferences.language = *language;
                 let output = ctx.run(egui::RawInput::default(), |ctx| show(&mut app, ctx));
@@ -227,16 +220,14 @@ mod tests {
     /// than draw a half-empty one.
     #[test]
     fn an_unknown_address_is_not_inspected() {
-        let path = std::env::current_exe().expect("the test binary has a path");
-        let analysis = desdec_core::analyse_path(&path).expect("analysable");
         let ctx = egui::Context::default();
-        let mut app = DesdecApp::for_test(Some(analysis), WorkspaceView::Disassembly);
+        let mut app = crate::testing::opened_app(WorkspaceView::Disassembly);
         app.inspecting_operand = Some(0xdead_beef_0000);
-        app.dialogs.operand = true;
+        app.dialogs.open(Dialog::Operand);
 
         let _ = ctx.run(egui::RawInput::default(), |ctx| show(&mut app, ctx));
         // The window stays open but says nothing about an instruction it
         // cannot find; nothing is invented for it.
-        assert!(app.dialogs.operand);
+        assert!(app.dialogs.is_open(Dialog::Operand));
     }
 }

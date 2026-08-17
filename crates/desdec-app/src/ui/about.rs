@@ -1,9 +1,12 @@
 use eframe::egui;
 
-use crate::{app::DesdecApp, i18n::Text};
+use crate::{
+    app::{DesdecApp, Dialog},
+    i18n::Text,
+};
 
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
-    if !app.dialogs.about {
+    if !app.dialogs.is_open(Dialog::About) {
         return;
     }
 
@@ -19,7 +22,7 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
             ui.label(app.t(Text::AboutDescription));
             ui.small(app.t(Text::LegalNotice));
         });
-    app.dialogs.about = open;
+    app.dialogs.set(Dialog::About, open);
 }
 
 /// The released version, next to the build it was produced from.

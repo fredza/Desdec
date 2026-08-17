@@ -7,18 +7,18 @@
 use eframe::egui;
 
 use crate::{
-    app::DesdecApp,
+    app::{DesdecApp, Dialog},
     i18n::Text,
     libraries::NoteSource,
     ui::{MUTED, section_title},
 };
 
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
-    if !app.dialogs.library {
+    if !app.dialogs.is_open(Dialog::Library) {
         return;
     }
     let Some(library) = app.explaining_library.clone() else {
-        app.dialogs.library = false;
+        app.dialogs.close(Dialog::Library);
         return;
     };
 
@@ -60,7 +60,7 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
             })));
         });
 
-    app.dialogs.library = open;
+    app.dialogs.set(Dialog::Library, open);
     if !open {
         app.explaining_library = None;
     }
@@ -79,7 +79,7 @@ mod tests {
         for library in ["libc.so.6", "libcompletelyunknown.so.1"] {
             let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
             app.explaining_library = Some(library.to_owned());
-            app.dialogs.library = true;
+            app.dialogs.open(Dialog::Library);
 
             for language in crate::i18n::Language::ALL {
                 app.preferences.language = *language;
@@ -93,8 +93,7 @@ mod tests {
     /// matching fixtures would prove nothing about real library names.
     #[test]
     fn a_real_binarys_libraries_are_described() {
-        let path = std::env::current_exe().expect("the test binary has a path");
-        let analysis = desdec_core::analyse_path(&path).expect("analysable");
+        let analysis = crate::testing::reference_analysis();
         let mut catalogue = crate::libraries::Catalogue::default();
 
         let described = analysis
@@ -121,13 +120,13 @@ mod tests {
     fn closing_forgets_which_library_was_explained() {
         let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
         app.explaining_library = Some("libc.so.6".to_owned());
-        app.dialogs.library = false;
+        app.dialogs.close(Dialog::Library);
 
         let ctx = egui::Context::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| show(&mut app, ctx));
 
         // The window is shut, so nothing was drawn and the subject is stale
         // only until it is opened again with a new one.
-        assert!(!app.dialogs.library);
+        assert!(!app.dialogs.is_open(Dialog::Library));
     }
 }

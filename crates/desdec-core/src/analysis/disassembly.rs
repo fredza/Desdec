@@ -15,27 +15,48 @@ pub struct Instruction {
     pub section: String,
 }
 
+/// Instructions decoded from a file, and whether the decoder ran out of room.
+///
+/// The flag is not cosmetic: a listing that stops at the limit looks exactly
+/// like a program that ends there, and a reader must not mistake the one for
+/// the other.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Decoded {
+    /// Ordered by address, so a listing reads like the image and a lookup can
+    /// bisect instead of scanning.
+    pub instructions: Vec<Instruction>,
+    /// Set when [`MAXIMUM_INSTRUCTIONS`] was reached with code left to decode.
+    pub truncated: bool,
+}
+
 #[must_use]
 pub fn decode(
     file: &[u8],
     format: BinaryFormat,
     architecture: Architecture,
     sections: &[Section],
-) -> Vec<Instruction> {
+) -> Decoded {
     if matches!(format, BinaryFormat::Unknown) {
-        return Vec::new();
+        return Decoded::default();
     }
-    match architecture {
+    let mut decoded = match architecture {
         Architecture::X86 => decode_x86(file, sections, 32),
         Architecture::X86_64 => decode_x86(file, sections, 64),
         Architecture::Arm64 => decode_arm64(file, sections),
-        Architecture::Arm | Architecture::Unknown => Vec::new(),
-    }
+        Architecture::Arm | Architecture::Unknown => Decoded::default(),
+    };
+    // Sections are decoded in table order, which is not always address order.
+    // Sorting once here is what lets every caller bisect the listing.
+    decoded
+        .instructions
+        .sort_by_key(|instruction| instruction.address);
+    decoded
 }
 
-fn decode_x86(file: &[u8], sections: &[Section], bits: u32) -> Vec<Instruction> {
+fn decode_x86(file: &[u8], sections: &[Section], bits: u32) -> Decoded {
     let mut output = Vec::new();
-    for section in sections.iter().filter(|s| s.permissions.execute) {
+    let mut executable = sections.iter().filter(|s| s.permissions.execute).peekable();
+    while let Some(section) = executable.next() {
         let Some(bytes) = section.bytes_in(file) else {
             continue;
         };
@@ -63,22 +84,31 @@ fn decode_x86(file: &[u8], sections: &[Section], bits: u32) -> Vec<Instruction> 
             });
         }
         if output.len() == MAXIMUM_INSTRUCTIONS {
-            break;
+            // Truncated only if something was actually left behind: this
+            // section still had bytes, or another executable one follows.
+            let truncated = decoder.can_decode() || executable.peek().is_some();
+            return Decoded {
+                instructions: output,
+                truncated,
+            };
         }
     }
-    output
+    Decoded {
+        instructions: output,
+        truncated: false,
+    }
 }
 
 /// Decodes AArch64 instructions for Apple Silicon Mach-O and ARM64 ELF/PE
 /// files. Capstone is used only for this ISA; iced-x86 remains the x86 decoder.
-fn decode_arm64(file: &[u8], sections: &[Section]) -> Vec<Instruction> {
+fn decode_arm64(file: &[u8], sections: &[Section]) -> Decoded {
     let Ok(engine) = Capstone::new()
         .arm64()
         .mode(arm64::ArchMode::Arm)
         .detail(true)
         .build()
     else {
-        return Vec::new();
+        return Decoded::default();
     };
     let mut output = Vec::new();
     for section in sections
@@ -93,7 +123,12 @@ fn decode_arm64(file: &[u8], sections: &[Section]) -> Vec<Instruction> {
         };
         for instruction in instructions.iter() {
             if output.len() == MAXIMUM_INSTRUCTIONS {
-                return output;
+                // This very instruction is being dropped, so something was
+                // certainly left behind.
+                return Decoded {
+                    instructions: output,
+                    truncated: true,
+                };
             }
             let mnemonic = instruction.mnemonic().unwrap_or_default();
             let operands = instruction.op_str().unwrap_or_default();
@@ -110,7 +145,10 @@ fn decode_arm64(file: &[u8], sections: &[Section]) -> Vec<Instruction> {
             });
         }
     }
-    output
+    Decoded {
+        instructions: output,
+        truncated: false,
+    }
 }
 
 /// Decodes a single instruction from `bytes`, as it would read at `address`.
@@ -231,7 +269,7 @@ mod tests {
             entropy: None,
         }];
 
-        let instructions = decode(
+        let decoded = decode(
             &file,
             BinaryFormat::MachO {
                 bits: 64,
@@ -241,8 +279,54 @@ mod tests {
             &sections,
         );
 
-        assert_eq!(instructions.len(), 1);
-        assert_eq!(instructions[0].address, 0x1_0000_0000);
-        assert_eq!(instructions[0].text, "ret");
+        assert_eq!(decoded.instructions.len(), 1);
+        assert_eq!(decoded.instructions[0].address, 0x1_0000_0000);
+        assert_eq!(decoded.instructions[0].text, "ret");
+        assert!(!decoded.truncated, "one instruction is the whole section");
+    }
+
+    /// Sections are decoded in table order; the listing must still come out in
+    /// address order, because every lookup bisects it.
+    #[test]
+    fn instructions_come_out_in_address_order() {
+        let file = vec![0x90; 64]; // `nop`, whatever the offset.
+        let executable = |name: &str, virtual_address: u64, file_offset: u64| Section {
+            name: name.to_owned(),
+            virtual_address,
+            file_offset,
+            virtual_size: 32,
+            file_size: 32,
+            permissions: Permissions {
+                read: true,
+                execute: true,
+                ..Permissions::default()
+            },
+            entropy: None,
+        };
+        // The later address is listed first, as a linker is free to do.
+        let sections = [
+            executable(".text.hot", 0x40_2000, 32),
+            executable(".text", 0x40_1000, 0),
+        ];
+
+        let decoded = decode(
+            &file,
+            BinaryFormat::Elf {
+                bits: 64,
+                endianness: Endianness::Little,
+            },
+            Architecture::X86_64,
+            &sections,
+        );
+
+        assert_eq!(decoded.instructions.len(), 64);
+        assert!(
+            decoded
+                .instructions
+                .windows(2)
+                .all(|pair| pair[0].address <= pair[1].address),
+            "the listing must be sorted by address"
+        );
+        assert_eq!(decoded.instructions[0].address, 0x40_1000);
     }
 }

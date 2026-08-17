@@ -8,12 +8,8 @@ use eframe::egui;
 use crate::{
     app::WorkspaceView,
     i18n::{Language, Text, text},
-    ui::{ERROR, MUTED, card},
+    ui::{ERROR, MUTED, ROW_HEIGHT, card},
 };
-
-/// Height of one row, needed up front so the list can be virtualised: only the
-/// visible rows are laid out, which keeps twenty thousand strings smooth.
-const ROW_HEIGHT: f32 = 18.0;
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -69,13 +65,16 @@ pub fn show(
         ui.add_space(8.0);
     }
 
+    // The grid's vertical spacing has to be the one the virtualiser assumed
+    // when placing this batch of rows, or the two disagree by a pixel a row.
+    let row_spacing = ui.spacing().item_spacing.y;
     egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show_rows(ui, ROW_HEIGHT, matches.len(), |ui, range| {
             egui::Grid::new("strings")
                 .num_columns(3)
                 .striped(true)
-                .spacing([18.0, 4.0])
+                .spacing([18.0, row_spacing])
                 .min_row_height(ROW_HEIGHT)
                 .show(ui, |ui| {
                     for item in &matches[range] {
@@ -401,6 +400,7 @@ mod tests {
                 text: "mov $4010h,%rax".to_owned(),
                 section: ".text".to_owned(),
             }],
+            code_truncated: false,
             details: Default::default(),
             languages: Vec::new(),
             sha256: None,

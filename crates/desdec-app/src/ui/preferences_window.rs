@@ -3,7 +3,7 @@ use eframe::egui;
 use desdec_core::decompiler::{self, Availability};
 
 use crate::{
-    app::{DesdecApp, decompilation_cache_dir},
+    app::{DesdecApp, Dialog, decompilation_cache_dir},
     commands::{Command, Shortcut},
     i18n::{Language, Text, text},
     preferences::{DecompilerPreference, ThemePreference, accent, success},
@@ -54,7 +54,7 @@ const LANGUAGE_CHOICES: &[(Language, Text)] = &[
 ];
 
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
-    if !app.dialogs.preferences {
+    if !app.dialogs.is_open(Dialog::Preferences) {
         return;
     }
 
@@ -82,7 +82,7 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                 PreferencesTab::Yara => yara(app, ui),
             }
         });
-    app.dialogs.preferences = open;
+    app.dialogs.set(Dialog::Preferences, open);
 }
 
 fn appearance(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
