@@ -123,3 +123,123 @@ pub fn drawn(shapes: &[eframe::egui::epaint::ClippedShape]) -> Vec<(String, efra
 pub fn drawn_text(shapes: &[eframe::egui::epaint::ClippedShape]) -> String {
     drawn(shapes).into_iter().map(|(text, _)| text).collect()
 }
+
+/// Renders one whole frame to an SVG, for a human to look at.
+///
+/// A test can say that shapes were drawn; it cannot say whether what came out
+/// looks like a menu. Run with a destination in the environment:
+///
+/// ```text
+/// DESDEC_FRAME=/tmp/frame.svg cargo test -p desdec-app frame_sheet
+/// ```
+#[cfg(test)]
+mod frame_sheet {
+    use super::*;
+    use eframe::egui;
+    use std::fmt::Write as _;
+
+    #[test]
+    fn frame_sheet() {
+        let Ok(path) = std::env::var("DESDEC_FRAME") else {
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut app = opened_app(WorkspaceView::Overview);
+        app.navigation_open = true;
+
+        // Two frames: panels are measured on the first and painted after.
+        let _ = ctx.run(window_input(), |ctx| app.run_frame(ctx));
+        let output = ctx.run(window_input(), |ctx| app.run_frame(ctx));
+
+        let mut body = String::new();
+        for clipped in &output.shapes {
+            emit(&clipped.shape, &mut body);
+        }
+        let svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1200\" height=\"800\" viewBox=\"0 0 1200 800\"><rect width=\"100%\" height=\"100%\" fill=\"#0d1017\"/>\n{body}</svg>"
+        );
+        std::fs::write(path, svg).expect("writable");
+    }
+
+    fn colour(c: egui::Color32) -> String {
+        format!(
+            "rgba({},{},{},{})",
+            c.r(),
+            c.g(),
+            c.b(),
+            f32::from(c.a()) / 255.0
+        )
+    }
+
+    fn emit(shape: &egui::Shape, out: &mut String) {
+        match shape {
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    emit(shape, out);
+                }
+            }
+            egui::Shape::Rect(rect) => {
+                let _ = writeln!(
+                    out,
+                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>",
+                    rect.rect.left(),
+                    rect.rect.top(),
+                    rect.rect.width().max(0.0),
+                    rect.rect.height().max(0.0),
+                    colour(rect.fill),
+                    colour(rect.stroke.color),
+                    rect.stroke.width
+                );
+            }
+            egui::Shape::Text(text) => {
+                let content = text
+                    .galley
+                    .text()
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
+                let _ = writeln!(
+                    out,
+                    "<text x=\"{}\" y=\"{}\" fill=\"{}\" font-size=\"12\" font-family=\"sans-serif\">{content}</text>",
+                    text.pos.x,
+                    text.pos.y + 11.0,
+                    colour(if text.fallback_color == egui::Color32::PLACEHOLDER {
+                        egui::Color32::WHITE
+                    } else {
+                        text.fallback_color
+                    })
+                );
+            }
+            egui::Shape::LineSegment { points, stroke } => {
+                let _ = writeln!(
+                    out,
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>",
+                    points[0].x,
+                    points[0].y,
+                    points[1].x,
+                    points[1].y,
+                    colour(stroke.color),
+                    stroke.width
+                );
+            }
+            egui::Shape::Path(path) => {
+                let points: Vec<String> = path
+                    .points
+                    .iter()
+                    .map(|p| format!("{},{}", p.x, p.y))
+                    .collect();
+                let _ = writeln!(
+                    out,
+                    "<polyline points=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"/>",
+                    points.join(" "),
+                    match path.stroke.color {
+                        egui::epaint::ColorMode::Solid(solid) => colour(solid),
+                        egui::epaint::ColorMode::UV(_) => "#ffffff".to_owned(),
+                    },
+                    path.stroke.width
+                );
+            }
+            _ => {}
+        }
+    }
+}

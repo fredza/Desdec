@@ -29,6 +29,10 @@ pub const MINIMUM_WIDTH: f32 = 56.0;
 const MAXIMUM_WIDTH: f32 = 420.0;
 
 /// Below this the menu is a rail of icons; above it, labels fit beside them.
+///
+/// The thresholds are read against the width the contents actually get, which
+/// is a little less than the panel's own: what decides whether a label fits is
+/// the room left for it, not the number the reader dragged to.
 const LABEL_WIDTH: f32 = 132.0;
 /// Below this the sections that explain themselves are left out: their titles
 /// and the recent files would take the room the views need.
@@ -204,21 +208,27 @@ fn header(app: &mut DesdecApp, ui: &mut egui::Ui, density: Density) {
         return;
     }
 
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        let close = app.tooltip(
-            icons::sized_button(ui, Icon::Close, None, false, accent, ICON_BUTTON),
-            app.t(Text::CollapseMenu),
-        );
-        if close.clicked() {
-            app.navigation_open = false;
-        }
-        let narrow = app.tooltip(
-            icons::sized_button(ui, Icon::CollapseLeft, None, false, accent, ICON_BUTTON),
-            app.t(Text::NarrowMenu),
-        );
-        if narrow.clicked() {
-            set_width(app, ui.ctx(), MINIMUM_WIDTH);
-        }
+    // Inside a horizontal row, and not only for looks: a right-to-left layout
+    // placed straight into the panel's vertical `Ui` claims every pixel of
+    // height left in it, and everything after it — the whole menu — lands
+    // below the bottom of the window.
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let close = app.tooltip(
+                icons::sized_button(ui, Icon::Close, None, false, accent, ICON_BUTTON),
+                app.t(Text::CollapseMenu),
+            );
+            if close.clicked() {
+                app.navigation_open = false;
+            }
+            let narrow = app.tooltip(
+                icons::sized_button(ui, Icon::CollapseLeft, None, false, accent, ICON_BUTTON),
+                app.t(Text::NarrowMenu),
+            );
+            if narrow.clicked() {
+                set_width(app, ui.ctx(), MINIMUM_WIDTH);
+            }
+        });
     });
     ui.add_space(4.0);
     ui.separator();
@@ -575,6 +585,46 @@ mod tests {
         app.preferences.show_toolbar = false;
 
         assert_eq!(views_to_offer(&app), WorkspaceView::ALL.to_vec());
+    }
+
+    /// Everything the menu offers has to be drawn inside the window.
+    ///
+    /// A right-to-left layout placed straight into the panel's vertical `Ui`
+    /// claims every pixel of height left in it, which put the whole menu some
+    /// nine hundred points below the bottom of the screen. Every test still
+    /// passed — shapes were being drawn, and the menu laid out at every width
+    /// — and there was nothing on screen. Asserting that something was drawn
+    /// says nothing about whether it can be seen.
+    #[test]
+    fn the_menu_draws_inside_the_window() {
+        let ctx = egui::Context::default();
+        let mut app = opened_app(WorkspaceView::Overview);
+        app.navigation_open = true;
+
+        // Clear of the thresholds: the panel's own margins mean its outer
+        // width is a little more than the width its contents get, and a
+        // borderline value would be testing that arithmetic rather than what
+        // reaches the screen.
+        for width in [points(SECTION_WIDTH - 20.0), DEFAULT_WIDTH] {
+            app.preferences.navigation_width = width;
+            let _ = ctx.run(window_input(), |ctx| show(&mut app, ctx));
+            let output = ctx.run(window_input(), |ctx| show(&mut app, ctx));
+            let bottom = ctx.screen_rect().bottom();
+            let drawn = crate::testing::drawn(&output.shapes);
+
+            for view in views_to_offer(&app) {
+                let label = app.t(view.text());
+                let (_, at) = drawn
+                    .iter()
+                    .find(|(text, _)| text == label)
+                    .unwrap_or_else(|| panic!("{view:?} was not drawn at width {width}"));
+                assert!(
+                    at.y >= 0.0 && at.y + ROW_HEIGHT <= bottom,
+                    "{view:?} is drawn at y={} in a window {bottom} tall",
+                    at.y
+                );
+            }
+        }
     }
 
     /// A dragged width is a choice, and choices are kept.
