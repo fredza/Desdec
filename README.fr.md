@@ -2,6 +2,9 @@
 
 [English](README.md) · **Français** · [Español](README.es.md)
 
+Les versions release et pré-release sont signées avec une clef privée, c'est obligatoire actuellement.
+La clef publique est distribuée gratuitement avec le binaire.  
+
 Desdec est un explorateur de binaires local et open source, fait pour lire les
 exécutables qu'on a le droit de lire. Il ouvre un fichier ELF, PE ou Mach-O,
 dit ce qu'il contient, et ne l'exécute jamais.
