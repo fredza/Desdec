@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Synthetic binaries shared with the interface tests. Off by default: nothing
+# in a shipped build has any use for them.
+fixtures = []
+
 [lints]
 workspace = true
 

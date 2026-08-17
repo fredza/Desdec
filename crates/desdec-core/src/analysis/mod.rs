@@ -31,7 +31,7 @@ pub mod strings;
 pub mod symbols;
 
 pub use details::{BinaryDetails, FileKind, Hardening, Relro, Segment};
-pub use disassembly::{Instruction, decode_one};
+pub use disassembly::{Decoded, Instruction, decode_one};
 pub use language::{Confidence, LanguageEvidence, SourceLanguage};
 pub use operand::{LastWrite, Target};
 pub use sections::{Permissions, Section};
@@ -54,7 +54,12 @@ pub struct Analysis {
     pub sections: Vec<Section>,
     pub strings: Vec<ExtractedString>,
     pub symbols: Vec<Symbol>,
+    /// Decoded instructions, ordered by address.
     pub instructions: Vec<Instruction>,
+    /// Set when decoding stopped at [`disassembly::MAXIMUM_INSTRUCTIONS`]:
+    /// code past that point was never decoded, and the listing is not the
+    /// whole program.
+    pub code_truncated: bool,
     /// Loader-level facts: file kind, mapping, dependencies, hardening.
     pub details: BinaryDetails,
     /// What the file says about the language it was built from, strongest
@@ -96,6 +101,50 @@ impl Analysis {
     pub fn suggests_packing(&self) -> bool {
         self.executable_sections()
             .any(|section| section.entropy.is_some_and(entropy::suggests_packing))
+    }
+
+    /// The decoded instruction at exactly this address, if there is one.
+    ///
+    /// [`Self::instructions`] is sorted, so this bisects rather than scanning:
+    /// the interface asks this question of every frame it draws.
+    #[must_use]
+    pub fn instruction_at(&self, address: u64) -> Option<&Instruction> {
+        self.instruction_index(address)
+            .map(|index| &self.instructions[index])
+    }
+
+    /// Position of the instruction at exactly this address, for callers that
+    /// need to walk the listing from there.
+    #[must_use]
+    pub fn instruction_index(&self, address: u64) -> Option<usize> {
+        self.instructions
+            .binary_search_by_key(&address, |instruction| instruction.address)
+            .ok()
+    }
+
+    /// Where the instructions of an address range sit in the listing.
+    ///
+    /// Returned as positions rather than a slice so a caller can keep them
+    /// past the borrow — a view holds them for as long as the binary is open.
+    #[must_use]
+    pub fn instruction_span(&self, range: std::ops::Range<u64>) -> std::ops::Range<usize> {
+        if range.is_empty() {
+            return 0..0;
+        }
+        let start = self
+            .instructions
+            .partition_point(|instruction| instruction.address < range.start);
+        let end = self
+            .instructions
+            .partition_point(|instruction| instruction.address < range.end);
+        start..end.max(start)
+    }
+
+    /// The decoded instructions whose addresses fall in `range`, as a slice of
+    /// the listing itself — no copy, no filter over the whole program.
+    #[must_use]
+    pub fn instructions_in(&self, range: std::ops::Range<u64>) -> &[Instruction] {
+        &self.instructions[self.instruction_span(range)]
     }
 
     /// Section containing a given virtual address, for locating an entry point
@@ -202,7 +251,7 @@ fn sequentially(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
     let strings = strings::extract(bytes);
     let symbols = symbols::extract(bytes, format);
     let sections = sections::parse(bytes, format);
-    let instructions = disassembly::decode(bytes, format, architecture, &sections);
+    let code = disassembly::decode(bytes, format, architecture, &sections);
     let mut details = details::parse(bytes, format);
     details::note_stack_canary(&mut details, &strings);
     let languages = language::detect(bytes, &sections, &symbols, &details);
@@ -213,7 +262,8 @@ fn sequentially(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
         sections,
         strings,
         symbols,
-        instructions,
+        instructions: code.instructions,
+        code_truncated: code.truncated,
         details,
         languages,
         sha256: (!truncated).then(|| hash::sha256(bytes)),
@@ -246,12 +296,12 @@ fn concurrently(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
         // Decoding needs the section table, so it follows it on this thread.
         let code = scope.spawn(move || {
             let sections = sections::parse(bytes, format);
-            let instructions = disassembly::decode(bytes, format, architecture, &sections);
-            (sections, instructions)
+            let decoded = disassembly::decode(bytes, format, architecture, &sections);
+            (sections, decoded)
         });
 
         let (strings, details) = join(described);
-        let (sections, instructions) = join(code);
+        let (sections, decoded) = join(code);
         let symbols = join(symbols);
         // Reads the three results above, so it waits for them rather than
         // running as a seventh thread.
@@ -262,7 +312,8 @@ fn concurrently(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
             sections,
             strings,
             symbols,
-            instructions,
+            instructions: decoded.instructions,
+            code_truncated: decoded.truncated,
             details,
             languages,
             sha256: join(digest),
@@ -359,6 +410,38 @@ mod tests {
                 bytes.len()
             );
         }
+    }
+
+    /// The listing is bisected by every view that reads it, so an address must
+    /// map to exactly its own instruction, and a range to exactly its own
+    /// instructions — never to a neighbour.
+    #[test]
+    fn instructions_are_found_and_bounded_by_address() {
+        let analysis = analyse(&elf_fixture_with_text(&[0x90; 16])); // 16 `nop`s.
+        let addresses: Vec<u64> = analysis
+            .instructions
+            .iter()
+            .map(|instruction| instruction.address)
+            .collect();
+        assert_eq!(addresses.len(), 16, "the fixture decodes one nop per byte");
+        let first = addresses[0];
+
+        for (index, address) in addresses.iter().enumerate() {
+            assert_eq!(analysis.instruction_index(*address), Some(index));
+            assert_eq!(
+                analysis.instruction_at(*address).map(|found| found.address),
+                Some(*address)
+            );
+        }
+        assert_eq!(analysis.instruction_at(first - 1), None);
+        assert_eq!(analysis.instruction_at(first + 1000), None);
+
+        // A range takes the instructions inside it and stops at its end.
+        let middle = analysis.instructions_in(first + 3..first + 7);
+        assert_eq!(middle.len(), 4);
+        assert_eq!(middle[0].address, first + 3);
+        assert!(analysis.instructions_in(first..first).is_empty());
+        assert_eq!(analysis.instructions_in(0..u64::MAX).len(), 16);
     }
 
     /// A truncated file has no digest on either path: a digest of a prefix

@@ -91,6 +91,14 @@ pub struct Preferences {
     pub yara_rules_path: String,
     /// Whether the linked-library list offers an explanation for each name.
     pub explain_libraries: bool,
+    /// Width the navigation menu was last dragged to, in points.
+    ///
+    /// Kept because it is a choice, not a detail: the menu shows icons alone,
+    /// icons with labels, or everything, depending on how much room it was
+    /// given, and reopening it narrower than it was left would undo that
+    /// choice. Whole points rather than a float so preferences stay comparable
+    /// and round-trip exactly.
+    pub navigation_width: u16,
     pub shortcuts: ShortcutBindings,
 }
 
@@ -111,6 +119,7 @@ impl Default for Preferences {
             yara_path: String::new(),
             yara_rules_path: String::new(),
             explain_libraries: true,
+            navigation_width: crate::ui::navigation::DEFAULT_WIDTH,
             shortcuts: ShortcutBindings::default(),
         }
     }

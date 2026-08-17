@@ -2,10 +2,15 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::{app::DesdecApp, commands::Command, i18n::Text, ui::MUTED};
+use crate::{
+    app::{DesdecApp, Dialog},
+    commands::Command,
+    i18n::Text,
+    ui::MUTED,
+};
 
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
-    if !app.dialogs.command_palette {
+    if !app.dialogs.is_open(Dialog::CommandPalette) {
         return;
     }
 
@@ -32,7 +37,7 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         }
         open = false;
     }
-    app.dialogs.command_palette = open;
+    app.dialogs.set(Dialog::CommandPalette, open);
 }
 
 enum PaletteChoice {
@@ -237,7 +242,7 @@ mod tests {
     fn searching(ctx: &egui::Context, query: &str) -> DesdecApp {
         let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
         app.preferences.language = Language::English;
-        app.dialogs.command_palette = true;
+        app.dialogs.open(Dialog::CommandPalette);
         frame(ctx, &mut app, egui::RawInput::default());
         for character in query.chars() {
             frame(ctx, &mut app, typed(&character.to_string()));
@@ -256,7 +261,10 @@ mod tests {
         frame(&ctx, &mut app, press(egui::Key::Enter));
 
         assert_eq!(app.active_view, WorkspaceView::Disassembly);
-        assert!(!app.dialogs.command_palette, "running a command closes it");
+        assert!(
+            !app.dialogs.is_open(Dialog::CommandPalette),
+            "running a command closes it"
+        );
     }
 
     #[test]
@@ -294,7 +302,7 @@ mod tests {
         frame(&ctx, &mut app, press(egui::Key::Enter));
 
         assert!(
-            app.dialogs.command_palette,
+            app.dialogs.is_open(Dialog::CommandPalette),
             "an unavailable entry leaves the palette open instead of pretending to act"
         );
     }
@@ -314,7 +322,7 @@ mod tests {
             shortcut(egui::Key::P, egui::Modifiers::CTRL | egui::Modifiers::SHIFT),
         );
         assert!(
-            app.dialogs.command_palette,
+            app.dialogs.is_open(Dialog::CommandPalette),
             "the shortcut opens the palette"
         );
 
@@ -324,7 +332,7 @@ mod tests {
         frame(&ctx, &mut app, press(egui::Key::Enter));
 
         assert_eq!(app.active_view, WorkspaceView::Strings);
-        assert!(!app.dialogs.command_palette);
+        assert!(!app.dialogs.is_open(Dialog::CommandPalette));
     }
 
     /// A shortcut must keep working while the search field holds the focus:
@@ -337,7 +345,7 @@ mod tests {
 
         frame(&ctx, &mut app, combination);
 
-        assert!(!app.dialogs.command_palette);
+        assert!(!app.dialogs.is_open(Dialog::CommandPalette));
     }
 
     /// The palette is the one place the whole application is visible, so an

@@ -37,6 +37,14 @@ pub fn section_title(label: &str) -> egui::RichText {
 /// layout falls back to a single column.
 pub const TWO_COLUMN_WIDTH: f32 = 900.0;
 
+/// Height of one row in the long monospace listings.
+///
+/// Every such listing is virtualised — a decoded binary reaches a hundred
+/// thousand instructions, and laying out a widget for each one takes seconds
+/// per frame — and a virtualiser needs to know a row's height before drawing
+/// it, so the listings are given this one rather than measuring their own.
+pub const ROW_HEIGHT: f32 = 18.0;
+
 /// A titled frame that fills the width it is given, so panels line up instead
 /// of each shrinking to its own content.
 pub fn card(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
@@ -121,13 +129,14 @@ mod tests {
     /// here rather than by whoever opens a binary.
     #[test]
     fn every_view_lays_out_without_panicking() {
-        let path = std::env::current_exe().expect("the test binary has a path");
-        let analysis = desdec_core::analyse_path(&path).expect("the test binary is analysable");
-
         let ctx = egui::Context::default();
+        // One application drawn in every combination rather than one per
+        // combination: building it analyses a binary and indexes its
+        // functions, and no view here leaves state the next one would read.
+        let mut app = crate::testing::opened_app(WorkspaceView::Overview);
         for view in WorkspaceView::ALL {
             for language in crate::i18n::Language::ALL {
-                let mut app = DesdecApp::for_test(Some(analysis.clone()), *view);
+                app.select_view(*view);
                 app.preferences.language = *language;
 
                 for width in layout_widths() {
@@ -137,10 +146,84 @@ mod tests {
                     });
                     assert!(
                         !output.shapes.is_empty(),
-                        "{} drew nothing at width {width}",
-                        view.icon()
+                        "{view:?} drew nothing at width {width}"
                     );
                 }
+            }
+        }
+    }
+
+    /// The same, for a binary of each format the reader supports.
+    ///
+    /// The test executable above is one format and one architecture — the
+    /// host's. These are an ELF, a PE and an `AArch64` Mach-O, so a view that
+    /// draws nothing for a format the host does not use is caught here.
+    #[test]
+    fn every_view_lays_out_for_every_format() {
+        let ctx = egui::Context::default();
+        for sample in crate::testing::samples() {
+            let label = sample.fixture.label;
+            let mut app = sample.opened(WorkspaceView::Overview);
+            for view in WorkspaceView::ALL {
+                app.select_view(*view);
+                for width in layout_widths() {
+                    let output = ctx.run(input_of_width(width), |ctx| {
+                        views::show_central_panel(&mut app, ctx);
+                        status_bar::show(&mut app, ctx);
+                    });
+                    assert!(
+                        !output.shapes.is_empty(),
+                        "{label}: {view:?} drew nothing at width {width}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// What each fixture was built to contain has to reach the screen: the
+    /// names of its functions, its strings, and the library it links against.
+    /// A reader returning nothing for a format would otherwise be
+    /// indistinguishable from a binary that says nothing.
+    #[test]
+    fn every_format_shows_its_functions_strings_and_libraries() {
+        let ctx = egui::Context::default();
+        for sample in crate::testing::samples() {
+            let label = sample.fixture.label;
+            let mut app = sample.opened(WorkspaceView::Overview);
+
+            let shown = |app: &mut DesdecApp| {
+                let output = ctx.run(input_of_width(1200.0), |ctx| {
+                    views::show_central_panel(app, ctx);
+                });
+                crate::testing::drawn_text(&output.shapes)
+            };
+
+            app.select_view(WorkspaceView::Functions);
+            let functions = shown(&mut app);
+            for (name, _) in &sample.fixture.functions {
+                assert!(
+                    functions.contains(name),
+                    "{label}: the Functions view never named {name}"
+                );
+            }
+
+            app.select_view(WorkspaceView::Strings);
+            let strings = shown(&mut app);
+            for text in &sample.fixture.strings {
+                assert!(
+                    strings.contains(text),
+                    "{label}: the Strings view never showed {text:?}"
+                );
+            }
+
+            app.select_view(WorkspaceView::Overview);
+            app.preferences.explain_libraries = true;
+            let overview = shown(&mut app);
+            for library in &sample.fixture.libraries {
+                assert!(
+                    overview.contains(library),
+                    "{label}: the Overview never named {library}"
+                );
             }
         }
     }
@@ -155,19 +238,16 @@ mod tests {
                 views::show_central_panel(&mut app, ctx);
                 status_bar::show(&mut app, ctx);
             });
-            assert!(!output.shapes.is_empty(), "{} drew nothing", view.icon());
+            assert!(!output.shapes.is_empty(), "{view:?} drew nothing");
         }
     }
 
     /// Filtering must never index outside the rows handed to the virtualiser.
     #[test]
     fn filtering_the_strings_view_stays_in_bounds() {
-        let path = std::env::current_exe().expect("the test binary has a path");
-        let analysis = desdec_core::analyse_path(&path).expect("the test binary is analysable");
-
         let ctx = egui::Context::default();
+        let mut app = crate::testing::opened_app(WorkspaceView::Strings);
         for filter in ["", "/", "zzzzz-no-such-string", "LIB"] {
-            let mut app = DesdecApp::for_test(Some(analysis.clone()), WorkspaceView::Strings);
             app.strings_filter = filter.to_owned();
             let output = ctx.run(egui::RawInput::default(), |ctx| {
                 views::show_central_panel(&mut app, ctx);
