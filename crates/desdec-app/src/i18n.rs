@@ -118,10 +118,15 @@ translations! {
         "Lectura propuesta — verifíquela en el listado",
     ],
     AnsweredBy => ["Répondu par", "Answered by", "Respondido por"],
-    CopiedToClipboard => [
-        "Copié dans le presse-papiers",
-        "Copied to the clipboard",
-        "Copiado al portapapeles",
+    PathCopied => [
+        "Chemin copié dans le presse-papier",
+        "Path copied to the clipboard",
+        "Ruta copiada al portapapeles",
+    ],
+    AddressCopied => [
+        "Adresse copiée dans le presse-papier",
+        "Address copied to the clipboard",
+        "Dirección copiada al portapapeles",
     ],
     CopyFullPath => [
         "Cliquer pour copier le chemin complet",
