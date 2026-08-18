@@ -87,6 +87,7 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
 
     let mut answered = false;
     let mut fall_back = false;
+    let mut show_path = false;
     card(ui, text(language, Text::ExternalPseudoCode), |ui| {
         ui.horizontal(|ui| {
             ui.small(text(language, Text::DecompiledBy));
@@ -130,11 +131,16 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
                 format!("{} {error}", text(language, Text::DecompilerFailed)),
             );
             ui.add_space(6.0);
-            // The way out, next to what went wrong: an engine that is not
-            // installed is a preference to change, not a state to be stuck in.
-            fall_back = ui
-                .button(text(language, Text::UseBuiltinDecompiler))
-                .clicked();
+            // Both ways out, next to what went wrong: an engine that cannot be
+            // found is a preference to change, not a state to be stuck in —
+            // and it is as often installed somewhere the PATH does not reach
+            // as it is not installed at all.
+            ui.horizontal(|ui| {
+                fall_back = ui
+                    .button(text(language, Text::UseBuiltinDecompiler))
+                    .clicked();
+                show_path = ui.button(text(language, Text::ShowEnginePath)).clicked();
+            });
             return;
         }
         let Some(decompiled) = &app.external.text else {
@@ -159,6 +165,12 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
     if fall_back {
         app.run_command(ui.ctx(), crate::commands::Command::DecompilerBuiltin);
         return true;
+    }
+    if show_path {
+        // Straight to the field that answers it, rather than "it is in the
+        // preferences somewhere".
+        app.preferences_tab = crate::ui::preferences_window::PreferencesTab::Decompiler;
+        app.dialogs.open(crate::app::Dialog::Preferences);
     }
     answered
 }
@@ -651,7 +663,12 @@ mod tests {
         );
         assert!(
             drawn.contains(text(Language::French, Text::UseBuiltinDecompiler)),
-            "and offered the way out of a decompiler that is not installed"
+            "and offered the way out of a decompiler that cannot be found"
+        );
+        assert!(
+            drawn.contains(text(Language::French, Text::ShowEnginePath)),
+            "an engine installed off the PATH needs its path given, not a \
+             suggestion to install what is already there"
         );
     }
 

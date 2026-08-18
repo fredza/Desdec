@@ -326,9 +326,14 @@ translations! {
         "Dejar vacío para buscar en el PATH",
     ],
     EngineUnavailable => [
-        "Ce décompilateur n’est pas installé. Installation :",
-        "This decompiler is not installed. Install with:",
-        "Este decompilador no está instalado. Instalación:",
+        "Ce décompilateur est introuvable : rien de ce nom dans le PATH, et aucun chemin n’est indiqué pour lui dans les préférences. S’il est déjà installé ailleurs, donnez son chemin ; sinon, installation :",
+        "This decompiler cannot be found: nothing of that name on the PATH, and no path is given for it in the preferences. If it is already installed elsewhere, give its path; otherwise, install with:",
+        "No se encuentra este decompilador: nada con ese nombre en el PATH, y no hay ninguna ruta indicada para él en las preferencias. Si ya está instalado en otro sitio, indique su ruta; si no, instalación:",
+    ],
+    ShowEnginePath => [
+        "Indiquer où il est installé",
+        "Say where it is installed",
+        "Indicar dónde está instalado",
     ],
     Function => ["Fonction", "Function", "Función"],
     StrippedEntryPoint => [
