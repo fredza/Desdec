@@ -5,6 +5,7 @@ use eframe::egui;
 
 pub mod about;
 pub mod action_bar;
+pub mod assistant;
 pub mod decompile;
 pub mod disassembly;
 pub mod expert;

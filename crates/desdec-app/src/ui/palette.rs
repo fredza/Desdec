@@ -299,12 +299,18 @@ mod tests {
         assert_eq!(app.palette.selected, 0);
     }
 
-    /// A command that does nothing yet must never be what `Enter` lands on.
+    /// A command that cannot run right now must never be what `Enter` lands
+    /// on: a highlight that does nothing reads as a broken palette.
     #[test]
     fn the_highlight_skips_commands_that_cannot_run() {
         let ctx = egui::Context::default();
-        let mut app = searching(&ctx, "ai assistance");
-        assert_eq!(matching_commands(&app), vec![Command::AiAssistance]);
+        // Scanning needs a binary, and this application has none open.
+        // Stopping an analysis is only possible while one is running, and
+        // this application is idle.
+        let mut app = searching(&ctx, "stop analysis");
+        let matches = matching_commands(&app);
+        assert_eq!(matches, vec![Command::CancelAnalysis]);
+        assert!(!app.can_run(Command::CancelAnalysis));
 
         frame(&ctx, &mut app, press(egui::Key::Enter));
 

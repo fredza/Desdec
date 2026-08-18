@@ -10,6 +10,20 @@ pub enum Language {
 
 impl Language {
     pub const ALL: &[Self] = &[Self::French, Self::English, Self::Spanish];
+
+    /// The language named in itself, for a reader that is not this interface.
+    ///
+    /// The assistant is told which language to answer in, and it is told in
+    /// that language: "French" and "français" are not equally clear
+    /// instructions to a model being asked to write French.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::French => "français",
+            Self::English => "English",
+            Self::Spanish => "español",
+        }
+    }
 }
 
 /// Declares every visible string once, with its three translations.
@@ -83,7 +97,141 @@ translations! {
     Disassembly => ["Désassemblage", "Disassembly", "Desensamblado"],
     Decompile => ["Décompiler", "Decompile", "Decompilar"],
     AiAssistance => ["Assistance IA", "AI assistance", "Asistencia de IA"],
-    AiAssistanceUnavailable => ["Bientôt disponible : choisissez alors un fournisseur IA dans les préférences.", "Coming soon: choose an AI provider in preferences then.", "Próximamente: elija entonces un proveedor de IA en preferencias."],
+    AiAssistanceIntro => [
+        "Un modèle relit le désassemblage déjà décodé. Sa réponse est une lecture proposée, jamais un fait établi : vérifiez-la contre le listing.",
+        "A model reads back the disassembly Desdec decoded. Its answer is a proposed reading, never an established fact: check it against the listing.",
+        "Un modelo relee el desensamblado ya decodificado. Su respuesta es una lectura propuesta, nunca un hecho: verifíquela con el listado.",
+    ],
+    ProposedReading => [
+        "Lecture proposée — à vérifier dans le listing",
+        "Proposed reading — check it against the listing",
+        "Lectura propuesta — verifíquela en el listado",
+    ],
+    AnsweredBy => ["Répondu par", "Answered by", "Respondido por"],
+    CopiedToClipboard => [
+        "Copié dans le presse-papiers",
+        "Copied to the clipboard",
+        "Copiado al portapapeles",
+    ],
+    CopyFullPath => [
+        "Cliquer pour copier le chemin complet",
+        "Click to copy the full path",
+        "Clic para copiar la ruta completa",
+    ],
+    AssistantTruncated => [
+        "Réponse interrompue à la limite de jetons : la fin manque. Posez une question plus étroite.",
+        "The answer stopped at the token limit: the end is missing. Ask a narrower question.",
+        "La respuesta se detuvo en el límite de tokens: falta el final. Haga una pregunta más concreta.",
+    ],
+    AskAboutBinary => ["Pistes d’analyse", "Where to start", "Por dónde empezar"],
+    AskAboutFunction => ["Expliquer la fonction", "Explain the function", "Explicar la función"],
+    AskAboutInstruction => [
+        "Expliquer l’instruction",
+        "Explain the instruction",
+        "Explicar la instrucción",
+    ],
+    Asking => ["Interrogation du modèle…", "Asking the model…", "Consultando al modelo…"],
+    NothingAskedYet => [
+        "Choisissez une question ci-dessus.",
+        "Pick a question above.",
+        "Elija una pregunta arriba.",
+    ],
+    ShowWhatIsSent => ["Voir ce qui est envoyé", "Show what is sent", "Ver lo que se envía"],
+    SelectFunctionFirst => [
+        "Sélectionnez d’abord une fonction dans la vue Fonctions.",
+        "Select a function in the Functions view first.",
+        "Seleccione antes una función en la vista Funciones.",
+    ],
+    SelectInstructionFirst => [
+        "Sélectionnez d’abord une instruction dans le désassemblage.",
+        "Select an instruction in the disassembly first.",
+        "Seleccione antes una instrucción en el desensamblado.",
+    ],
+    AssistantLeavesMachine => [
+        "Ce fournisseur envoie les faits extraits — instructions, symboles, chaînes — à un service distant. Le fichier lui-même ne part jamais.",
+        "This provider sends the extracted facts — instructions, symbols, strings — to a remote service. The file itself never leaves.",
+        "Este proveedor envía los datos extraídos — instrucciones, símbolos, cadenas — a un servicio remoto. El archivo nunca sale.",
+    ],
+    AssistantStaysLocal => [
+        "Ce modèle tourne sur cette machine : rien ne part sur le réseau.",
+        "This model runs on this machine: nothing goes over the network.",
+        "Este modelo se ejecuta en esta máquina: nada sale a la red.",
+    ],
+    AssistantNotConfigured => [
+        "Aucun assistant configuré. Choisissez un fournisseur dans Préférences → Assistance IA.",
+        "No assistant is configured. Choose a provider in Preferences → AI assistance.",
+        "No hay asistente configurado. Elija un proveedor en Preferencias → Asistencia de IA.",
+    ],
+    AssistantNoKey => [
+        "Aucune clé API : définissez ANTHROPIC_API_KEY, ou indiquez un fichier de clé dans les préférences.",
+        "No API key: set ANTHROPIC_API_KEY, or name a key file in the preferences.",
+        "Sin clave API: defina ANTHROPIC_API_KEY o indique un archivo de clave en las preferencias.",
+    ],
+    AssistantUnreachable => [
+        "Fournisseur injoignable :",
+        "The provider could not be reached:",
+        "No se pudo contactar al proveedor:",
+    ],
+    AssistantRejected => ["Requête refusée :", "The request was rejected:", "Solicitud rechazada:"],
+    AssistantTimedOut => [
+        "Le fournisseur n’a pas répondu dans le délai imparti. Essayez une question plus petite.",
+        "The provider did not answer in time. Try a smaller question.",
+        "El proveedor no respondió a tiempo. Pruebe una pregunta más pequeña.",
+    ],
+    AssistantDeclined => [
+        "Le modèle a décliné cette question.",
+        "The model declined this question.",
+        "El modelo declinó esta pregunta.",
+    ],
+    AssistantUnreadable => [
+        "Réponse illisible :",
+        "The answer could not be read:",
+        "No se pudo leer la respuesta:",
+    ],
+    ClearFilter => ["Effacer le filtre", "Clear filter", "Borrar el filtro"],
+    AllStrings => ["Toutes les chaînes", "All strings", "Todas las cadenas"],
+    CriteriaChosen => ["critères", "criteria", "criterios"],
+    FilterCriteriaHelp => [
+        "Restreindre la liste ; plusieurs critères se cumulent.",
+        "Narrow the list; several criteria apply together.",
+        "Restringir la lista; varios criterios se aplican juntos.",
+    ],
+    FilterUnmappedHelp => [
+        "Ne garde que les chaînes situées dans une section chargée en mémoire.",
+        "Keeps only strings inside a section the loader maps.",
+        "Conserva solo las cadenas dentro de una sección que el cargador mapea.",
+    ],
+    FilterUnreferencedHelp => [
+        "Ne garde que les chaînes qu’une instruction décodée désigne directement.",
+        "Keeps only strings a decoded instruction points at directly.",
+        "Conserva solo las cadenas a las que apunta directamente una instrucción decodificada.",
+    ],
+    AssistantProvider => ["Fournisseur", "Provider", "Proveedor"],
+    NoAssistant => ["Aucun (désactivé)", "None (off)", "Ninguno (desactivado)"],
+    LocalModel => [
+        "Modèle local (Ollama)",
+        "Local model (Ollama)",
+        "Modelo local (Ollama)",
+    ],
+    ClaudeApi => [
+        "API Claude (Anthropic) — réseau",
+        "Claude API (Anthropic) — network",
+        "API Claude (Anthropic) — red",
+    ],
+    CheckProvider => ["Vérifier", "Check", "Comprobar"],
+    AssistantModel => ["Modèle", "Model", "Modelo"],
+    AssistantModelHint => [
+        "Laisser vide pour le modèle par défaut",
+        "Leave empty for the default model",
+        "Dejar vacío para el modelo predeterminado",
+    ],
+    OllamaUrl => ["Adresse du serveur", "Server address", "Dirección del servidor"],
+    ApiKeyFile => ["Fichier de clé API", "API key file", "Archivo de clave API"],
+    ApiKeyFileHint => [
+        "ANTHROPIC_API_KEY est lue en premier ; la clé n’est jamais écrite dans les préférences.",
+        "ANTHROPIC_API_KEY is read first; the key is never written to the preferences.",
+        "ANTHROPIC_API_KEY se lee primero; la clave nunca se escribe en las preferencias.",
+    ],
     Patches => ["Correctifs", "Patches", "Parches"],
     Yara => ["YARA", "YARA", "YARA"],
     EnableYara => ["Activer le module YARA", "Enable the YARA module", "Activar el módulo YARA"],
@@ -134,11 +282,6 @@ translations! {
     Format => ["Format", "Format", "Formato"],
     Architecture => ["Architecture", "Architecture", "Arquitectura"],
     Size => ["Taille", "Size", "Tamaño"],
-    OpenFirst => [
-        "Ouvrez d’abord un binaire afin d’utiliser cette vue.",
-        "Open a binary before using this view.",
-        "Abra un binario antes de utilizar esta vista.",
-    ],
     ComingSoon => ["en préparation", "coming soon", "en preparación"],
     Decompiler => ["Décompilateur", "Decompiler", "Decompilador"],
     BuiltinDecompiler => [
@@ -489,8 +632,16 @@ translations! {
         "No se encontró ninguna cadena legible.",
     ],
     FilterStrings => ["Filtrer les chaînes", "Filter strings", "Filtrar cadenas"],
-    FilterUnmappedStrings => ["Non mappées", "Not mapped", "No mapeadas"],
-    FilterUnreferencedStrings => ["Sans référence directe", "No direct reference", "Sin referencia directa"],
+    FilterUnmappedStrings => [
+        "Masquer les non mappées",
+        "Hide unmapped",
+        "Ocultar las no mapeadas",
+    ],
+    FilterUnreferencedStrings => [
+        "Masquer les sans référence",
+        "Hide unreferenced",
+        "Ocultar las sin referencia",
+    ],
     FilterHint => ["Ex. http, .dll, erreur…", "E.g. http, .dll, error…", "Ej. http, .dll, error…"],
     ShownOfTotal => ["affichées sur", "shown of", "mostradas de"],
     TruncatedAnalysis => [

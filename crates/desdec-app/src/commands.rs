@@ -60,8 +60,14 @@ commands! {
     Disassembly => [Disassembly], Some(Shortcut::ctrl(KeyName::Num2)),
     Decompile => [Decompile], Some(Shortcut::ctrl_shift(KeyName::D)),
     AiAssistance => [AiAssistance], Some(Shortcut::ctrl_alt(KeyName::A)),
+    AskAboutBinary => [AiAssistance, AskAboutBinary], None,
+    AskAboutFunction => [AiAssistance, AskAboutFunction], None,
+    AskAboutInstruction => [AiAssistance, AskAboutInstruction], None,
     Functions => [Functions], Some(Shortcut::ctrl(KeyName::Num3)),
     Strings => [Strings], Some(Shortcut::ctrl(KeyName::Num4)),
+    StringsHideUnmapped => [Strings, FilterUnmappedStrings], None,
+    StringsHideUnreferenced => [Strings, FilterUnreferencedStrings], None,
+    StringsClearFilter => [Strings, ClearFilter], None,
     Patches => [Patches], Some(Shortcut::ctrl(KeyName::Num5)),
     Segments => [Segments], Some(Shortcut::ctrl(KeyName::Num6)),
     ExportPatched => [Patches, ExportPatched], None,
@@ -106,9 +112,13 @@ impl Command {
     /// palette lists everything either way, so what exists stays visible, but
     /// it never lets an entry be chosen that would answer nothing: a highlight
     /// on which `Enter` does nothing reads as a broken palette.
+    ///
+    /// Everything is implemented today. The distinction is kept because the
+    /// palette is written against it: the next command to be sketched before
+    /// it works has somewhere to say so.
     #[must_use]
     pub const fn implemented(self) -> bool {
-        !matches!(self, Self::AiAssistance)
+        true
     }
 
     /// Whether the command acts on a loaded binary, and so needs one.
@@ -120,7 +130,16 @@ impl Command {
     pub const fn needs_a_binary(self) -> bool {
         matches!(
             self,
-            Self::CloseBinary | Self::ExportPatched | Self::DiscardPatches | Self::RunYara
+            Self::CloseBinary
+                | Self::ExportPatched
+                | Self::DiscardPatches
+                | Self::RunYara
+                | Self::AskAboutBinary
+                | Self::AskAboutFunction
+                | Self::AskAboutInstruction
+                | Self::StringsHideUnmapped
+                | Self::StringsHideUnreferenced
+                | Self::StringsClearFilter
         )
     }
 
@@ -141,9 +160,16 @@ impl Command {
             Self::Overview => WorkspaceView::Overview,
             Self::Segments => WorkspaceView::Segments,
             Self::Functions => WorkspaceView::Functions,
-            Self::Strings => WorkspaceView::Strings,
+            Self::Strings
+            | Self::StringsHideUnmapped
+            | Self::StringsHideUnreferenced
+            | Self::StringsClearFilter => WorkspaceView::Strings,
             Self::Disassembly => WorkspaceView::Disassembly,
             Self::Decompile => WorkspaceView::Decompile,
+            Self::AiAssistance
+            | Self::AskAboutBinary
+            | Self::AskAboutFunction
+            | Self::AskAboutInstruction => WorkspaceView::Assistant,
             // Exporting shows the patches it is about to write.
             Self::Patches | Self::ExportPatched => WorkspaceView::Patches,
             Self::Yara => WorkspaceView::Yara,
@@ -350,6 +376,34 @@ mod tests {
             Command::Patches,
         ] {
             assert!(command.default_shortcut().is_some());
+        }
+    }
+
+    /// The palette is meant to be a complete index of the application, so
+    /// every button a view offers has a command behind it — and the two are
+    /// worded the same, or the palette lists an action nobody can find.
+    #[test]
+    fn every_action_a_view_offers_is_also_a_command_worded_the_same() {
+        for (command, button) in [
+            (Command::AskAboutBinary, Text::AskAboutBinary),
+            (Command::AskAboutFunction, Text::AskAboutFunction),
+            (Command::AskAboutInstruction, Text::AskAboutInstruction),
+            (Command::StringsHideUnmapped, Text::FilterUnmappedStrings),
+            (
+                Command::StringsHideUnreferenced,
+                Text::FilterUnreferencedStrings,
+            ),
+            (Command::StringsClearFilter, Text::ClearFilter),
+            (Command::RunYara, Text::RunYara),
+            (Command::ExportPatched, Text::ExportPatched),
+        ] {
+            for language in Language::ALL {
+                let label = command.label(*language);
+                assert!(
+                    label.contains(text(*language, button)),
+                    "{command:?} is not worded like the button that does the same thing: {label}"
+                );
+            }
         }
     }
 

@@ -106,20 +106,66 @@ fn name(app: &DesdecApp, ui: &mut egui::Ui) -> egui::Response {
     app.tooltip(response, app.t(Text::About))
 }
 
+/// Longest file name shown in full.
+///
+/// The bar is a fixed row shared with the views and the actions; a name is the
+/// one thing in it whose length the application does not choose, and a deeply
+/// named file used to push the toolbar off the end of the window.
+const NAME_LIMIT: usize = 28;
+
 /// Name of the loaded binary, with the button that closes it.
 fn open_binary(app: &mut DesdecApp, ui: &mut egui::Ui) {
-    let Some(name) = app.analysis.as_ref().map(|analysis| {
-        analysis.summary.path.file_name().map_or_else(
-            || analysis.summary.path.display().to_string(),
+    let Some((name, full_path)) = app.analysis.as_ref().map(|analysis| {
+        let path = &analysis.summary.path;
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
-        )
+        );
+        (name, path.display().to_string())
     }) else {
         return;
     };
 
     ui.separator();
-    let active_file = app.t(Text::ActiveFile);
-    app.tooltip(ui.label(egui::RichText::new(name).monospace()), active_file);
+    // Truncated on characters rather than bytes: a name is whatever the file
+    // system holds, and cutting a multi-byte one mid-character would panic.
+    let shown = if name.chars().count() > NAME_LIMIT {
+        let kept: String = name.chars().take(NAME_LIMIT - 1).collect();
+        format!("{kept}…")
+    } else {
+        name
+    };
+
+    // Clickable, and drawn as such: the full path is the thing a reader
+    // actually needs to paste elsewhere, and it is too long to live in the
+    // bar. Hovering says where it goes, so the click is never a guess.
+    //
+    // The highlight is reserved before the text and filled in after: its size
+    // is the laid-out label's, and painted in call order it would cover the
+    // name it is meant to pick out.
+    let highlight = ui.painter().add(egui::Shape::Noop);
+    let label = ui
+        .add(egui::Label::new(egui::RichText::new(shown).monospace()).sense(egui::Sense::click()))
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if label.hovered() {
+        ui.painter().set(
+            highlight,
+            egui::epaint::RectShape::filled(
+                label.rect.expand2(egui::vec2(4.0, 2.0)),
+                3.0,
+                ui.visuals().widgets.hovered.weak_bg_fill,
+            ),
+        );
+    }
+    let hint = format!(
+        "{}\n{}\n{}",
+        app.t(Text::ActiveFile),
+        full_path,
+        app.t(Text::CopyFullPath)
+    );
+    if label.on_hover_text(hint).clicked() {
+        app.copy_to_clipboard(ui.ctx(), full_path);
+    }
     let close = app.tooltip(
         icons::sized_button(
             ui,

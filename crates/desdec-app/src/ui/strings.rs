@@ -8,15 +8,15 @@ use eframe::egui;
 use crate::{
     app::WorkspaceView,
     i18n::{Language, Text, text},
-    ui::{ERROR, MUTED, ROW_HEIGHT, card},
+    ui::{MUTED, ROW_HEIGHT, card},
 };
 
 pub fn show(
     ui: &mut egui::Ui,
     analysis: &Analysis,
     filter: &mut String,
-    highlight_unmapped: &mut bool,
-    highlight_unreferenced: &mut bool,
+    hide_unmapped: &mut bool,
+    hide_unreferenced: &mut bool,
     selected_string: &mut Option<u64>,
     selected_instruction: &mut Option<u64>,
     pending_instruction_scroll: &mut Option<u64>,
@@ -29,17 +29,12 @@ pub fn show(
         return;
     }
 
-    let matches = matching(
-        analysis,
-        filter,
-        *highlight_unmapped,
-        *highlight_unreferenced,
-    );
+    let matches = matching(analysis, filter, *hide_unmapped, *hide_unreferenced);
     header(
         ui,
         filter,
-        highlight_unmapped,
-        highlight_unreferenced,
+        hide_unmapped,
+        hide_unreferenced,
         matches.len(),
         analysis.strings.len(),
         language,
@@ -95,8 +90,8 @@ pub fn show(
 fn header(
     ui: &mut egui::Ui,
     filter: &mut String,
-    highlight_unmapped: &mut bool,
-    highlight_unreferenced: &mut bool,
+    hide_unmapped: &mut bool,
+    hide_unreferenced: &mut bool,
     shown: usize,
     total: usize,
     language: Language,
@@ -108,22 +103,36 @@ fn header(
                 .hint_text(text(language, Text::FilterHint))
                 .desired_width(240.0),
         );
-        ui.separator();
-        ui.toggle_value(
-            highlight_unmapped,
-            text(language, Text::FilterUnmappedStrings),
-        );
-        ui.toggle_value(
-            highlight_unreferenced,
-            text(language, Text::FilterUnreferencedStrings),
-        );
-        ui.label(
-            egui::RichText::new(format!(
+        criteria(ui, hide_unmapped, hide_unreferenced, language);
+
+        let filtering = !filter.is_empty() || *hide_unmapped || *hide_unreferenced;
+        if ui
+            .add_enabled(
+                filtering,
+                egui::Button::new(text(language, Text::ClearFilter)),
+            )
+            .clicked()
+        {
+            filter.clear();
+            *hide_unmapped = false;
+            *hide_unreferenced = false;
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // How many were left out is part of the answer: a narrowed list
+            // that does not say so looks like a file with fewer strings in it.
+            let counted = egui::RichText::new(format!(
                 "{shown} {} {total}",
                 text(language, Text::ShownOfTotal)
-            ))
-            .color(MUTED),
-        );
+            ));
+            // Emphasised while something is filtering, so a short list is
+            // never mistaken for a file with little in it.
+            ui.label(if filtering {
+                counted.strong()
+            } else {
+                counted.color(MUTED)
+            });
+        });
     });
 
     // The extractor stops at a fixed number of strings; say so rather than let
@@ -133,18 +142,66 @@ fn header(
     }
 }
 
+/// The criteria, folded into one drop-down.
+///
+/// They were two toggle buttons sitting in the header, which is a row that
+/// only ever grows: the next criterion would have pushed the count off a
+/// narrow window. Folded away, the header stays one line whatever is added,
+/// and the button says what is active without being opened.
+fn criteria(
+    ui: &mut egui::Ui,
+    hide_unmapped: &mut bool,
+    hide_unreferenced: &mut bool,
+    language: Language,
+) {
+    let chosen = usize::from(*hide_unmapped) + usize::from(*hide_unreferenced);
+    let summary = match (*hide_unmapped, *hide_unreferenced) {
+        (false, false) => text(language, Text::AllStrings).to_owned(),
+        (true, false) => text(language, Text::FilterUnmappedStrings).to_owned(),
+        (false, true) => text(language, Text::FilterUnreferencedStrings).to_owned(),
+        (true, true) => format!("{chosen} {}", text(language, Text::CriteriaChosen)),
+    };
+
+    egui::ComboBox::from_id_salt("strings_criteria")
+        .selected_text(summary)
+        .width(220.0)
+        .show_ui(ui, |ui| {
+            // Checkboxes rather than entries that pick one: these narrow the
+            // list together, and a drop-down that closed on the first click
+            // would make the second criterion a second visit.
+            ui.checkbox(hide_unmapped, text(language, Text::FilterUnmappedStrings));
+            ui.small(text(language, Text::FilterUnmappedHelp));
+            ui.add_space(4.0);
+            ui.checkbox(
+                hide_unreferenced,
+                text(language, Text::FilterUnreferencedStrings),
+            );
+            ui.small(text(language, Text::FilterUnreferencedHelp));
+        })
+        .response
+        .on_hover_text(text(language, Text::FilterCriteriaHelp));
+}
+
 struct StringMatch<'a> {
     string: &'a ExtractedString,
     unmapped: bool,
     unreferenced: bool,
-    highlight: bool,
 }
 
+/// The strings a reader has asked to see.
+///
+/// The criteria hide the noise rather than isolate it. A binary's string table
+/// is mostly padding, format fragments and dead constants; what a reader is
+/// after is the handful the code actually reaches. So each criterion drops the
+/// strings that fail it — an unmapped string is never loaded, an unreferenced
+/// one is never pointed at — and what is left is what the program uses. What
+/// is hidden is never hidden silently, since the header says how many of the
+/// total are shown.
 fn matching<'a>(
     analysis: &'a Analysis,
     filter: &str,
-    highlight_unmapped: bool,
-    highlight_unreferenced: bool,
+    hide_unmapped: bool,
+    hide_unreferenced: bool,
 ) -> Vec<StringMatch<'a>> {
     let needle = filter.to_lowercase();
     // Resolve decoded operands once, not once per string: a stripped binary can
@@ -158,16 +215,16 @@ fn matching<'a>(
         .filter(|string| filter.is_empty() || string.value.to_lowercase().contains(&needle))
         .map(|string| {
             let address = string_address(analysis, string);
-            let unmapped = address.is_none();
-            let unreferenced = !address.is_some_and(|address| referenced.contains(&address));
             StringMatch {
                 string,
-                unmapped,
-                unreferenced,
-                highlight: (highlight_unmapped && unmapped)
-                    || (highlight_unreferenced && unreferenced),
+                unmapped: address.is_none(),
+                unreferenced: !address.is_some_and(|address| referenced.contains(&address)),
             }
         })
+        // Several criteria narrow together: each one is a condition the string
+        // has to meet, not another list added to the first.
+        .filter(|item| !hide_unmapped || !item.unmapped)
+        .filter(|item| !hide_unreferenced || !item.unreferenced)
         .collect()
 }
 
@@ -201,19 +258,16 @@ fn row(ui: &mut egui::Ui, item: &StringMatch<'_>, selected: bool, language: Lang
             .sense(egui::Sense::click()),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    if item.highlight || response.hovered() {
-        let color = item
-            .highlight
-            .then_some(ERROR)
-            .unwrap_or(egui::Color32::from_rgb(241, 169, 75));
+    if response.hovered() {
         ui.painter().rect_stroke(
             response.rect.expand(1.0),
             2.0,
-            egui::Stroke::new(0.5_f32, color),
+            egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(241, 169, 75)),
             egui::StrokeKind::Outside,
         );
-    }
-    if response.hovered() && item.highlight {
+        // What is odd about a string is said on the string itself, whether or
+        // not a criterion is filtering on it: a reader hovering a line should
+        // not have to switch a filter on to be told why it stands out.
         let mut reasons = Vec::new();
         if item.unmapped {
             reasons.push(text(language, Text::StringAddressUnavailable));
@@ -221,7 +275,9 @@ fn row(ui: &mut egui::Ui, item: &StringMatch<'_>, selected: bool, language: Lang
         if item.unreferenced {
             reasons.push(text(language, Text::NoStringReferences));
         }
-        response.clone().on_hover_text(reasons.join("\n"));
+        if !reasons.is_empty() {
+            response.clone().on_hover_text(reasons.join("\n"));
+        }
     }
     response.clicked()
 }
@@ -410,39 +466,54 @@ mod tests {
         }
     }
 
+    /// Each criterion hides what fails it, and several hide together. This is
+    /// the direction that makes the view useful: a string table is mostly
+    /// noise, and the reader is after the few strings the code actually
+    /// reaches — not after the noise on its own.
     #[test]
-    fn filters_highlight_their_matches_without_hiding_any_string() {
+    fn each_criterion_hides_what_fails_it_and_they_hide_together() {
         let analysis = analysis_for_filters();
-        let status = |unmapped, unreferenced| {
-            matching(&analysis, "", unmapped, unreferenced)
+        let shown = |hide_unmapped, hide_unreferenced| {
+            matching(&analysis, "", hide_unmapped, hide_unreferenced)
                 .into_iter()
-                .map(|item| (item.string.value.as_str(), item.highlight))
+                .map(|item| item.string.value.clone())
                 .collect::<Vec<_>>()
         };
 
         assert_eq!(
-            status(false, false),
-            [
-                ("referenced", false),
-                ("unreferenced", false),
-                ("not mapped", false)
-            ]
+            shown(false, false),
+            ["referenced", "unreferenced", "not mapped"],
+            "with no criterion, every string is shown"
         );
         assert_eq!(
-            status(true, false),
-            [
-                ("referenced", false),
-                ("unreferenced", false),
-                ("not mapped", true)
-            ]
+            shown(true, false),
+            ["referenced", "unreferenced"],
+            "hiding the unmapped drops the one outside every mapped section"
         );
         assert_eq!(
-            status(false, true),
-            [
-                ("referenced", false),
-                ("unreferenced", true),
-                ("not mapped", true)
-            ]
+            shown(false, true),
+            ["referenced"],
+            "hiding the unreferenced drops everything no instruction points at"
+        );
+        assert_eq!(
+            shown(true, true),
+            ["referenced"],
+            "both at once leave only what is both loaded and pointed at"
+        );
+    }
+
+    /// The text filter and the criteria narrow together too.
+    #[test]
+    fn the_text_filter_applies_alongside_the_criteria() {
+        let analysis = analysis_for_filters();
+        let shown: Vec<String> = matching(&analysis, "referenc", false, true)
+            .into_iter()
+            .map(|item| item.string.value.clone())
+            .collect();
+
+        assert_eq!(
+            shown, ["referenced"],
+            "the text matches two strings; the criterion drops the unreferenced one"
         );
     }
 

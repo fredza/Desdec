@@ -28,6 +28,7 @@ dice. Cuando no lo sabe, también lo dice, en lugar de adivinar.
 | **Pseudocódigo** | Una traducción prudente del flujo decodificado, integrada en la herramienta —o la salida de Rizin/rz-ghidra o de RetDec si alguno está instalado y elegido. |
 | **Parches** | Las modificaciones de bytes pendientes, y la exportación que las escribe en una **copia**. El archivo analizado nunca se modifica. |
 | **YARA** | Opcional. Ejecuta un `yara` o `yr` instalado localmente sobre el archivo abierto, con sus propias reglas. Desactivado por defecto. |
+| **Asistencia de IA** | Opcional, desactivada por defecto. Un modelo relee lo decodificado —un binario entero, una función, una instrucción— y su respuesta se etiqueta como lectura propuesta, nunca como hallazgo. Un modelo local (Ollama) o la API de Anthropic, según lo que configure. |
 
 Todo está disponible en francés, inglés y español, desde una paleta de comandos
 (`Ctrl+Mayús+P`) cuyos atajos se pueden reasignar.
@@ -98,7 +99,12 @@ por `v`, junto con sus sumas SHA-256.
 - **Lee, y solo escribe donde usted lo pide.** El archivo analizado se abre en
   modo lectura; un parche se escribe en una copia aparte que usted mismo
   nombra.
-- **No establece ninguna conexión de red.**
+- **No establece ninguna conexión de red mientras usted no configure una.**
+  Tal como viene, no se conecta a nada. La asistencia de IA opcional es la
+  única excepción, y solo tras elegir un proveedor: un modelo local en la
+  interfaz de bucle, o la API de Anthropic por internet. Aun así, lo que sale
+  son los datos extraídos —instrucciones, nombres de símbolos, cadenas—, nunca
+  el archivo, y la vista muestra el texto exacto antes de que usted pregunte.
 - **Cada byte ejecutable leído se decodifica**: no hay tope alguno en el
   número de instrucciones. Una biblioteca compartida grande alcanza realmente
   dieciocho millones, y el listado está virtualizado: su longitud no le cuesta
@@ -108,8 +114,12 @@ por `v`, junto con sus sumas SHA-256.
   lo dice, en lugar de presentar un listado parcial como si fuera todo el
   programa.
 - Los únicos programas externos que inicia son los que usted elige: un
-  descompilador (`rizin`, `retdec-decompiler`) o YARA. Ninguno es obligatorio,
-  y ninguno se inicia sin haber sido seleccionado en las preferencias.
+  descompilador (`rizin`, `retdec-decompiler`), YARA o un servidor de modelo
+  local. Ninguno es obligatorio, y ninguno se inicia sin haber sido
+  seleccionado en las preferencias.
+- **Una clave de API nunca se escribe en el archivo de preferencias.** La clave
+  de Anthropic se lee de `ANTHROPIC_API_KEY`, o de un archivo que usted indique
+  y cuyos permisos le pertenecen.
 
 ### Dónde guarda sus cosas
 

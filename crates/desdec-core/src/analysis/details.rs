@@ -7,6 +7,8 @@
 //! format, or the structure that would answer was unreadable. Reporting an
 //! unknown as "absent" would be a security claim we cannot back.
 
+use std::collections::BTreeMap;
+
 use crate::{
     analysis::{sections::Permissions, strings::ExtractedString},
     binary::{BinaryFormat, Endianness},
@@ -112,6 +114,18 @@ pub struct BinaryDetails {
     pub segments: Vec<Segment>,
     /// Libraries this file needs at run time.
     pub linked_libraries: Vec<String>,
+    /// What is taken from each of those libraries, where the format records it.
+    ///
+    /// PE only for now: its import table names every function, which is the
+    /// difference between knowing a program links `ntdll.dll` — most Windows
+    /// binaries do, whether or not they asked to — and knowing it calls
+    /// `NtCreateThreadEx`. ELF and Mach-O leave this empty, so a reader is
+    /// never shown an empty list as if it were an answer.
+    ///
+    /// Ordered by library name, and only for libraries with at least one named
+    /// import; ordinal-only imports are not listed, since the number names
+    /// nothing without the library itself.
+    pub imported_functions: BTreeMap<String, Vec<String>>,
     pub hardening: Hardening,
     /// ELF: the dynamic loader that will start this program.
     pub interpreter: Option<String>,
@@ -130,6 +144,7 @@ impl Default for BinaryDetails {
             endianness: Endianness::Unknown,
             segments: Vec::new(),
             linked_libraries: Vec::new(),
+            imported_functions: BTreeMap::new(),
             hardening: Hardening::default(),
             interpreter: None,
             subsystem: None,

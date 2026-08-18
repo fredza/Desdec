@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use desdec_core::{Analysis, analyse_path_cancellable, decompiler, yara};
+use desdec_core::{Analysis, analyse_path_cancellable, assistant, decompiler, yara};
 use eframe::{Storage, egui};
 
 use crate::{
@@ -53,6 +53,8 @@ pub enum WorkspaceView {
     Strings,
     Disassembly,
     Decompile,
+    /// A model's reading of what has been decoded; see [`crate::ui::assistant`].
+    Assistant,
     Patches,
     Yara,
 }
@@ -65,6 +67,7 @@ impl WorkspaceView {
         Self::Strings,
         Self::Disassembly,
         Self::Decompile,
+        Self::Assistant,
         Self::Patches,
         Self::Yara,
     ];
@@ -77,6 +80,7 @@ impl WorkspaceView {
             Self::Strings => Text::Strings,
             Self::Disassembly => Text::Disassembly,
             Self::Decompile => Text::Decompile,
+            Self::Assistant => Text::AiAssistance,
             Self::Patches => Text::Patches,
             Self::Yara => Text::Yara,
         }
@@ -92,6 +96,7 @@ impl WorkspaceView {
             Self::Strings => Icon::Strings,
             Self::Disassembly => Icon::Disassembly,
             Self::Decompile => Icon::Decompile,
+            Self::Assistant => Icon::Assistant,
             Self::Patches => Icon::Patches,
             Self::Yara => Icon::Yara,
         }
@@ -107,6 +112,7 @@ impl WorkspaceView {
             Self::Strings => Command::Strings,
             Self::Disassembly => Command::Disassembly,
             Self::Decompile => Command::Decompile,
+            Self::Assistant => Command::AiAssistance,
             Self::Patches => Command::Patches,
             Self::Yara => Command::Yara,
         }
@@ -117,7 +123,8 @@ impl WorkspaceView {
     pub const fn planned_explanation(self) -> Option<Text> {
         match self {
             Self::Overview | Self::Segments | Self::Functions | Self::Strings => None,
-            Self::Disassembly | Self::Decompile | Self::Patches | Self::Yara => None,
+            Self::Disassembly | Self::Decompile | Self::Assistant => None,
+            Self::Patches | Self::Yara => None,
         }
     }
 }
@@ -261,6 +268,8 @@ struct BackgroundJobs {
     export_picker: Option<Receiver<Option<PathBuf>>>,
     /// Optional external YARA scan, which can take time on large files.
     yara: Option<Receiver<Result<Vec<yara::Match>, String>>>,
+    /// A model reading the listing, local or remote; both take seconds.
+    assistance: Option<Receiver<Result<assistant::Answer, assistant::Error>>>,
 }
 
 /// One in-flight analysis, and the flag the interface uses to abandon it.
@@ -275,6 +284,40 @@ pub struct YaraScan {
     pub matches: Vec<yara::Match>,
     pub error: Option<String>,
     pub running: bool,
+}
+
+/// A short confirmation of an action that changed nothing on screen.
+///
+/// Copying to the clipboard is the case this exists for: the bytes go
+/// somewhere the application cannot show, so without a word said the reader
+/// cannot tell a successful copy from a click that missed. It fades on its own
+/// rather than waiting to be dismissed — a confirmation that has to be closed
+/// is worse than the silence it replaced.
+pub struct Notice {
+    pub text: String,
+    /// Clock reading past which it stops being drawn.
+    pub until: f64,
+}
+
+/// A model's reading of what was decoded, and where it came from.
+///
+/// The question and the exact text that was sent are kept beside the answer:
+/// an answer whose question has scrolled away is unattributable, and a reader
+/// who cannot see what left their machine has only been told it was harmless.
+#[derive(Default)]
+pub struct Assistance {
+    pub question: Option<assistant::Question>,
+    /// Word for word what was sent, shown on demand.
+    pub prompt: Option<assistant::Prompt>,
+    pub answer: Option<assistant::Answer>,
+    pub error: Option<assistant::Error>,
+    pub running: bool,
+    /// Whether the sent text is unfolded in the view.
+    pub show_prompt: bool,
+    /// What the provider last answered to a knock on the door, from the
+    /// preferences window. Kept across binaries: it is about the machine's
+    /// configuration, not about the file.
+    pub availability: Option<assistant::Availability>,
 }
 
 /// Result of the selected external decompiler.
@@ -324,10 +367,12 @@ pub struct DesdecApp {
     pub selected_string: Option<u64>,
     /// Free-text filter applied to the extracted strings.
     pub strings_filter: String,
-    /// Highlight strings that do not belong to a mapped memory region.
-    pub strings_unmapped_only: bool,
-    /// Highlight strings without a direct reference in decoded code.
-    pub strings_unreferenced_only: bool,
+    /// Hide strings that do not belong to a mapped memory region.
+    pub strings_hide_unmapped: bool,
+    /// Hide strings without a direct reference in decoded code.
+    pub strings_hide_unreferenced: bool,
+    /// A short confirmation of something that left no trace on screen.
+    pub notice: Option<Notice>,
     /// Pending byte patches, and the instruction being edited.
     pub patches: Patches,
     pub patch_editor: Option<Editor>,
@@ -350,6 +395,8 @@ pub struct DesdecApp {
     pub external: ExternalDecompilation,
     /// Result of the optional local YARA scan.
     pub yara: YaraScan,
+    /// The assistant's last reading, and the request behind it.
+    pub assistance: Assistance,
     /// What was found for each engine, and for which configured path.
     ///
     /// Detecting an engine touches the file system, and `rz-ghidra` is probed
@@ -448,6 +495,22 @@ impl DesdecApp {
         if command == Command::RunYara && !self.preferences.yara_enabled {
             return false;
         }
+        // Asking needs somewhere to ask, and two of the questions need
+        // something to ask about. The palette greys them out rather than
+        // letting a reader choose an entry that would answer nothing.
+        if matches!(
+            command,
+            Command::AskAboutBinary | Command::AskAboutFunction | Command::AskAboutInstruction
+        ) && self.preferences.assistant.provider() == assistant::Provider::None
+        {
+            return false;
+        }
+        if command == Command::AskAboutFunction && self.selected_function.is_none() {
+            return false;
+        }
+        if command == Command::AskAboutInstruction && self.selected_instruction.is_none() {
+            return false;
+        }
         // Choosing an engine always does something — it records the choice —
         // even when that engine is not installed yet. Detecting one spawns a
         // process, and this is asked for every command on every frame the
@@ -504,9 +567,39 @@ impl DesdecApp {
             }
             Command::Disassembly => self.open_view(command),
             Command::Decompile => self.open_view(command),
-            Command::AiAssistance => {}
+            Command::AiAssistance => self.open_view(command),
+            Command::AskAboutBinary => {
+                self.open_view(command);
+                self.request_assistance(ctx, assistant::Question::Binary);
+            }
+            Command::AskAboutFunction => {
+                self.open_view(command);
+                if let Some(address) = self.selected_function {
+                    self.request_assistance(ctx, assistant::Question::Function { address });
+                }
+            }
+            Command::AskAboutInstruction => {
+                self.open_view(command);
+                if let Some(address) = self.selected_instruction {
+                    self.request_assistance(ctx, assistant::Question::Instruction { address });
+                }
+            }
             Command::Functions => self.open_view(command),
             Command::Strings => self.open_view(command),
+            Command::StringsHideUnmapped => {
+                self.open_view(command);
+                self.strings_hide_unmapped = !self.strings_hide_unmapped;
+            }
+            Command::StringsHideUnreferenced => {
+                self.open_view(command);
+                self.strings_hide_unreferenced = !self.strings_hide_unreferenced;
+            }
+            Command::StringsClearFilter => {
+                self.open_view(command);
+                self.strings_filter.clear();
+                self.strings_hide_unmapped = false;
+                self.strings_hide_unreferenced = false;
+            }
             Command::Patches => self.open_view(command),
             Command::ThemeSystem => self.set_theme(ctx, ThemePreference::System),
             Command::ThemeDark => self.set_theme(ctx, ThemePreference::Dark),
@@ -760,6 +853,26 @@ impl DesdecApp {
             Some(Err(TryRecvError::Empty)) | None => {}
         }
 
+        let assistance = self.jobs.assistance.as_ref().map(Receiver::try_recv);
+        match assistance {
+            Some(Ok(result)) => {
+                self.jobs.assistance = None;
+                self.assistance.running = false;
+                match result {
+                    Ok(answer) => self.assistance.answer = Some(answer),
+                    Err(error) => self.assistance.error = Some(error),
+                }
+            }
+            Some(Err(TryRecvError::Disconnected)) => {
+                self.jobs.assistance = None;
+                self.assistance.running = false;
+                self.assistance.error = Some(assistant::Error::Unreadable(
+                    "the worker returned no answer".to_owned(),
+                ));
+            }
+            Some(Err(TryRecvError::Empty)) | None => {}
+        }
+
         let export = self.jobs.export_picker.as_ref().map(Receiver::try_recv);
         match export {
             Some(Ok(Some(destination))) => {
@@ -786,11 +899,55 @@ impl DesdecApp {
         if let Some(job) = self.jobs.inspection.take() {
             job.cancelled.store(true, Ordering::Relaxed);
         }
+        // With nothing loaded, the view that was selected describes a file that
+        // never arrived. Overview is the one that offers a way to open another,
+        // and leaving the selection where it was stranded the reader on a view
+        // with nothing in it.
+        if self.analysis.is_none() {
+            self.active_view = WorkspaceView::Overview;
+        }
     }
 
     /// Whether the file dialog is open, waiting on the user.
     pub const fn is_choosing_file(&self) -> bool {
         self.jobs.file_picker.is_some()
+    }
+
+    /// How long a confirmation stays on screen.
+    ///
+    /// Long enough to be read after the eye has gone back to what it was
+    /// doing, short enough that it is gone before it becomes furniture.
+    const NOTICE_SECONDS: f64 = 2.5;
+
+    /// Says something happened that the interface otherwise cannot show.
+    pub fn notify(&mut self, ctx: &egui::Context, text: impl Into<String>) {
+        self.notice = Some(Notice {
+            text: text.into(),
+            until: ctx.input(|input| input.time) + Self::NOTICE_SECONDS,
+        });
+        // Without this the notice would sit there until some other event
+        // happened to redraw the window, outlasting its own deadline.
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(Self::NOTICE_SECONDS));
+    }
+
+    /// Puts `value` on the clipboard and says so.
+    ///
+    /// The two belong together: every copy in this application has to be
+    /// confirmed, and pairing them here means no call site can forget.
+    pub fn copy_to_clipboard(&mut self, ctx: &egui::Context, value: impl Into<String>) {
+        let value = value.into();
+        ctx.copy_text(value);
+        let confirmation = self.t(Text::CopiedToClipboard).to_owned();
+        self.notify(ctx, confirmation);
+    }
+
+    /// The confirmation to draw right now, if one is still current.
+    pub fn current_notice(&self, ctx: &egui::Context) -> Option<&str> {
+        let now = ctx.input(|input| input.time);
+        self.notice
+            .as_ref()
+            .filter(|notice| notice.until > now)
+            .map(|notice| notice.text.as_str())
     }
 
     /// Whether a native dialog has been put on the user's screen.
@@ -952,6 +1109,52 @@ impl DesdecApp {
         });
     }
 
+    /// The provider and its settings, as the preferences describe them.
+    #[must_use]
+    pub fn assistant_settings(&self) -> assistant::Settings {
+        assistant::Settings {
+            provider: self.preferences.assistant.provider(),
+            model: self.preferences.assistant_model.clone(),
+            ollama_url: self.preferences.ollama_url.clone(),
+            api_key_path: PathBuf::from(self.preferences.anthropic_key_path.trim()),
+            timeout: assistant::DEFAULT_TIMEOUT,
+        }
+    }
+
+    /// Asks the configured model a question about what is on screen.
+    ///
+    /// The request is built here, from the analysis, and kept: the view shows
+    /// it in full on demand, so what left the machine is never something the
+    /// reader has to take on trust.
+    pub fn request_assistance(&mut self, ctx: &egui::Context, question: assistant::Question) {
+        if self.assistance.running || self.jobs.assistance.is_some() {
+            return;
+        }
+        let settings = self.assistant_settings();
+        let Some(analysis) = self.analysis.as_ref() else {
+            return;
+        };
+        let prompt = assistant::prompt::build(analysis, question, self.preferences.language.name());
+
+        self.assistance = Assistance {
+            question: Some(question),
+            prompt: Some(prompt.clone()),
+            running: true,
+            // Kept: the reader's choice about the panel, not about the answer.
+            show_prompt: self.assistance.show_prompt,
+            availability: self.assistance.availability.clone(),
+            ..Assistance::default()
+        };
+
+        let repaint = ctx.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.jobs.assistance = Some(receiver);
+        std::thread::spawn(move || {
+            let _ = sender.send(assistant::ask(&settings, &prompt));
+            repaint.request_repaint();
+        });
+    }
+
     /// Where this binary's answers are kept, and the digest that identifies it.
     /// them.
     ///
@@ -1047,8 +1250,8 @@ impl DesdecApp {
         self.active_view = WorkspaceView::Overview;
         self.functions.clear();
         self.strings_filter.clear();
-        self.strings_unmapped_only = false;
-        self.strings_unreferenced_only = false;
+        self.strings_hide_unmapped = false;
+        self.strings_hide_unreferenced = false;
         self.selected_function = None;
         self.selected_instruction = None;
         self.pending_instruction_scroll = None;
@@ -1064,6 +1267,13 @@ impl DesdecApp {
         self.export_report = None;
         self.external = ExternalDecompilation::default();
         self.yara = YaraScan::default();
+        // An answer about a file that is no longer open reads as an answer
+        // about the next one.
+        self.assistance = Assistance {
+            availability: self.assistance.availability.clone(),
+            show_prompt: self.assistance.show_prompt,
+            ..Assistance::default()
+        };
     }
 
     /// Opens whatever view a command declares, doing nothing for one that
@@ -1500,6 +1710,63 @@ mod tests {
         assert!(!app.is_analysing());
     }
 
+    /// Cancelling must leave somewhere to go. A view chosen while the first
+    /// binary was loading describes a file that never arrived, and stranded
+    /// the reader on a screen with no way to open another one.
+    #[test]
+    fn cancelling_the_first_analysis_returns_to_a_view_that_can_open_a_binary() {
+        let (_sender, receiver) = mpsc::channel();
+        let mut app = DesdecApp {
+            jobs: BackgroundJobs {
+                inspection: Some(InspectionJob {
+                    receiver,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                }),
+                ..BackgroundJobs::default()
+            },
+            active_view: WorkspaceView::Disassembly,
+            ..DesdecApp::default()
+        };
+
+        app.cancel_analysis();
+
+        assert!(app.analysis.is_none());
+        assert_eq!(app.active_view, WorkspaceView::Overview);
+    }
+
+    /// Cancelling one analysis while another binary is open must not throw the
+    /// reader out of the view they were in: that file is still loaded.
+    #[test]
+    fn cancelling_keeps_the_view_when_a_binary_is_still_open() {
+        let (_sender, receiver) = mpsc::channel();
+        let mut app = crate::testing::opened_app(WorkspaceView::Disassembly);
+        app.jobs.inspection = Some(InspectionJob {
+            receiver,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        });
+
+        app.cancel_analysis();
+
+        assert_eq!(app.active_view, WorkspaceView::Disassembly);
+    }
+
+    /// Copying puts the value on the clipboard and says so: the bytes go
+    /// somewhere the application cannot show, so silence would leave a
+    /// successful copy and a missed click looking identical.
+    #[test]
+    fn copying_confirms_itself() {
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::default();
+        assert!(app.current_notice(&ctx).is_none());
+
+        app.copy_to_clipboard(&ctx, "/tmp/example.bin");
+
+        assert_eq!(
+            app.current_notice(&ctx),
+            Some(app.t(Text::CopiedToClipboard))
+        );
+    }
+
     #[test]
     fn choosing_a_file_is_not_reported_as_an_analysis() {
         let app = DesdecApp::for_test_choosing_file();
@@ -1793,6 +2060,7 @@ mod tests {
             WorkspaceView::Disassembly,
             WorkspaceView::Decompile,
             WorkspaceView::Strings,
+            WorkspaceView::Assistant,
             WorkspaceView::Patches,
             WorkspaceView::Yara,
         ];

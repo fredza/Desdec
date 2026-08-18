@@ -28,6 +28,7 @@ so. Where it does not know, it says that instead of guessing.
 | **Pseudo-code** | A conservative, built-in translation of the decoded flow — or the output of Rizin/rz-ghidra or RetDec when one is installed and chosen. |
 | **Patches** | Pending byte edits, and the export that writes them to a **copy**. The analysed file is never modified. |
 | **YARA** | Optional. Runs a locally installed `yara` or `yr` against the open file with rules you provide. Off by default. |
+| **AI assistance** | Optional, off by default. A model reads back what was decoded — a whole binary, a function, one instruction — and its answer is labelled a proposed reading, never a finding. A local model (Ollama) or Anthropic's API, whichever you configure. |
 
 Everything is available in French, English and Spanish, from a command palette
 (`Ctrl+Shift+P`) with rebindable shortcuts.
@@ -95,7 +96,12 @@ together with their SHA-256 checksums.
   mapped, or loaded.
 - **It reads, and writes only where you ask.** The analysed file is opened
   read-only; a patch is written to a separate copy you name yourself.
-- **It makes no network connection at all.**
+- **It makes no network connection unless you configure one.** Out of the box
+  it connects to nothing. The optional AI assistance is the single exception,
+  and only once you have chosen a provider: a local model over the loopback
+  interface, or Anthropic's API over the internet. Even then it is the
+  extracted facts — instructions, symbol names, strings — that are sent, never
+  the file, and the view shows the exact text before you ask.
 - **Every executable byte that was read is decoded** — there is no cap on the
   number of instructions. A large shared library really does reach eighteen
   million of them, and the listing is virtualised, so its length costs the
@@ -104,8 +110,12 @@ together with their SHA-256 checksums.
   strings, 4 096 section entries. When a limit is reached the interface says
   so rather than presenting a partial listing as if it were the whole program.
 - The only external programs it will start are the ones you choose: a
-  decompiler (`rizin`, `retdec-decompiler`) or YARA. None is required, and none
-  is started unless it is selected in the preferences.
+  decompiler (`rizin`, `retdec-decompiler`), YARA, or a local model server.
+  None is required, and none is started unless it is selected in the
+  preferences.
+- **An API key is never written to the preferences file.** The Anthropic key is
+  read from `ANTHROPIC_API_KEY`, or from a file you name whose permissions are
+  yours to set.
 
 ### Where it keeps things
 

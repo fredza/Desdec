@@ -1,6 +1,8 @@
 //! Stable, UI-independent primitives for inspecting executable files.
 
 mod analysis;
+/// Optional AI assistance; see the module's own documentation.
+pub mod assistant;
 mod binary;
 mod bytes;
 pub mod decompiler;

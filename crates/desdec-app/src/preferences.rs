@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use desdec_core::decompiler::Engine;
+use desdec_core::{assistant, decompiler::Engine};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +41,35 @@ impl DecompilerPreference {
     }
 }
 
+/// Where the optional AI assistance comes from.
+///
+/// A mirror of [`assistant::Provider`], which the core keeps free of serde:
+/// this is the value that gets written to the preferences file, and the core
+/// should not have to care what that file looks like.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum AssistantPreference {
+    /// Nothing is configured, and nothing is ever sent. The default, because
+    /// no reader should discover after the fact that their binary was
+    /// described to a service.
+    #[default]
+    None,
+    Ollama,
+    Claude,
+}
+
+impl AssistantPreference {
+    pub const ALL: &[Self] = &[Self::None, Self::Ollama, Self::Claude];
+
+    #[must_use]
+    pub const fn provider(self) -> assistant::Provider {
+        match self {
+            Self::None => assistant::Provider::None,
+            Self::Ollama => assistant::Provider::Ollama,
+            Self::Claude => assistant::Provider::Claude,
+        }
+    }
+}
+
 /// Where an external engine lives, when it is not simply on `PATH`.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -75,7 +104,17 @@ pub struct Preferences {
     pub show_toolbar: bool,
     pub show_tooltips: bool,
     pub persistence_enabled: bool,
-    pub ai_assistance: bool,
+    /// Which model, if any, the assistant asks. `None` by default.
+    pub assistant: AssistantPreference,
+    /// Model name given to that provider, or empty for its own default.
+    pub assistant_model: String,
+    /// Where a local Ollama server listens, or empty for the usual address.
+    pub ollama_url: String,
+    /// File the Anthropic key is read from when `ANTHROPIC_API_KEY` is unset.
+    ///
+    /// The path, never the key: this file is written in plain text, and a
+    /// secret in it would be copied into every backup of the preferences.
+    pub anthropic_key_path: String,
     pub decompiler: DecompilerPreference,
     pub engine_paths: EnginePaths,
     /// Whether decompiled functions are kept on disk between runs.
@@ -110,7 +149,10 @@ impl Default for Preferences {
             show_toolbar: true,
             show_tooltips: true,
             persistence_enabled: true,
-            ai_assistance: false,
+            assistant: AssistantPreference::None,
+            assistant_model: String::new(),
+            ollama_url: String::new(),
+            anthropic_key_path: String::new(),
             decompiler: DecompilerPreference::Builtin,
             engine_paths: EnginePaths::default(),
             cache_decompilations: true,

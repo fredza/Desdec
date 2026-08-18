@@ -29,6 +29,7 @@ deviner.
 | **Pseudo-code** | Une traduction prudente du flot décodé, intégrée à l'outil — ou la sortie de Rizin/rz-ghidra ou de RetDec si l'un d'eux est installé et choisi. |
 | **Correctifs** | Les modifications d'octets en attente, et l'export qui les écrit dans une **copie**. Le fichier analysé n'est jamais modifié. |
 | **YARA** | Optionnel. Lance un `yara` ou `yr` installé localement sur le fichier ouvert, avec vos propres règles. Désactivé par défaut. |
+| **Assistance IA** | Optionnelle, désactivée par défaut. Un modèle relit ce qui a été décodé — un binaire entier, une fonction, une instruction — et sa réponse est étiquetée comme une lecture proposée, jamais comme un constat. Un modèle local (Ollama) ou l'API d'Anthropic, selon ce que vous configurez. |
 
 Tout est disponible en français, en anglais et en espagnol, depuis une palette
 de commandes (`Ctrl+Maj+P`) dont les raccourcis sont réassignables.
@@ -98,7 +99,13 @@ commençant par `v`, avec leurs sommes SHA-256.
 - **Il lit, et n'écrit que là où vous le demandez.** Le fichier analysé est
   ouvert en lecture seule ; un correctif est écrit dans une copie distincte que
   vous nommez vous-même.
-- **Il n'établit aucune connexion réseau.**
+- **Il n'établit aucune connexion réseau tant que vous n'en configurez pas
+  une.** Tel qu'il sort de sa boîte, il ne se connecte à rien. L'assistance IA
+  optionnelle en est la seule exception, et seulement après avoir choisi un
+  fournisseur : un modèle local sur la boucle locale, ou l'API d'Anthropic sur
+  Internet. Même alors, ce sont les faits extraits — instructions, noms de
+  symboles, chaînes — qui partent, jamais le fichier, et la vue montre le texte
+  exact avant que vous demandiez quoi que ce soit.
 - **Chaque octet exécutable lu est décodé** : il n'y a aucun plafond sur le
   nombre d'instructions. Une grande bibliothèque partagée en atteint réellement
   dix-huit millions, et la liste est virtualisée : sa longueur ne coûte rien à
@@ -108,8 +115,12 @@ commençant par `v`, avec leurs sommes SHA-256.
   le dit, au lieu de présenter une liste partielle comme si c'était tout le
   programme.
 - Les seuls programmes externes qu'il démarre sont ceux que vous choisissez :
-  un décompilateur (`rizin`, `retdec-decompiler`) ou YARA. Aucun n'est requis,
-  aucun n'est lancé sans avoir été sélectionné dans les préférences.
+  un décompilateur (`rizin`, `retdec-decompiler`), YARA, ou un serveur de
+  modèle local. Aucun n'est requis, aucun n'est lancé sans avoir été
+  sélectionné dans les préférences.
+- **Une clé d'API n'est jamais écrite dans le fichier de préférences.** La clé
+  Anthropic est lue depuis `ANTHROPIC_API_KEY`, ou depuis un fichier que vous
+  désignez et dont les permissions vous appartiennent.
 
 ### Où il range ses affaires
 

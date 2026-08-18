@@ -6,8 +6,8 @@ use crate::{
     i18n::{Language, Text, text},
     preferences::accent,
     ui::{
-        ERROR, MUTED, card, columns, decompile, disassembly, expert, format_size, functions,
-        patches_view, segments, strings, yara,
+        ERROR, MUTED, assistant, card, columns, decompile, disassembly, expert, format_size,
+        functions, patches_view, segments, strings, yara,
     },
 };
 
@@ -33,10 +33,14 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
     if app.analysis.is_none() {
         if app.is_analysing() {
             loading(app, ui);
-        } else if view == WorkspaceView::Overview {
-            welcome(app, ui);
         } else {
-            ui.label(text(language, Text::OpenFirst));
+            // The welcome screen whatever the view, because it is the only one
+            // here that offers a way out. A view selected before the binary
+            // went away — or before an analysis was cancelled — used to draw a
+            // bare "open a binary first" line, which is a dead end: no button,
+            // and the way to open one is in a panel the reader may have
+            // collapsed.
+            welcome(app, ui);
         }
         return;
     }
@@ -54,6 +58,10 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
         }
         WorkspaceView::Yara => {
             yara::show(app, ui);
+            return;
+        }
+        WorkspaceView::Assistant => {
+            assistant::show(app, ui);
             return;
         }
         _ => {}
@@ -79,8 +87,8 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 ui,
                 analysis,
                 &mut app.strings_filter,
-                &mut app.strings_unmapped_only,
-                &mut app.strings_unreferenced_only,
+                &mut app.strings_hide_unmapped,
+                &mut app.strings_hide_unreferenced,
                 &mut app.selected_string,
                 &mut app.selected_instruction,
                 &mut app.pending_instruction_scroll,
