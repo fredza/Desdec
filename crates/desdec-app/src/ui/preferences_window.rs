@@ -139,11 +139,22 @@ fn shortcuts(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
                 .copied()
                 .filter(|command| command.configurable_shortcut())
             {
+                let bound = app.preferences.shortcuts.shortcut_for(command).is_some();
                 ui.horizontal(|ui| {
                     ui.label(command.label(app.preferences.language));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button(app.t(Text::Modify)).clicked() {
                             app.editing_shortcut = Some(command);
+                        }
+                        // Only where there is something to take away: a
+                        // command with no key needs no way to remove one.
+                        if bound
+                            && ui
+                                .button(app.t(Text::RemoveShortcut))
+                                .on_hover_text(app.t(Text::RemoveShortcutHint))
+                                .clicked()
+                        {
+                            app.preferences.shortcuts.clear(command);
                         }
                         ui.monospace(app.shortcut_label(command));
                     });

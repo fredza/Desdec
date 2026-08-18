@@ -1,7 +1,5 @@
 //! Printable strings extracted from the loaded binary.
 
-use std::collections::BTreeSet;
-
 use desdec_core::{Analysis, ExtractedString, Instruction};
 use eframe::egui;
 
@@ -11,9 +9,14 @@ use crate::{
     ui::{MUTED, ROW_HEIGHT, card},
 };
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the view needs its filters, its selection and the cross-references"
+)]
 pub fn show(
     ui: &mut egui::Ui,
     analysis: &Analysis,
+    references: &CodeReferences,
     filter: &mut String,
     hide_unmapped: &mut bool,
     hide_unreferenced: &mut bool,
@@ -23,13 +26,20 @@ pub fn show(
     instruction_attention: &mut Option<(u64, f64)>,
     active_view: &mut WorkspaceView,
     language: Language,
-) {
+) -> Option<String> {
+    let mut copy = None;
     if analysis.strings.is_empty() {
         ui.label(text(language, Text::NoStrings));
-        return;
+        return copy;
     }
 
-    let matches = matching(analysis, filter, *hide_unmapped, *hide_unreferenced);
+    let matches = matching(
+        analysis,
+        references,
+        filter,
+        *hide_unmapped,
+        *hide_unreferenced,
+    );
     header(
         ui,
         filter,
@@ -47,9 +57,10 @@ pub fn show(
             .iter()
             .find(|string| string.file_offset == offset)
     }) {
-        references(
+        copy = reference_card(
             ui,
             analysis,
+            references,
             string,
             selected_instruction,
             pending_instruction_scroll,
@@ -85,6 +96,7 @@ pub fn show(
                     }
                 });
         });
+    copy
 }
 
 fn header(
@@ -199,15 +211,12 @@ struct StringMatch<'a> {
 /// total are shown.
 fn matching<'a>(
     analysis: &'a Analysis,
+    references: &CodeReferences,
     filter: &str,
     hide_unmapped: bool,
     hide_unreferenced: bool,
 ) -> Vec<StringMatch<'a>> {
     let needle = filter.to_lowercase();
-    // Resolve decoded operands once, not once per string: a stripped binary can
-    // contain twenty thousand strings, while its instructions often outnumber
-    // them by an order of magnitude.
-    let referenced = direct_reference_addresses(analysis);
 
     analysis
         .strings
@@ -218,7 +227,7 @@ fn matching<'a>(
             StringMatch {
                 string,
                 unmapped: address.is_none(),
-                unreferenced: !address.is_some_and(|address| referenced.contains(&address)),
+                unreferenced: !address.is_some_and(|address| references.any(address)),
             }
         })
         // Several criteria narrow together: each one is a condition the string
@@ -228,12 +237,59 @@ fn matching<'a>(
         .collect()
 }
 
-fn direct_reference_addresses(analysis: &Analysis) -> BTreeSet<u64> {
-    analysis
-        .instructions
-        .iter()
-        .flat_map(instruction_addresses)
-        .collect()
+/// Where the decoded code points, resolved once when a binary is opened.
+///
+/// Every row of the listing asks whether anything refers to its string, and
+/// the answer used to be recomputed from scratch on every frame drawn: a pass
+/// over a million instructions, parsing each one's text and allocating a
+/// vector per instruction, sixty times a second. It is one sorted table now,
+/// built once, and both questions the view asks — *is this referenced* and *by
+/// what* — are a binary search into it.
+///
+/// Measured on a 1.2-million-instruction binary: a tenth of a second to build,
+/// once, against a millisecond a frame to filter twenty thousand strings
+/// through it.
+#[derive(Debug, Default)]
+pub struct CodeReferences {
+    /// `(target, the instruction naming it)`, sorted by target.
+    entries: Vec<(u64, u64)>,
+}
+
+impl CodeReferences {
+    #[must_use]
+    pub fn of(analysis: &Analysis) -> Self {
+        let mut entries: Vec<(u64, u64)> = analysis
+            .instructions
+            .iter()
+            .flat_map(|instruction| {
+                instruction_addresses(instruction)
+                    .into_iter()
+                    .map(|target| (target, instruction.address))
+            })
+            .collect();
+        entries.sort_unstable();
+        entries.dedup();
+        entries.shrink_to_fit();
+        Self { entries }
+    }
+
+    /// The entries naming `target`, as one contiguous run of the table.
+    fn span(&self, target: u64) -> &[(u64, u64)] {
+        let start = self.entries.partition_point(|(at, _)| *at < target);
+        let end = self.entries.partition_point(|(at, _)| *at <= target);
+        &self.entries[start..end]
+    }
+
+    /// Whether any decoded instruction names this address.
+    #[must_use]
+    pub fn any(&self, target: u64) -> bool {
+        !self.span(target).is_empty()
+    }
+
+    /// The instructions that name it, by address and in listing order.
+    pub fn instructions(&self, target: u64) -> impl Iterator<Item = u64> + '_ {
+        self.span(target).iter().map(|(_, address)| *address)
+    }
 }
 
 fn row(ui: &mut egui::Ui, item: &StringMatch<'_>, selected: bool, language: Language) -> bool {
@@ -282,17 +338,40 @@ fn row(ui: &mut egui::Ui, item: &StringMatch<'_>, selected: bool, language: Lang
     response.clicked()
 }
 
-fn references(
+/// Tallest the references card grows before it scrolls inside itself.
+const REFERENCES_HEIGHT: f32 = 180.0;
+
+/// The instructions that name the selected string, and the way to each.
+///
+/// Returns an address the reader asked to have on the clipboard.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the card reaches the disassembly, which needs its selection and its scrolling"
+)]
+fn reference_card(
     ui: &mut egui::Ui,
     analysis: &Analysis,
+    references: &CodeReferences,
     string: &ExtractedString,
     selected_instruction: &mut Option<u64>,
     pending_instruction_scroll: &mut Option<u64>,
     instruction_attention: &mut Option<(u64, f64)>,
     active_view: &mut WorkspaceView,
     language: Language,
-) {
-    card(ui, text(language, Text::StringReferences), |ui| {
+) -> Option<String> {
+    let mut copy = None;
+    let mut jump = None;
+
+    let count = string_address(analysis, string)
+        .map(|address| direct_references(analysis, references, address).len())
+        .unwrap_or_default();
+    let title = if count > 0 {
+        format!("{} ({count})", text(language, Text::StringReferences))
+    } else {
+        text(language, Text::StringReferences).to_owned()
+    };
+
+    card(ui, &title, |ui| {
         ui.monospace(&string.value);
         let Some(address) = string_address(analysis, string) else {
             ui.small(text(language, Text::StringAddressUnavailable));
@@ -300,30 +379,113 @@ fn references(
         };
         ui.small(format!("{address:#018x}"));
 
-        let references = direct_references(analysis, address);
-        if references.is_empty() {
+        let found = direct_references(analysis, references, address);
+        if found.is_empty() {
             ui.small(text(language, Text::NoStringReferences));
             return;
         }
-        for instruction in references {
-            ui.horizontal(|ui| {
-                ui.monospace(format!(
-                    "{:#018x}  {}",
-                    instruction.address, instruction.text
-                ));
-                if ui.button(text(language, Text::GoToDisassembly)).clicked() {
-                    *selected_instruction = Some(instruction.address);
-                    *pending_instruction_scroll = Some(instruction.address);
-                    *instruction_attention = Some((
-                        instruction.address,
-                        ui.ctx().input(|input| input.time) + 3.0,
-                    ));
-                    *active_view = WorkspaceView::Disassembly;
-                    ui.ctx().request_repaint();
+        // What the rows answer to is said once, above them: a listing whose
+        // every line reacts to a click and a right-click, and says so nowhere,
+        // is a listing nobody clicks.
+        ui.small(egui::RichText::new(text(language, Text::ReferenceHelp)).color(MUTED));
+        ui.add_space(4.0);
+
+        // Bounded: a string reached from forty places filled the window with
+        // this card and pushed the listing it belongs to off the bottom.
+        egui::ScrollArea::vertical()
+            .id_salt("string_references")
+            .max_height(REFERENCES_HEIGHT)
+            .show(ui, |ui| {
+                for instruction in found {
+                    let (row, button) = reference_row(ui, instruction, language);
+                    if row.clicked() || button {
+                        jump = Some(instruction.address);
+                    }
+                    // The right button carries the same jump and what a
+                    // listing of addresses otherwise makes the reader retype
+                    // by hand.
+                    row.context_menu(|ui| {
+                        if ui.button(text(language, Text::GoToDisassembly)).clicked() {
+                            jump = Some(instruction.address);
+                            ui.close_menu();
+                        }
+                        if ui.button(text(language, Text::CopyAddress)).clicked() {
+                            copy = Some(format!("{:#018x}", instruction.address));
+                            ui.close_menu();
+                        }
+                    });
                 }
             });
-        }
     });
+
+    if let Some(address) = jump {
+        *selected_instruction = Some(address);
+        *pending_instruction_scroll = Some(address);
+        *instruction_attention = Some((address, ui.ctx().input(|input| input.time) + 3.0));
+        *active_view = WorkspaceView::Disassembly;
+        ui.ctx().request_repaint();
+    }
+    copy
+}
+
+/// One reference: where it is, in which section, what it does, and the button
+/// that opens it.
+///
+/// Three ways to the same place, on purpose. The button is the one a reader
+/// sees without being told, the whole row answers a click because a line of a
+/// listing that leads somewhere should, and the right button carries what a
+/// menu can hold and a row cannot — the address, for the tool they will paste
+/// it into next. Returns the row and whether the button was pressed.
+fn reference_row(
+    ui: &mut egui::Ui,
+    instruction: &Instruction,
+    language: Language,
+) -> (egui::Response, bool) {
+    let mut pressed = false;
+    let row = ui
+        .horizontal(|ui| {
+            let address = ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!("{:#018x}", instruction.address)).monospace(),
+                )
+                .selectable(false),
+            );
+            let section = ui.add(
+                egui::Label::new(
+                    egui::RichText::new(instruction.section.as_ref())
+                        .small()
+                        .color(MUTED),
+                )
+                .selectable(false),
+            );
+            let body = ui.add(
+                egui::Label::new(egui::RichText::new(&instruction.text).monospace())
+                    .selectable(false),
+            );
+            pressed = ui
+                .small_button(text(language, Text::GoToDisassembly))
+                .clicked();
+            address.union(section).union(body)
+        })
+        .inner
+        // Sensed on the union of the row's text rather than on one label, so a
+        // click anywhere along the line answers — but not on the button, which
+        // would then count twice.
+        .interact(egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    if row.hovered() {
+        ui.painter().rect_stroke(
+            row.rect.expand(2.0),
+            2.0,
+            egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(241, 169, 75)),
+            egui::StrokeKind::Outside,
+        );
+    }
+    (
+        row.on_hover_text(text(language, Text::GoToDisassembly)),
+        pressed,
+    )
 }
 
 /// Translates a file offset from the string extractor to its memory address.
@@ -340,24 +502,55 @@ fn string_address(analysis: &Analysis, string: &ExtractedString) -> Option<u64> 
     })
 }
 
-/// Finds direct and RIP-relative operands in the decoded x86 text. Indirect
-/// references need full instruction-semantic analysis and are left out rather
-/// than reported as false positives.
-fn direct_references<'a>(analysis: &'a Analysis, address: u64) -> Vec<&'a Instruction> {
-    analysis
-        .instructions
-        .iter()
-        .filter(|instruction| instruction_addresses(instruction).contains(&address))
+/// The instructions naming an address, read out of the index rather than by
+/// scanning the listing again.
+///
+/// Only direct and `%rip`-relative operands are in the index: an indirect
+/// reference needs full instruction-semantic analysis, and is left out rather
+/// than reported as a false positive.
+fn direct_references<'a>(
+    analysis: &'a Analysis,
+    references: &CodeReferences,
+    address: u64,
+) -> Vec<&'a Instruction> {
+    references
+        .instructions(address)
+        .filter_map(|at| analysis.instruction_at(at))
         .collect()
 }
 
+/// The addresses an instruction names outright.
+///
+/// Only an operand that *is* an address counts. A displacement written against
+/// a base register — `0x474(%rsp)`, `[x1, #0x10]` — is an offset into whatever
+/// that register happens to hold when the program runs, and reading it as an
+/// address made a four-letter string in `.rodata` look as though thirty
+/// instructions referred to it, none of which did. A bracket anywhere in an
+/// operand is what marks one — the comma this splits on cuts `[x1, #0x474]` in
+/// two, so both halves have to be recognised. The same goes for a jump through
+/// a table, `*0x129f388`: the number is where the pointer lives, not where it
+/// points.
 fn instruction_addresses(instruction: &Instruction) -> Vec<u64> {
     if let Some(target) = rip_relative_target(instruction) {
         return vec![target];
     }
 
-    instruction
+    let operands = instruction
         .text
+        .split_once(char::is_whitespace)
+        .map_or("", |(_, rest)| rest);
+    operands
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.contains(['(', ')', '[', ']', '*']))
+        .flat_map(hexadecimals)
+        .collect()
+}
+
+/// Every hexadecimal number in one operand, in either notation the formatters
+/// use: `0x1000` and `1000h`.
+fn hexadecimals(operand: &str) -> Vec<u64> {
+    operand
         .split(|character: char| {
             !character.is_ascii_hexdigit() && !matches!(character, 'x' | 'X' | 'h' | 'H')
         })
@@ -473,8 +666,9 @@ mod tests {
     #[test]
     fn each_criterion_hides_what_fails_it_and_they_hide_together() {
         let analysis = analysis_for_filters();
+        let references = CodeReferences::of(&analysis);
         let shown = |hide_unmapped, hide_unreferenced| {
-            matching(&analysis, "", hide_unmapped, hide_unreferenced)
+            matching(&analysis, &references, "", hide_unmapped, hide_unreferenced)
                 .into_iter()
                 .map(|item| item.string.value.clone())
                 .collect::<Vec<_>>()
@@ -506,13 +700,15 @@ mod tests {
     #[test]
     fn the_text_filter_applies_alongside_the_criteria() {
         let analysis = analysis_for_filters();
-        let shown: Vec<String> = matching(&analysis, "referenc", false, true)
+        let references = CodeReferences::of(&analysis);
+        let shown: Vec<String> = matching(&analysis, &references, "referenc", false, true)
             .into_iter()
             .map(|item| item.string.value.clone())
             .collect();
 
         assert_eq!(
-            shown, ["referenced"],
+            shown,
+            ["referenced"],
             "the text matches two strings; the criterion drops the unreferenced one"
         );
     }
@@ -527,6 +723,36 @@ mod tests {
         };
 
         assert_eq!(instruction_addresses(&instruction), [0x402000]);
+    }
+
+    /// A number written against a base register is an offset into whatever
+    /// that register holds at run time. Reading it as an address made a
+    /// four-letter string look as though thirty instructions named it.
+    #[test]
+    fn a_displacement_against_a_register_is_not_a_reference() {
+        let displacement = Instruction {
+            address: 0x0040_1000,
+            bytes: desdec_core::InstructionBytes::new(&[0x89, 0x84, 0x24]).expect("short"),
+            text: "mov %eax,0x474(%rsp)".to_owned(),
+            section: std::sync::Arc::from(".text"),
+        };
+        assert_eq!(instruction_addresses(&displacement), [] as [u64; 0]);
+
+        let through_a_table = Instruction {
+            address: 0x0040_1000,
+            bytes: desdec_core::InstructionBytes::new(&[0xff, 0x25]).expect("short"),
+            text: "jmpq *0x129f388".to_owned(),
+            section: std::sync::Arc::from(".text"),
+        };
+        assert_eq!(instruction_addresses(&through_a_table), [] as [u64; 0]);
+
+        let arm64 = Instruction {
+            address: 0x0040_1000,
+            bytes: desdec_core::InstructionBytes::new(&[0x00, 0x00, 0x40, 0xf9]).expect("short"),
+            text: "ldr x0, [x1, #0x474]".to_owned(),
+            section: std::sync::Arc::from(".text"),
+        };
+        assert_eq!(instruction_addresses(&arm64), [] as [u64; 0]);
     }
 
     #[test]

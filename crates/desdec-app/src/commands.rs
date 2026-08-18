@@ -48,7 +48,9 @@ macro_rules! commands {
 
 commands! {
     OpenBinary => [OpenBinary], Some(Shortcut::ctrl(KeyName::O)),
-    CancelAnalysis => [CancelAnalysis], None,
+    // Named for the whole opening, which is what it abandons: the dialog
+    // waiting on a choice as well as the analysis of what was chosen.
+    CancelAnalysis => [CancelOpening], None,
     CloseBinary => [CloseBinary], Some(Shortcut::ctrl(KeyName::W)),
     ToggleNavigation => [ToggleMenu], Some(Shortcut::ctrl(KeyName::B)),
     ToggleToolbar => [ToggleToolbar], Some(Shortcut::ctrl_alt(KeyName::T)),
@@ -100,9 +102,17 @@ impl Command {
             .join(": ")
     }
 
+    /// Whether a key combination can be assigned to this command.
+    ///
+    /// Everything the application actually does, not only what shipped with a
+    /// default: a command with no factory shortcut used to be one no reader
+    /// could ever give a key to, which put half the registry — every theme,
+    /// every language, the exports, the string filters — out of reach of the
+    /// keyboard for good. The one exception is a command that does nothing
+    /// yet: a key bound to it would swallow the press and answer nothing.
     #[must_use]
     pub const fn configurable_shortcut(self) -> bool {
-        self.default_shortcut().is_some()
+        self.implemented()
     }
 
     /// Whether the command is implemented at all.
@@ -350,6 +360,19 @@ impl ShortcutBindings {
         });
     }
 
+    /// Takes the key combination away from `command`, default included.
+    ///
+    /// Recorded as an explicit `None` rather than by forgetting the override:
+    /// forgetting it would bring the factory shortcut back, which is the
+    /// opposite of what removing one means.
+    pub fn clear(&mut self, command: Command) {
+        self.overrides.retain(|binding| binding.command != command);
+        self.overrides.push(ShortcutBinding {
+            command,
+            shortcut: None,
+        });
+    }
+
     pub fn reset(&mut self) {
         self.overrides.clear();
     }
@@ -405,6 +428,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every command the application can actually run must be reachable from
+    /// the keyboard, whether or not it shipped with a key of its own.
+    #[test]
+    fn every_working_command_can_be_given_a_shortcut() {
+        for command in Command::ALL.iter().copied().filter(|c| c.implemented()) {
+            assert!(
+                command.configurable_shortcut(),
+                "{command:?} can run but can never be given a key"
+            );
+        }
+    }
+
+    /// Removing a shortcut must remove it, not fall back on the factory one.
+    #[test]
+    fn a_cleared_shortcut_does_not_come_back_as_the_default() {
+        let mut bindings = ShortcutBindings::default();
+        assert!(bindings.shortcut_for(Command::OpenBinary).is_some());
+
+        bindings.clear(Command::OpenBinary);
+
+        assert_eq!(bindings.shortcut_for(Command::OpenBinary), None);
     }
 
     #[test]

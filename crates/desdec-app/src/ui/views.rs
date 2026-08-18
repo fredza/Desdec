@@ -31,7 +31,7 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let view = app.active_view;
 
     if app.analysis.is_none() {
-        if app.is_analysing() {
+        if app.is_opening() {
             loading(app, ui);
         } else {
             // The welcome screen whatever the view, because it is the only one
@@ -83,9 +83,10 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
         }
         WorkspaceView::Segments => segments::show(ui, analysis, language),
         WorkspaceView::Strings => {
-            strings::show(
+            let copy = strings::show(
                 ui,
                 analysis,
+                &app.string_references,
                 &mut app.strings_filter,
                 &mut app.strings_hide_unmapped,
                 &mut app.strings_hide_unreferenced,
@@ -96,6 +97,9 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 &mut app.active_view,
                 language,
             );
+            if let Some(value) = copy {
+                app.copy_to_clipboard(ui.ctx(), value);
+            }
         }
         WorkspaceView::Functions => functions::show(
             ui,
@@ -112,6 +116,7 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 &mut app.pending_instruction_scroll,
                 &mut app.instruction_attention,
                 &app.patches,
+                &app.stack,
                 language,
             );
             if let Some(address) = action.inspect {
@@ -137,14 +142,27 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
 /// A deliberate, central loading state rather than a small status-bar hint:
 /// opening a large binary is the moment the reader needs a clear way out.
 fn loading(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    // The dialog waiting on a choice is part of the same opening as the
+    // analysis of what was chosen. It used to show the welcome screen instead,
+    // so a dialog that never came back left no way out at all.
+    let analysing = app.is_analysing();
     ui.add_space(88.0);
     ui.vertical_centered(|ui| {
         ui.spinner();
         ui.add_space(12.0);
-        ui.heading(app.t(Text::StatusWorking));
+        ui.heading(app.t(if analysing {
+            Text::StatusWorking
+        } else {
+            Text::StatusChoosing
+        }));
         ui.add_space(14.0);
+        let label = app.t(if analysing {
+            Text::CancelAnalysis
+        } else {
+            Text::CancelChoosing
+        });
         if ui
-            .add(egui::Button::new(app.t(Text::CancelAnalysis)).min_size(egui::vec2(180.0, 34.0)))
+            .add(egui::Button::new(label).min_size(egui::vec2(180.0, 34.0)))
             .clicked()
         {
             app.cancel_analysis();

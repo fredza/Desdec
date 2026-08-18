@@ -16,8 +16,9 @@ pub mod yara;
 pub use analysis::{
     ANALYSIS_BYTE_LIMIT, Analysis, BinaryDetails, Confidence, Decoded, ExtractedString, FileKind,
     Hardening, Instruction, InstructionBytes, LanguageEvidence, LastWrite, Permissions, Relro,
-    Section, Segment, SourceLanguage, StringEncoding, Symbol, Target, analyse_bytes, analyse_path,
-    analyse_path_cancellable, decode_one, entropy, hash, language, operand, strings,
+    Section, Segment, SourceLanguage, StackSlot, StackState, StringEncoding, Symbol, Target, Trace,
+    analyse_bytes, analyse_path, analyse_path_cancellable, decode_one, entropy, hash, language,
+    operand, stack, strings,
 };
 pub use binary::{Architecture, BinaryFormat, BinarySummary, Endianness, inspect_path};
 pub use patch::{Patch, PatchError};

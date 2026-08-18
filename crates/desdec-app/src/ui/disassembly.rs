@@ -8,7 +8,7 @@ use crate::{
     ui::decompile,
     ui::syntax,
 };
-use desdec_core::Analysis;
+use desdec_core::{Analysis, StackSlot, Trace};
 use eframe::egui;
 
 /// Bytes a pending patch would write, marked so an edited row is never taken
@@ -24,6 +24,10 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Draws the disassembly, returning the instruction the user asked to edit.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the view needs its selection, its scrolling, its patches and its stack"
+)]
 pub fn show(
     ui: &mut egui::Ui,
     analysis: &Analysis,
@@ -31,6 +35,7 @@ pub fn show(
     pending_scroll: &mut Option<u64>,
     instruction_attention: &mut Option<(u64, f64)>,
     patches: &Patches,
+    stack: &Trace,
     language: Language,
 ) -> Action {
     if analysis.instructions.is_empty() {
@@ -60,6 +65,7 @@ pub fn show(
     if analysis.code_truncated {
         ui.colored_label(ERROR, text(language, Text::TruncatedDisassembly));
     }
+    stack_summary(ui, analysis, stack, *selected_instruction, language);
     ui.add_space(8.0);
     let scroll_target = *pending_scroll;
     let attention = decompile::active_attention(ui.ctx(), instruction_attention);
@@ -85,6 +91,7 @@ pub fn show(
             pending_scroll,
             attention,
             patches,
+            stack,
             language,
         );
     });
@@ -105,7 +112,7 @@ pub struct Action {
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "one listing needs its selection, its scrolling and its patches"
+    reason = "one listing needs its selection, its scrolling, its patches and its stack"
 )]
 fn instructions(
     ui: &mut egui::Ui,
@@ -115,6 +122,7 @@ fn instructions(
     pending_scroll: &mut Option<u64>,
     attention: Option<u64>,
     patches: &Patches,
+    stack: &Trace,
     language: Language,
 ) -> Option<u64> {
     let mut inspect = None;
@@ -137,13 +145,18 @@ fn instructions(
         analysis.instructions.len() + 1,
         |ui, rows| {
             egui::Grid::new("disassembly")
-                .num_columns(4)
+                .num_columns(5)
                 .striped(true)
                 .min_row_height(ROW_HEIGHT)
                 .show(ui, |ui| {
                     if rows.start == 0 {
-                        for title in [Text::Address, Text::Bytes, Text::Section, Text::Instruction]
-                        {
+                        for title in [
+                            Text::Address,
+                            Text::Bytes,
+                            Text::Section,
+                            Text::Stack,
+                            Text::Instruction,
+                        ] {
                             ui.strong(text(language, title));
                         }
                         ui.end_row();
@@ -194,6 +207,12 @@ fn instructions(
                             &instruction.section,
                             egui::Color32::TRANSPARENT,
                         ));
+                        // The stack as it stands *before* this instruction
+                        // runs, which is what a reader stopped on it would
+                        // see. Looked up by address rather than by row: the
+                        // listing is virtualised, and an index computed from a
+                        // visible range drifts the moment either changes.
+                        stack_cell(ui, analysis, stack, instruction.address, language);
                         let assembly = ui
                             .add(
                                 egui::Label::new(syntax::assembly(
@@ -224,6 +243,93 @@ fn instructions(
         },
     );
     inspect
+}
+
+/// What the stack holds where the reader is standing.
+///
+/// Under the toolbar rather than beside the row: the listing shows the depth
+/// at every instruction, and this says what those bytes are — which is the
+/// question the number provokes.
+fn stack_summary(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    stack: &Trace,
+    selected: Option<u64>,
+    language: Language,
+) {
+    let Some(address) = selected else {
+        return;
+    };
+    let state = stack.state_at(analysis, address);
+
+    ui.horizontal_wrapped(|ui| {
+        ui.strong(text(language, Text::Stack))
+            .on_hover_text(text(language, Text::StackHelp));
+        match state.depth {
+            Some(depth) => {
+                ui.monospace(format!("{depth:#x}"));
+            }
+            None => {
+                ui.label(egui::RichText::new("?").monospace().color(ERROR))
+                    .on_hover_text(text(language, Text::StackUnknown));
+            }
+        }
+        if state.slots.is_empty() {
+            ui.label(
+                egui::RichText::new(text(language, Text::StackEmpty))
+                    .small()
+                    .color(MUTED),
+            );
+        }
+        for slot in &state.slots {
+            ui.separator();
+            ui.label(egui::RichText::new(slot_label(slot, language)).small());
+        }
+        if state.truncated {
+            ui.label(
+                egui::RichText::new(text(language, Text::StackFrameNotReached))
+                    .small()
+                    .color(MUTED),
+            );
+        }
+    });
+}
+
+/// One stack slot, in the words the analysis can stand behind.
+fn slot_label(slot: &StackSlot, language: Language) -> String {
+    match slot {
+        StackSlot::ReturnAddress => text(language, Text::StackReturnAddress).to_owned(),
+        StackSlot::Saved(register) => format!("{register} {}", text(language, Text::StackSaved)),
+        StackSlot::Pushed(what) => format!("{what} {}", text(language, Text::StackPushed)),
+        StackSlot::Reserved(bytes) => format!("{bytes:#x} {}", text(language, Text::StackReserved)),
+    }
+}
+
+/// The stack depth of one row, or a mark saying it is not known.
+fn stack_cell(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    stack: &Trace,
+    address: u64,
+    language: Language,
+) {
+    let depth = analysis
+        .instruction_index(address)
+        .and_then(|index| stack.depth(index));
+    match depth {
+        Some(depth) => {
+            ui.label(syntax::dim(
+                ui,
+                &format!("{depth:#x}"),
+                egui::Color32::TRANSPARENT,
+            ))
+            .on_hover_text(text(language, Text::StackHelp));
+        }
+        None => {
+            ui.label(egui::RichText::new("?").monospace().color(MUTED))
+                .on_hover_text(text(language, Text::StackUnknown));
+        }
+    }
 }
 
 #[cfg(test)]

@@ -353,6 +353,18 @@ pub struct DesdecApp {
     /// Functions view reads it every frame, and finding basic blocks for a
     /// whole symbol table is not frame work.
     pub functions: Vec<crate::ui::functions::Function>,
+    /// The stack at each decoded instruction, indexed once per binary.
+    ///
+    /// Derived from the analysis and computed only when one is installed: the
+    /// disassembly reads it every frame, and following the stack pointer
+    /// through a hundred thousand instructions is not frame work.
+    pub stack: desdec_core::Trace,
+    /// Where the decoded code points, indexed once per binary.
+    ///
+    /// Every row of the Strings view asks whether anything refers to it, and
+    /// answering that from the listing itself meant re-reading a million
+    /// instructions on every frame drawn.
+    pub string_references: crate::ui::strings::CodeReferences,
     /// Address of the function currently inspected in the Functions view.
     pub selected_function: Option<u64>,
     /// Instruction selected in the disassembly or local pseudo-code view.
@@ -484,7 +496,7 @@ impl DesdecApp {
             return false;
         }
         if command == Command::CancelAnalysis {
-            return self.is_analysing();
+            return self.is_opening();
         }
         if command.needs_a_binary() && self.analysis.is_none() {
             return false;
@@ -712,10 +724,16 @@ impl DesdecApp {
         self.inspect_binary(ctx, path);
     }
 
+    /// Opens the file dialog, unless one is already waiting on the user.
+    ///
+    /// A running analysis does not stand in the way: asking to open another
+    /// binary is an answer to the one being analysed, so it is abandoned here
+    /// rather than the request being dropped in silence.
     pub fn choose_binary(&mut self, ctx: &egui::Context) {
-        if self.jobs.file_picker.is_some() || self.jobs.inspection.is_some() {
+        if !self.can_choose_binary() {
             return;
         }
+        self.cancel_analysis();
 
         let title = self.t(Text::OpenBinary).to_owned();
         let repaint = ctx.clone();
@@ -765,6 +783,8 @@ impl DesdecApp {
                 // resetting afterwards would throw the function index away.
                 self.reset_file_state();
                 self.functions = crate::ui::functions::all(&analysis);
+                self.stack = desdec_core::Trace::of(&analysis);
+                self.string_references = crate::ui::strings::CodeReferences::of(&analysis);
                 self.analysis = Some(analysis);
                 self.error = None;
                 // Kept so an operand's target can be read without going back
@@ -899,6 +919,12 @@ impl DesdecApp {
         if let Some(job) = self.jobs.inspection.take() {
             job.cancelled.store(true, Ordering::Relaxed);
         }
+        // The dialog is part of the same opening. A desktop that never answers
+        // one — a portal that does not come back, a window lost behind another
+        // — otherwise left the application waiting on it for the rest of the
+        // session, refusing every later request to open anything at all. The
+        // receiver is dropped, so a file chosen after this point goes nowhere.
+        self.jobs.file_picker = None;
         // With nothing loaded, the view that was selected describes a file that
         // never arrived. Overview is the one that offers a way to open another,
         // and leaving the selection where it was stranded the reader on a view
@@ -906,6 +932,21 @@ impl DesdecApp {
         if self.analysis.is_none() {
             self.active_view = WorkspaceView::Overview;
         }
+    }
+
+    /// Whether an opening is under way and can be abandoned: the dialog
+    /// waiting on a choice, or the analysis of what was chosen.
+    #[must_use]
+    pub const fn is_opening(&self) -> bool {
+        self.jobs.inspection.is_some() || self.jobs.file_picker.is_some()
+    }
+
+    /// Whether asking to open a binary would put the file dialog on screen.
+    ///
+    /// Only a dialog already waiting on the user stands in the way.
+    #[must_use]
+    pub const fn can_choose_binary(&self) -> bool {
+        self.jobs.file_picker.is_none()
     }
 
     /// Whether the file dialog is open, waiting on the user.
@@ -1249,6 +1290,8 @@ impl DesdecApp {
     fn reset_file_state(&mut self) {
         self.active_view = WorkspaceView::Overview;
         self.functions.clear();
+        self.stack = desdec_core::Trace::default();
+        self.string_references = crate::ui::strings::CodeReferences::default();
         self.strings_filter.clear();
         self.strings_hide_unmapped = false;
         self.strings_hide_unreferenced = false;
@@ -1410,6 +1453,14 @@ impl DesdecApp {
             functions: analysis
                 .as_ref()
                 .map(crate::ui::functions::all)
+                .unwrap_or_default(),
+            stack: analysis
+                .as_ref()
+                .map(desdec_core::Trace::of)
+                .unwrap_or_default(),
+            string_references: analysis
+                .as_ref()
+                .map(crate::ui::strings::CodeReferences::of)
                 .unwrap_or_default(),
             analysis,
             active_view,
@@ -1764,6 +1815,36 @@ mod tests {
         assert_eq!(
             app.current_notice(&ctx),
             Some(app.t(Text::CopiedToClipboard))
+        );
+    }
+
+    /// A file dialog the desktop never answers used to leave the application
+    /// waiting on it for the rest of the session: nothing on screen abandoned
+    /// it, and every later request to open a binary was refused in silence.
+    #[test]
+    fn the_choice_of_a_file_can_be_abandoned() {
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::for_test_choosing_file();
+        assert!(app.is_opening(), "an opening is under way");
+        assert!(
+            app.can_run(Command::CancelAnalysis),
+            "abandoning it must be offered"
+        );
+        let output = ctx.run(crate::testing::window_input(), |ctx| {
+            crate::ui::views::show_central_panel(&mut app, ctx);
+            crate::ui::status_bar::show(&mut app, ctx);
+        });
+        assert!(
+            crate::testing::drawn_text(&output.shapes).contains(app.t(Text::CancelChoosing)),
+            "the workspace must offer a way out of the dialog"
+        );
+
+        app.run_command(&ctx, Command::CancelAnalysis);
+
+        assert!(!app.is_opening());
+        assert!(
+            app.can_choose_binary(),
+            "abandoning must free the application to open something else"
         );
     }
 

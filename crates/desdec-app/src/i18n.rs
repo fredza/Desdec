@@ -84,6 +84,16 @@ translations! {
     ],
     StatusWorking => ["Analyse en cours…", "Analysing…", "Analizando…"],
     CancelAnalysis => ["Arrêter l’analyse", "Stop analysis", "Detener el análisis"],
+    CancelChoosing => [
+        "Abandonner l’ouverture",
+        "Give up opening",
+        "Abandonar la apertura",
+    ],
+    CancelOpening => [
+        "Abandonner l’ouverture en cours",
+        "Give up the opening under way",
+        "Abandonar la apertura en curso",
+    ],
     StatusChoosing => [
         "Sélection d’un fichier…",
         "Choosing a file…",
@@ -454,6 +464,12 @@ translations! {
         "Alternar información sobre herramientas",
     ],
     Modify => ["Modifier", "Change", "Cambiar"],
+    RemoveShortcut => ["Retirer", "Remove", "Quitar"],
+    RemoveShortcutHint => [
+        "Laisse la commande sans raccourci ; elle reste dans la palette.",
+        "Leaves the command with no shortcut; it stays in the palette.",
+        "Deja el comando sin atajo; sigue en la paleta.",
+    ],
     ResetDefaults => [
         "Rétablir les raccourcis par défaut",
         "Restore default shortcuts",
@@ -567,6 +583,13 @@ translations! {
         "The file carries no mark of the language it came from. Stripped binaries often lose that trace; nothing is assumed here.",
         "El archivo no lleva ninguna marca de su lenguaje de origen. Los binarios despojados suelen perder ese rastro; aquí no se supone nada.",
     ],
+    Certainty => ["Certitude", "Certainty", "Certeza"],
+    AlsoTraces => ["porte aussi la trace de", "also carries traces of", "también lleva rastros de"],
+    AlsoTracesHint => [
+        "Un programme Rust, Go ou C++ embarque le moteur d’exécution du C, et un binaire en porte donc la trace sans avoir été écrit dedans. Ce n’est pas une seconde réponse, c’est ce qui a été lié.",
+        "A Rust, Go or C++ program carries the C runtime, so a binary shows its traces without having been written in it. This is not a second answer; it is what was linked in.",
+        "Un programa en Rust, Go o C++ incorpora el motor de ejecución de C, así que un binario lleva su rastro sin haber sido escrito en él. No es una segunda respuesta: es lo que se enlazó.",
+    ],
     EvidenceCertain => ["certain", "certain", "seguro"],
     EvidenceLikely => ["probable", "likely", "probable"],
     EvidencePossible => ["possible", "possible", "posible"],
@@ -610,6 +633,12 @@ translations! {
         "Cette chaîne n’est pas située dans une section mappée.",
         "This string is not located in a mapped section.",
         "Esta cadena no está situada en una sección mapeada.",
+    ],
+    CopyAddress => ["Copier l’adresse", "Copy the address", "Copiar la dirección"],
+    ReferenceHelp => [
+        "Clic sur une ligne pour l’ouvrir dans le désassemblage ; clic droit pour le reste.",
+        "Click a line to open it in the disassembly; right-click for the rest.",
+        "Haga clic en una línea para abrirla en el desensamblado; con el botón derecho, el resto.",
     ],
     GoToDisassembly => [
         "Voir dans le désassemblage",
@@ -703,6 +732,31 @@ translations! {
         "Position independent (PIE)",
         "Independiente de la posición (PIE)",
     ],
+    Stack => ["Pile", "Stack", "Pila"],
+    StackHelp => [
+        "Profondeur de la pile avant chaque instruction, comptée depuis le début du cadre en suivant les déplacements du pointeur de pile. Lecture locale : elle ne vaut que tant que rien ne saute au milieu du cadre.",
+        "Stack depth before each instruction, counted from the start of the frame by following the moves of the stack pointer. A local reading: it holds only while nothing jumps into the middle of the frame.",
+        "Profundidad de la pila antes de cada instrucción, contada desde el inicio del marco siguiendo los movimientos del puntero de pila. Lectura local: solo vale mientras nada salte al medio del marco.",
+    ],
+    StackUnknown => [
+        "Le pointeur de pile a été déplacé d’une quantité que le texte ne dit pas ; la profondeur n’est plus connue jusqu’à la fin du cadre.",
+        "The stack pointer was moved by an amount the text does not state; the depth is no longer known until the frame ends.",
+        "El puntero de pila se movió una cantidad que el texto no indica; la profundidad ya no se conoce hasta el final del marco.",
+    ],
+    StackEmpty => [
+        "Rien de connu sur la pile à ce point.",
+        "Nothing known about the stack at this point.",
+        "Nada conocido sobre la pila en este punto.",
+    ],
+    StackFrameNotReached => [
+        "Le début du cadre n’a pas été atteint : ce qui est en dessous n’est pas listé.",
+        "The start of the frame was not reached: what lies below is not listed.",
+        "No se alcanzó el inicio del marco: lo que hay debajo no se lista.",
+    ],
+    StackReturnAddress => ["adresse de retour", "return address", "dirección de retorno"],
+    StackSaved => ["sauvegardé", "saved", "guardado"],
+    StackReserved => ["réservé", "reserved", "reservado"],
+    StackPushed => ["empilé", "pushed", "apilado"],
     NonExecutableStack => ["Pile non exécutable (NX)", "Non-executable stack (NX)", "Pila no ejecutable (NX)"],
     RelroLabel => ["Relocations en lecture seule (RELRO)", "Read-only relocations (RELRO)", "Reubicaciones de solo lectura (RELRO)"],
     StackCanary => ["Détection d’écrasement de pile", "Stack-smashing detection", "Detección de desbordamiento de pila"],

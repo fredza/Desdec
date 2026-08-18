@@ -20,7 +20,9 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                 let notice = notice.to_owned();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        egui::RichText::new(notice).color(success(app.preferences.theme)).small(),
+                        egui::RichText::new(notice)
+                            .color(success(app.preferences.theme))
+                            .small(),
                     );
                 });
             }
@@ -41,8 +43,14 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                     }
                     return;
                 }
-                if app.is_choosing_file() && app.analysis.is_none() {
+                if app.is_choosing_file() {
                     ui.label(egui::RichText::new(app.t(Text::StatusChoosing)).color(MUTED));
+                    // A native dialog the desktop never answers used to leave
+                    // the application waiting on it for good, refusing every
+                    // later request to open anything.
+                    if ui.button(app.t(Text::CancelChoosing)).clicked() {
+                        app.cancel_analysis();
+                    }
                     return;
                 }
 

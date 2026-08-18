@@ -305,9 +305,9 @@ mod tests {
     fn the_highlight_skips_commands_that_cannot_run() {
         let ctx = egui::Context::default();
         // Scanning needs a binary, and this application has none open.
-        // Stopping an analysis is only possible while one is running, and
+        // Abandoning an opening is only possible while one is under way, and
         // this application is idle.
-        let mut app = searching(&ctx, "stop analysis");
+        let mut app = searching(&ctx, "give up the opening");
         let matches = matching_commands(&app);
         assert_eq!(matches, vec![Command::CancelAnalysis]);
         assert!(!app.can_run(Command::CancelAnalysis));

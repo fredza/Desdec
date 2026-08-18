@@ -75,23 +75,12 @@ fn source_language_row(ui: &mut egui::Ui, analysis: &Analysis, language: Languag
 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(headline.language.label()).strong());
-        ui.label(
-            egui::RichText::new(text(language, confidence_label(headline.confidence)))
-                .small()
-                .color(MUTED),
-        )
-        .on_hover_text(&headline.evidence);
-
-        // Anything else the file points at. A Rust or Go program carries a C
-        // runtime, so a second entry is normal rather than a contradiction.
-        for other in analysis.languages.iter().skip(1) {
-            ui.label(
-                egui::RichText::new(format!("· {}", other.language.label()))
-                    .small()
-                    .color(MUTED),
-            )
-            .on_hover_text(&other.evidence);
-        }
+        // How firmly the file points at that language, drawn rather than only
+        // named: "possible" and "certain" are one word apart and three steps
+        // apart, and a reader scanning the panel should see which it is
+        // without stopping to read.
+        confidence_bar(ui, headline.confidence, language, &headline.evidence);
+        also_carried(ui, analysis, language);
     });
     ui.end_row();
 
@@ -106,6 +95,95 @@ fn source_language_row(ui: &mut egui::Ui, analysis: &Analysis, language: Languag
         ui.label(egui::RichText::new(toolchain).monospace());
         ui.end_row();
     }
+}
+
+/// A three-step gauge of how firmly the evidence points, with the word for it
+/// and the evidence itself on hover.
+///
+/// The steps are the three the analysis actually distinguishes; drawing a
+/// smooth percentage would suggest a measurement that was never made.
+fn confidence_bar(ui: &mut egui::Ui, confidence: Confidence, language: Language, evidence: &str) {
+    const WIDTH: f32 = 66.0;
+    const HEIGHT: f32 = 10.0;
+    const STEPS: usize = 3;
+
+    let filled = match confidence {
+        Confidence::Possible => 1,
+        Confidence::Likely => 2,
+        Confidence::Certain => 3,
+    };
+    let colour = match confidence {
+        Confidence::Possible => egui::Color32::from_rgb(145, 155, 178),
+        Confidence::Likely => egui::Color32::from_rgb(241, 169, 75),
+        Confidence::Certain => egui::Color32::from_rgb(77, 180, 110),
+    };
+
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(WIDTH, HEIGHT), egui::Sense::hover());
+    let painter = ui.painter();
+    let visuals = ui.style().visuals.clone();
+    painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "three steps and a width in pixels"
+    )]
+    let step = rect.width() / STEPS as f32;
+    for index in 0..filled {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "three steps and a width in pixels"
+        )]
+        let left = rect.left() + step * index as f32;
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(left + 1.0, rect.top() + 1.0),
+                egui::pos2(left + step - 1.0, rect.bottom() - 1.0),
+            ),
+            1.0,
+            colour,
+        );
+    }
+    painter.rect_stroke(rect, 2.0, visuals.window_stroke, egui::StrokeKind::Inside);
+
+    let word = text(language, confidence_label(confidence));
+    response.on_hover_text(format!(
+        "{}: {word}\n{evidence}",
+        text(language, Text::Certainty)
+    ));
+    ui.label(egui::RichText::new(word).small().color(MUTED))
+        .on_hover_text(evidence);
+}
+
+/// The other languages the file shows traces of, said as what they are.
+///
+/// They used to be listed as `· C` after the verdict, which read as a second
+/// answer competing with the first: "certain — Rust — C" is a contradiction to
+/// anyone who has not been told that a Rust binary links the C runtime. The
+/// lead-in word is what makes it one statement instead of two.
+fn also_carried(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
+    let others: Vec<&desdec_core::LanguageEvidence> = analysis.languages.iter().skip(1).collect();
+    if others.is_empty() {
+        return;
+    }
+
+    let names = others
+        .iter()
+        .map(|other| other.language.label())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let evidence = others
+        .iter()
+        .map(|other| format!("{}: {}", other.language.label(), other.evidence))
+        .collect::<Vec<_>>()
+        .join("\n");
+    ui.label(
+        egui::RichText::new(format!("— {} {names}", text(language, Text::AlsoTraces)))
+            .small()
+            .color(MUTED),
+    )
+    .on_hover_text(format!(
+        "{}\n\n{evidence}",
+        text(language, Text::AlsoTracesHint)
+    ));
 }
 
 const fn confidence_label(confidence: Confidence) -> Text {
