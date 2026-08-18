@@ -66,7 +66,7 @@ fn builtin(app: &mut DesdecApp, ui: &mut egui::Ui) {
 /// The engine is named next to its text: two decompilers disagree often
 /// enough that reading one without knowing which would be misleading. The
 /// card is named for the engine too — it used to be titled "local
-/// pseudo-code" while saying "produced by RetDec" underneath, which is a
+/// pseudo-code" while saying "produced by `RetDec`" underneath, which is a
 /// contradiction on the face of it.
 ///
 /// Returns whether it actually put pseudo-code on screen.
@@ -608,7 +608,7 @@ mod tests {
     };
     use eframe::egui;
 
-    /// A card titled "local pseudocode" that says "produced by RetDec"
+    /// A card titled "local pseudocode" that says "produced by `RetDec`"
     /// underneath contradicts itself on the face of it.
     #[test]
     fn the_external_card_is_not_named_after_the_built_in_one() {
@@ -656,7 +656,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::testing::{opened_app, reference_analysis};
+    use crate::testing::reference_analysis;
 
     /// First decoded instruction of the reference binary.
     fn first_address() -> u64 {
