@@ -971,24 +971,16 @@ impl DesdecApp {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(Self::NOTICE_SECONDS));
     }
 
-    /// Puts `value` on the clipboard and says so.
+    /// Puts `value` on the clipboard and says so, naming what was copied.
     ///
     /// The two belong together: every copy in this application has to be
-    /// confirmed, and pairing them here means no call site can forget.
-    pub fn copy_to_clipboard(&mut self, ctx: &egui::Context, value: impl Into<String>) {
-        let value = value.into();
-        ctx.copy_text(value);
-        let confirmation = self.t(Text::CopiedToClipboard).to_owned();
-        self.notify(ctx, confirmation);
-    }
-
-    /// The confirmation to draw right now, if one is still current.
-    pub fn current_notice(&self, ctx: &egui::Context) -> Option<&str> {
-        let now = ctx.input(|input| input.time);
-        self.notice
-            .as_ref()
-            .filter(|notice| notice.until > now)
-            .map(|notice| notice.text.as_str())
+    /// confirmed, and pairing them here means no call site can forget. The
+    /// value goes in the message as well as on the clipboard — "copied" alone
+    /// leaves the reader to take the application's word for what it took.
+    pub fn copy_to_clipboard(&mut self, ctx: &egui::Context, value: &str, said: Text) {
+        ctx.copy_text(value.to_owned());
+        let message = format!("{} — {value}", self.t(said));
+        self.notify(ctx, message);
     }
 
     /// Whether a native dialog has been put on the user's screen.
@@ -1527,6 +1519,7 @@ impl DesdecApp {
         ui::about::show(self, ctx);
         ui::library_note::show(self, ctx);
         ui::operand_note::show(self, ctx);
+        ui::notice::show(self, ctx);
 
         self.schedule_pending_save(ctx);
     }
@@ -1803,19 +1796,23 @@ mod tests {
 
     /// Copying puts the value on the clipboard and says so: the bytes go
     /// somewhere the application cannot show, so silence would leave a
-    /// successful copy and a missed click looking identical.
+    /// successful copy and a missed click looking identical. The message names
+    /// the value, so the reader can see it is the one they meant.
     #[test]
     fn copying_confirms_itself() {
         let ctx = egui::Context::default();
         let mut app = DesdecApp::default();
-        assert!(app.current_notice(&ctx).is_none());
+        assert!(app.notice.is_none());
 
-        app.copy_to_clipboard(&ctx, "/tmp/example.bin");
+        app.copy_to_clipboard(&ctx, "/tmp/example.bin", Text::PathCopied);
 
-        assert_eq!(
-            app.current_notice(&ctx),
-            Some(app.t(Text::CopiedToClipboard))
+        let notice = app.notice.as_ref().expect("copying says so");
+        assert!(
+            notice.text.contains(app.t(Text::PathCopied)),
+            "{}",
+            notice.text
         );
+        assert!(notice.text.contains("/tmp/example.bin"), "{}", notice.text);
     }
 
     /// A file dialog the desktop never answers used to leave the application

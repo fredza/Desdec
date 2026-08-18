@@ -98,7 +98,7 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 language,
             );
             if let Some(value) = copy {
-                app.copy_to_clipboard(ui.ctx(), value);
+                app.copy_to_clipboard(ui.ctx(), &value, Text::AddressCopied);
             }
         }
         WorkspaceView::Functions => functions::show(

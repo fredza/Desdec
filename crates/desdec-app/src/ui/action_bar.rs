@@ -164,7 +164,7 @@ fn open_binary(app: &mut DesdecApp, ui: &mut egui::Ui) {
         app.t(Text::CopyFullPath)
     );
     if label.on_hover_text(hint).clicked() {
-        app.copy_to_clipboard(ui.ctx(), full_path);
+        app.copy_to_clipboard(ui.ctx(), &full_path, Text::PathCopied);
     }
     let close = app.tooltip(
         icons::sized_button(
