@@ -487,6 +487,21 @@ translations! {
     Blocks => ["Blocs", "Blocks", "Bloques"],
     ControlFlow => ["Flot de contrôle", "Control flow", "Flujo de control"],
     PseudoCode => ["Pseudo-code local", "Local pseudocode", "Pseudocódigo local"],
+    ExternalPseudoCode => [
+        "Pseudo-code externe",
+        "External pseudocode",
+        "Pseudocódigo externo",
+    ],
+    UseBuiltinDecompiler => [
+        "Revenir au décompilateur intégré",
+        "Fall back to the built-in decompiler",
+        "Volver al decompilador integrado",
+    ],
+    BuiltinFallbackNote => [
+        "Le moteur choisi n’a rien produit. Voici la traduction intégrée, qui ne dépend d’aucune installation.",
+        "The chosen engine produced nothing. Here is the built-in translation, which depends on nothing being installed.",
+        "El motor elegido no produjo nada. Esta es la traducción integrada, que no depende de ninguna instalación.",
+    ],
     PseudoCodeHelp => [
         "Traduction déterministe du flot observé, sans code source inventé.",
         "Deterministic translation of the observed flow, with no invented source.",
