@@ -90,6 +90,23 @@ pub struct Hardening {
     pub signed: Option<bool>,
 }
 
+/// The functions one library is asked for, as the import table names them.
+///
+/// One entry per import descriptor, not per library name: a file may name the
+/// same library several times, each descriptor asking for its own functions,
+/// and installers routinely do. Merging them by name loses which descriptor
+/// asked for what, and leaves the reader a list that no part of the file
+/// actually states.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportedLibrary {
+    /// The library's name, exactly as the file spells it.
+    pub library: String,
+    /// The functions taken from it, in import-table order.
+    pub functions: Vec<String>,
+    /// Set when the table held more names than were kept.
+    pub truncated: bool,
+}
+
 /// A region as the loader will map it, which is coarser than a section.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Segment {
@@ -112,6 +129,18 @@ pub struct BinaryDetails {
     pub segments: Vec<Segment>,
     /// Libraries this file needs at run time.
     pub linked_libraries: Vec<String>,
+    /// What is taken from each of those libraries, where the format records it.
+    ///
+    /// PE only for now: its import table names every function, which is the
+    /// difference between knowing a program links `ntdll.dll` — most Windows
+    /// binaries do, whether or not they asked to — and knowing it calls
+    /// `NtCreateThreadEx`. ELF and Mach-O leave this empty, so a reader is
+    /// never shown an empty list as if it were an answer.
+    ///
+    /// In import-table order, one entry per descriptor, running parallel to
+    /// [`Self::linked_libraries`]: the two are built from the same walk, so a
+    /// library listed there has its imports at the same index here.
+    pub imports: Vec<ImportedLibrary>,
     pub hardening: Hardening,
     /// ELF: the dynamic loader that will start this program.
     pub interpreter: Option<String>,
@@ -130,6 +159,7 @@ impl Default for BinaryDetails {
             endianness: Endianness::Unknown,
             segments: Vec::new(),
             linked_libraries: Vec::new(),
+            imports: Vec::new(),
             hardening: Hardening::default(),
             interpreter: None,
             subsystem: None,

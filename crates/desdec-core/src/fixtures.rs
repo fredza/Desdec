@@ -30,6 +30,9 @@ pub struct Fixture {
     pub strings: Vec<&'static str>,
     /// Libraries the file says it links against.
     pub libraries: Vec<&'static str>,
+    /// Functions the file says it imports, for the formats whose dependency
+    /// list names them. Empty for ELF and Mach-O, which name only the library.
+    pub imported_functions: Vec<&'static str>,
     /// Where execution starts.
     pub entry_point: u64,
 }
@@ -315,6 +318,7 @@ pub fn elf_x86_64() -> Fixture {
         ],
         strings: STRINGS.to_vec(),
         libraries: vec![library],
+        imported_functions: Vec::new(),
         entry_point: ELF_BASE + text_at as u64,
         bytes: file,
     }
@@ -323,6 +327,14 @@ pub fn elf_x86_64() -> Fixture {
 // ----------------------------------------------------------------- PE -------
 
 const PE_BASE: u64 = 0x1_4000_0000;
+
+/// The functions the PE fixture asks each of its two libraries for.
+///
+/// The second is `ntdll.dll` on purpose: it is the one library whose import
+/// list is the finding rather than a detail, and the reader treats it as such.
+const PE_IMPORTS: &[&str] = &["FixtureEntry", "FixtureHelper"];
+const PE_NATIVE_LIBRARY: &str = "ntdll.dll";
+const PE_NATIVE_IMPORTS: &[&str] = &["NtCreateFile", "NtQuerySystemInformation"];
 const PE_TEXT_RVA: u32 = 0x1000;
 const PE_DATA_RVA: u32 = 0x2000;
 
@@ -365,6 +377,9 @@ pub fn pe_x86_64() -> Fixture {
     let library_rva = data_rva(&data);
     data.extend_from_slice(library.as_bytes());
     data.push(0);
+    let native_library_rva = data_rva(&data);
+    data.extend_from_slice(PE_NATIVE_LIBRARY.as_bytes());
+    data.push(0);
 
     // Export directory: parallel name and ordinal tables, joined to the
     // address table through the ordinals.
@@ -393,12 +408,41 @@ pub fn pe_x86_64() -> Fixture {
     write.u32(36, ordinals_rva);
     data.extend_from_slice(&export);
 
-    // Import directory: one descriptor naming the library, then the
-    // terminating all-zero one.
+    // Hint/name structures, then the import lookup table pointing at them: a
+    // descriptor that named only its library left the reader with no way to
+    // say what the program actually asks that library for.
+    let lookup_table = |data: &mut Vec<u8>, names: &[&str]| {
+        let mut hint_names = Vec::new();
+        for name in names {
+            hint_names.push(PE_DATA_RVA + u32::try_from(data.len()).expect("small"));
+            data.extend_from_slice(&0_u16.to_le_bytes()); // Hint.
+            data.extend_from_slice(name.as_bytes());
+            data.push(0);
+            if data.len() % 2 == 1 {
+                data.push(0); // Each structure is two-byte aligned.
+            }
+        }
+        let lookup_rva = PE_DATA_RVA + u32::try_from(data.len()).expect("small");
+        for rva in &hint_names {
+            data.extend_from_slice(&u64::from(*rva).to_le_bytes());
+        }
+        data.extend_from_slice(&0_u64.to_le_bytes()); // Terminating entry.
+        lookup_rva
+    };
+    let lookup_rva = lookup_table(&mut data, PE_IMPORTS);
+    let native_lookup_rva = lookup_table(&mut data, PE_NATIVE_IMPORTS);
+
+    // Import directory: one descriptor per library, then the terminating
+    // all-zero one.
     let import_rva = data_rva(&data);
-    let mut import = vec![0_u8; 40];
+    let mut import = vec![0_u8; 60];
     let mut write = Writer(&mut import);
+    write.u32(0, lookup_rva); // Import lookup table.
     write.u32(12, library_rva); // Name of the library.
+    write.u32(16, lookup_rva); // Import address table.
+    write.u32(20, native_lookup_rva);
+    write.u32(32, native_library_rva);
+    write.u32(36, native_lookup_rva);
     data.extend_from_slice(&import);
     let export_size = u32::try_from(export.len()).expect("small");
     let data_size = u32::try_from(data.len()).expect("small");
@@ -465,7 +509,8 @@ pub fn pe_x86_64() -> Fixture {
             ("helper", PE_BASE + u64::from(PE_TEXT_RVA) + X86_HELPER_AT),
         ],
         strings: STRINGS.to_vec(),
-        libraries: vec![library],
+        libraries: vec![library, PE_NATIVE_LIBRARY],
+        imported_functions: PE_NATIVE_IMPORTS.to_vec(),
         entry_point: PE_BASE + u64::from(PE_TEXT_RVA),
         bytes: file,
     }
@@ -588,6 +633,7 @@ pub fn mach_o_arm64() -> Fixture {
         ],
         strings: STRINGS.to_vec(),
         libraries: vec![library],
+        imported_functions: Vec::new(),
         entry_point: MACH_O_BASE + text_at as u64,
         bytes: file,
     }
@@ -660,6 +706,17 @@ mod tests {
                         .any(|found| found.contains(library.rsplit('/').next().unwrap_or(library))),
                     "{label}: library {library:?} was not read, found {:?}",
                     analysis.details.linked_libraries
+                );
+            }
+            for function in &fixture.imported_functions {
+                assert!(
+                    analysis
+                        .details
+                        .imports
+                        .iter()
+                        .any(|entry| entry.functions.iter().any(|found| found == function)),
+                    "{label}: imported function {function:?} was not read, found {:?}",
+                    analysis.details.imports
                 );
             }
         }

@@ -1,6 +1,6 @@
 [package]
 name = "desdec-core"
-version = "0.2.2"
+version = "0.2.4"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -16,3 +16,5 @@ workspace = true
 [dependencies]
 capstone = { version = "0.14", default-features = false, features = ["std", "full", "arch_arm64"] }
 iced-x86 = { version = "1.21", features = ["decoder", "gas"] }
+serde_json = "1.0.151"
+ureq = { version = "3.4.0", default-features = false, features = ["json", "rustls", "gzip"] }

@@ -1,45 +1,50 @@
 //! Printable strings extracted from the loaded binary.
 
-use std::collections::BTreeSet;
-
 use desdec_core::{Analysis, ExtractedString, Instruction};
 use eframe::egui;
 
 use crate::{
     app::WorkspaceView,
     i18n::{Language, Text, text},
-    ui::{ERROR, MUTED, ROW_HEIGHT, card},
+    ui::{MUTED, ROW_HEIGHT, card},
 };
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the view needs its filters, its selection and the cross-references"
+)]
 pub fn show(
     ui: &mut egui::Ui,
     analysis: &Analysis,
+    references: &CodeReferences,
     filter: &mut String,
-    highlight_unmapped: &mut bool,
-    highlight_unreferenced: &mut bool,
+    hide_unmapped: &mut bool,
+    hide_unreferenced: &mut bool,
     selected_string: &mut Option<u64>,
     selected_instruction: &mut Option<u64>,
     pending_instruction_scroll: &mut Option<u64>,
     instruction_attention: &mut Option<(u64, f64)>,
     active_view: &mut WorkspaceView,
     language: Language,
-) {
+) -> Option<String> {
+    let mut copy = None;
     if analysis.strings.is_empty() {
         ui.label(text(language, Text::NoStrings));
-        return;
+        return copy;
     }
 
     let matches = matching(
         analysis,
+        references,
         filter,
-        *highlight_unmapped,
-        *highlight_unreferenced,
+        *hide_unmapped,
+        *hide_unreferenced,
     );
     header(
         ui,
         filter,
-        highlight_unmapped,
-        highlight_unreferenced,
+        hide_unmapped,
+        hide_unreferenced,
         matches.len(),
         analysis.strings.len(),
         language,
@@ -52,9 +57,10 @@ pub fn show(
             .iter()
             .find(|string| string.file_offset == offset)
     }) {
-        references(
+        copy = reference_card(
             ui,
             analysis,
+            references,
             string,
             selected_instruction,
             pending_instruction_scroll,
@@ -90,13 +96,14 @@ pub fn show(
                     }
                 });
         });
+    copy
 }
 
 fn header(
     ui: &mut egui::Ui,
     filter: &mut String,
-    highlight_unmapped: &mut bool,
-    highlight_unreferenced: &mut bool,
+    hide_unmapped: &mut bool,
+    hide_unreferenced: &mut bool,
     shown: usize,
     total: usize,
     language: Language,
@@ -108,22 +115,36 @@ fn header(
                 .hint_text(text(language, Text::FilterHint))
                 .desired_width(240.0),
         );
-        ui.separator();
-        ui.toggle_value(
-            highlight_unmapped,
-            text(language, Text::FilterUnmappedStrings),
-        );
-        ui.toggle_value(
-            highlight_unreferenced,
-            text(language, Text::FilterUnreferencedStrings),
-        );
-        ui.label(
-            egui::RichText::new(format!(
+        criteria(ui, hide_unmapped, hide_unreferenced, language);
+
+        let filtering = !filter.is_empty() || *hide_unmapped || *hide_unreferenced;
+        if ui
+            .add_enabled(
+                filtering,
+                egui::Button::new(text(language, Text::ClearFilter)),
+            )
+            .clicked()
+        {
+            filter.clear();
+            *hide_unmapped = false;
+            *hide_unreferenced = false;
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // How many were left out is part of the answer: a narrowed list
+            // that does not say so looks like a file with fewer strings in it.
+            let counted = egui::RichText::new(format!(
                 "{shown} {} {total}",
                 text(language, Text::ShownOfTotal)
-            ))
-            .color(MUTED),
-        );
+            ));
+            // Emphasised while something is filtering, so a short list is
+            // never mistaken for a file with little in it.
+            ui.label(if filtering {
+                counted.strong()
+            } else {
+                counted.color(MUTED)
+            });
+        });
     });
 
     // The extractor stops at a fixed number of strings; say so rather than let
@@ -133,24 +154,69 @@ fn header(
     }
 }
 
+/// The criteria, folded into one drop-down.
+///
+/// They were two toggle buttons sitting in the header, which is a row that
+/// only ever grows: the next criterion would have pushed the count off a
+/// narrow window. Folded away, the header stays one line whatever is added,
+/// and the button says what is active without being opened.
+fn criteria(
+    ui: &mut egui::Ui,
+    hide_unmapped: &mut bool,
+    hide_unreferenced: &mut bool,
+    language: Language,
+) {
+    let chosen = usize::from(*hide_unmapped) + usize::from(*hide_unreferenced);
+    let summary = match (*hide_unmapped, *hide_unreferenced) {
+        (false, false) => text(language, Text::AllStrings).to_owned(),
+        (true, false) => text(language, Text::FilterUnmappedStrings).to_owned(),
+        (false, true) => text(language, Text::FilterUnreferencedStrings).to_owned(),
+        (true, true) => format!("{chosen} {}", text(language, Text::CriteriaChosen)),
+    };
+
+    egui::ComboBox::from_id_salt("strings_criteria")
+        .selected_text(summary)
+        .width(220.0)
+        .show_ui(ui, |ui| {
+            // Checkboxes rather than entries that pick one: these narrow the
+            // list together, and a drop-down that closed on the first click
+            // would make the second criterion a second visit.
+            ui.checkbox(hide_unmapped, text(language, Text::FilterUnmappedStrings));
+            ui.small(text(language, Text::FilterUnmappedHelp));
+            ui.add_space(4.0);
+            ui.checkbox(
+                hide_unreferenced,
+                text(language, Text::FilterUnreferencedStrings),
+            );
+            ui.small(text(language, Text::FilterUnreferencedHelp));
+        })
+        .response
+        .on_hover_text(text(language, Text::FilterCriteriaHelp));
+}
+
 struct StringMatch<'a> {
     string: &'a ExtractedString,
     unmapped: bool,
     unreferenced: bool,
-    highlight: bool,
 }
 
+/// The strings a reader has asked to see.
+///
+/// The criteria hide the noise rather than isolate it. A binary's string table
+/// is mostly padding, format fragments and dead constants; what a reader is
+/// after is the handful the code actually reaches. So each criterion drops the
+/// strings that fail it — an unmapped string is never loaded, an unreferenced
+/// one is never pointed at — and what is left is what the program uses. What
+/// is hidden is never hidden silently, since the header says how many of the
+/// total are shown.
 fn matching<'a>(
     analysis: &'a Analysis,
+    references: &CodeReferences,
     filter: &str,
-    highlight_unmapped: bool,
-    highlight_unreferenced: bool,
+    hide_unmapped: bool,
+    hide_unreferenced: bool,
 ) -> Vec<StringMatch<'a>> {
     let needle = filter.to_lowercase();
-    // Resolve decoded operands once, not once per string: a stripped binary can
-    // contain twenty thousand strings, while its instructions often outnumber
-    // them by an order of magnitude.
-    let referenced = direct_reference_addresses(analysis);
 
     analysis
         .strings
@@ -158,25 +224,72 @@ fn matching<'a>(
         .filter(|string| filter.is_empty() || string.value.to_lowercase().contains(&needle))
         .map(|string| {
             let address = string_address(analysis, string);
-            let unmapped = address.is_none();
-            let unreferenced = !address.is_some_and(|address| referenced.contains(&address));
             StringMatch {
                 string,
-                unmapped,
-                unreferenced,
-                highlight: (highlight_unmapped && unmapped)
-                    || (highlight_unreferenced && unreferenced),
+                unmapped: address.is_none(),
+                unreferenced: !address.is_some_and(|address| references.any(address)),
             }
         })
+        // Several criteria narrow together: each one is a condition the string
+        // has to meet, not another list added to the first.
+        .filter(|item| !hide_unmapped || !item.unmapped)
+        .filter(|item| !hide_unreferenced || !item.unreferenced)
         .collect()
 }
 
-fn direct_reference_addresses(analysis: &Analysis) -> BTreeSet<u64> {
-    analysis
-        .instructions
-        .iter()
-        .flat_map(instruction_addresses)
-        .collect()
+/// Where the decoded code points, resolved once when a binary is opened.
+///
+/// Every row of the listing asks whether anything refers to its string, and
+/// the answer used to be recomputed from scratch on every frame drawn: a pass
+/// over a million instructions, parsing each one's text and allocating a
+/// vector per instruction, sixty times a second. It is one sorted table now,
+/// built once, and both questions the view asks — *is this referenced* and *by
+/// what* — are a binary search into it.
+///
+/// Measured on a 1.2-million-instruction binary: a tenth of a second to build,
+/// once, against a millisecond a frame to filter twenty thousand strings
+/// through it.
+#[derive(Debug, Default)]
+pub struct CodeReferences {
+    /// `(target, the instruction naming it)`, sorted by target.
+    entries: Vec<(u64, u64)>,
+}
+
+impl CodeReferences {
+    #[must_use]
+    pub fn of(analysis: &Analysis) -> Self {
+        let mut entries: Vec<(u64, u64)> = analysis
+            .instructions
+            .iter()
+            .flat_map(|instruction| {
+                instruction_addresses(instruction)
+                    .into_iter()
+                    .map(|target| (target, instruction.address))
+            })
+            .collect();
+        entries.sort_unstable();
+        entries.dedup();
+        entries.shrink_to_fit();
+        Self { entries }
+    }
+
+    /// The entries naming `target`, as one contiguous run of the table.
+    fn span(&self, target: u64) -> &[(u64, u64)] {
+        let start = self.entries.partition_point(|(at, _)| *at < target);
+        let end = self.entries.partition_point(|(at, _)| *at <= target);
+        &self.entries[start..end]
+    }
+
+    /// Whether any decoded instruction names this address.
+    #[must_use]
+    pub fn any(&self, target: u64) -> bool {
+        !self.span(target).is_empty()
+    }
+
+    /// The instructions that name it, by address and in listing order.
+    pub fn instructions(&self, target: u64) -> impl Iterator<Item = u64> + '_ {
+        self.span(target).iter().map(|(_, address)| *address)
+    }
 }
 
 fn row(ui: &mut egui::Ui, item: &StringMatch<'_>, selected: bool, language: Language) -> bool {
@@ -201,19 +314,16 @@ fn row(ui: &mut egui::Ui, item: &StringMatch<'_>, selected: bool, language: Lang
             .sense(egui::Sense::click()),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    if item.highlight || response.hovered() {
-        let color = item
-            .highlight
-            .then_some(ERROR)
-            .unwrap_or(egui::Color32::from_rgb(241, 169, 75));
+    if response.hovered() {
         ui.painter().rect_stroke(
             response.rect.expand(1.0),
             2.0,
-            egui::Stroke::new(0.5_f32, color),
+            egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(241, 169, 75)),
             egui::StrokeKind::Outside,
         );
-    }
-    if response.hovered() && item.highlight {
+        // What is odd about a string is said on the string itself, whether or
+        // not a criterion is filtering on it: a reader hovering a line should
+        // not have to switch a filter on to be told why it stands out.
         let mut reasons = Vec::new();
         if item.unmapped {
             reasons.push(text(language, Text::StringAddressUnavailable));
@@ -221,22 +331,47 @@ fn row(ui: &mut egui::Ui, item: &StringMatch<'_>, selected: bool, language: Lang
         if item.unreferenced {
             reasons.push(text(language, Text::NoStringReferences));
         }
-        response.clone().on_hover_text(reasons.join("\n"));
+        if !reasons.is_empty() {
+            response.clone().on_hover_text(reasons.join("\n"));
+        }
     }
     response.clicked()
 }
 
-fn references(
+/// Tallest the references card grows before it scrolls inside itself.
+const REFERENCES_HEIGHT: f32 = 180.0;
+
+/// The instructions that name the selected string, and the way to each.
+///
+/// Returns an address the reader asked to have on the clipboard.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the card reaches the disassembly, which needs its selection and its scrolling"
+)]
+fn reference_card(
     ui: &mut egui::Ui,
     analysis: &Analysis,
+    references: &CodeReferences,
     string: &ExtractedString,
     selected_instruction: &mut Option<u64>,
     pending_instruction_scroll: &mut Option<u64>,
     instruction_attention: &mut Option<(u64, f64)>,
     active_view: &mut WorkspaceView,
     language: Language,
-) {
-    card(ui, text(language, Text::StringReferences), |ui| {
+) -> Option<String> {
+    let mut copy = None;
+    let mut jump = None;
+
+    let count = string_address(analysis, string)
+        .map(|address| direct_references(analysis, references, address).len())
+        .unwrap_or_default();
+    let title = if count > 0 {
+        format!("{} ({count})", text(language, Text::StringReferences))
+    } else {
+        text(language, Text::StringReferences).to_owned()
+    };
+
+    card(ui, &title, |ui| {
         ui.monospace(&string.value);
         let Some(address) = string_address(analysis, string) else {
             ui.small(text(language, Text::StringAddressUnavailable));
@@ -244,30 +379,113 @@ fn references(
         };
         ui.small(format!("{address:#018x}"));
 
-        let references = direct_references(analysis, address);
-        if references.is_empty() {
+        let found = direct_references(analysis, references, address);
+        if found.is_empty() {
             ui.small(text(language, Text::NoStringReferences));
             return;
         }
-        for instruction in references {
-            ui.horizontal(|ui| {
-                ui.monospace(format!(
-                    "{:#018x}  {}",
-                    instruction.address, instruction.text
-                ));
-                if ui.button(text(language, Text::GoToDisassembly)).clicked() {
-                    *selected_instruction = Some(instruction.address);
-                    *pending_instruction_scroll = Some(instruction.address);
-                    *instruction_attention = Some((
-                        instruction.address,
-                        ui.ctx().input(|input| input.time) + 3.0,
-                    ));
-                    *active_view = WorkspaceView::Disassembly;
-                    ui.ctx().request_repaint();
+        // What the rows answer to is said once, above them: a listing whose
+        // every line reacts to a click and a right-click, and says so nowhere,
+        // is a listing nobody clicks.
+        ui.small(egui::RichText::new(text(language, Text::ReferenceHelp)).color(MUTED));
+        ui.add_space(4.0);
+
+        // Bounded: a string reached from forty places filled the window with
+        // this card and pushed the listing it belongs to off the bottom.
+        egui::ScrollArea::vertical()
+            .id_salt("string_references")
+            .max_height(REFERENCES_HEIGHT)
+            .show(ui, |ui| {
+                for instruction in found {
+                    let (row, button) = reference_row(ui, instruction, language);
+                    if row.clicked() || button {
+                        jump = Some(instruction.address);
+                    }
+                    // The right button carries the same jump and what a
+                    // listing of addresses otherwise makes the reader retype
+                    // by hand.
+                    row.context_menu(|ui| {
+                        if ui.button(text(language, Text::GoToDisassembly)).clicked() {
+                            jump = Some(instruction.address);
+                            ui.close_menu();
+                        }
+                        if ui.button(text(language, Text::CopyAddress)).clicked() {
+                            copy = Some(format!("{:#018x}", instruction.address));
+                            ui.close_menu();
+                        }
+                    });
                 }
             });
-        }
     });
+
+    if let Some(address) = jump {
+        *selected_instruction = Some(address);
+        *pending_instruction_scroll = Some(address);
+        *instruction_attention = Some((address, ui.ctx().input(|input| input.time) + 3.0));
+        *active_view = WorkspaceView::Disassembly;
+        ui.ctx().request_repaint();
+    }
+    copy
+}
+
+/// One reference: where it is, in which section, what it does, and the button
+/// that opens it.
+///
+/// Three ways to the same place, on purpose. The button is the one a reader
+/// sees without being told, the whole row answers a click because a line of a
+/// listing that leads somewhere should, and the right button carries what a
+/// menu can hold and a row cannot — the address, for the tool they will paste
+/// it into next. Returns the row and whether the button was pressed.
+fn reference_row(
+    ui: &mut egui::Ui,
+    instruction: &Instruction,
+    language: Language,
+) -> (egui::Response, bool) {
+    let mut pressed = false;
+    let row = ui
+        .horizontal(|ui| {
+            let address = ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!("{:#018x}", instruction.address)).monospace(),
+                )
+                .selectable(false),
+            );
+            let section = ui.add(
+                egui::Label::new(
+                    egui::RichText::new(instruction.section.as_ref())
+                        .small()
+                        .color(MUTED),
+                )
+                .selectable(false),
+            );
+            let body = ui.add(
+                egui::Label::new(egui::RichText::new(&instruction.text).monospace())
+                    .selectable(false),
+            );
+            pressed = ui
+                .small_button(text(language, Text::GoToDisassembly))
+                .clicked();
+            address.union(section).union(body)
+        })
+        .inner
+        // Sensed on the union of the row's text rather than on one label, so a
+        // click anywhere along the line answers — but not on the button, which
+        // would then count twice.
+        .interact(egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    if row.hovered() {
+        ui.painter().rect_stroke(
+            row.rect.expand(2.0),
+            2.0,
+            egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(241, 169, 75)),
+            egui::StrokeKind::Outside,
+        );
+    }
+    (
+        row.on_hover_text(text(language, Text::GoToDisassembly)),
+        pressed,
+    )
 }
 
 /// Translates a file offset from the string extractor to its memory address.
@@ -284,24 +502,55 @@ fn string_address(analysis: &Analysis, string: &ExtractedString) -> Option<u64> 
     })
 }
 
-/// Finds direct and RIP-relative operands in the decoded x86 text. Indirect
-/// references need full instruction-semantic analysis and are left out rather
-/// than reported as false positives.
-fn direct_references<'a>(analysis: &'a Analysis, address: u64) -> Vec<&'a Instruction> {
-    analysis
-        .instructions
-        .iter()
-        .filter(|instruction| instruction_addresses(instruction).contains(&address))
+/// The instructions naming an address, read out of the index rather than by
+/// scanning the listing again.
+///
+/// Only direct and `%rip`-relative operands are in the index: an indirect
+/// reference needs full instruction-semantic analysis, and is left out rather
+/// than reported as a false positive.
+fn direct_references<'a>(
+    analysis: &'a Analysis,
+    references: &CodeReferences,
+    address: u64,
+) -> Vec<&'a Instruction> {
+    references
+        .instructions(address)
+        .filter_map(|at| analysis.instruction_at(at))
         .collect()
 }
 
+/// The addresses an instruction names outright.
+///
+/// Only an operand that *is* an address counts. A displacement written against
+/// a base register — `0x474(%rsp)`, `[x1, #0x10]` — is an offset into whatever
+/// that register happens to hold when the program runs, and reading it as an
+/// address made a four-letter string in `.rodata` look as though thirty
+/// instructions referred to it, none of which did. A bracket anywhere in an
+/// operand is what marks one — the comma this splits on cuts `[x1, #0x474]` in
+/// two, so both halves have to be recognised. The same goes for a jump through
+/// a table, `*0x129f388`: the number is where the pointer lives, not where it
+/// points.
 fn instruction_addresses(instruction: &Instruction) -> Vec<u64> {
     if let Some(target) = rip_relative_target(instruction) {
         return vec![target];
     }
 
-    instruction
+    let operands = instruction
         .text
+        .split_once(char::is_whitespace)
+        .map_or("", |(_, rest)| rest);
+    operands
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.contains(['(', ')', '[', ']', '*']))
+        .flat_map(hexadecimals)
+        .collect()
+}
+
+/// Every hexadecimal number in one operand, in either notation the formatters
+/// use: `0x1000` and `1000h`.
+fn hexadecimals(operand: &str) -> Vec<u64> {
+    operand
         .split(|character: char| {
             !character.is_ascii_hexdigit() && !matches!(character, 'x' | 'X' | 'h' | 'H')
         })
@@ -410,39 +659,57 @@ mod tests {
         }
     }
 
+    /// Each criterion hides what fails it, and several hide together. This is
+    /// the direction that makes the view useful: a string table is mostly
+    /// noise, and the reader is after the few strings the code actually
+    /// reaches — not after the noise on its own.
     #[test]
-    fn filters_highlight_their_matches_without_hiding_any_string() {
+    fn each_criterion_hides_what_fails_it_and_they_hide_together() {
         let analysis = analysis_for_filters();
-        let status = |unmapped, unreferenced| {
-            matching(&analysis, "", unmapped, unreferenced)
+        let references = CodeReferences::of(&analysis);
+        let shown = |hide_unmapped, hide_unreferenced| {
+            matching(&analysis, &references, "", hide_unmapped, hide_unreferenced)
                 .into_iter()
-                .map(|item| (item.string.value.as_str(), item.highlight))
+                .map(|item| item.string.value.clone())
                 .collect::<Vec<_>>()
         };
 
         assert_eq!(
-            status(false, false),
-            [
-                ("referenced", false),
-                ("unreferenced", false),
-                ("not mapped", false)
-            ]
+            shown(false, false),
+            ["referenced", "unreferenced", "not mapped"],
+            "with no criterion, every string is shown"
         );
         assert_eq!(
-            status(true, false),
-            [
-                ("referenced", false),
-                ("unreferenced", false),
-                ("not mapped", true)
-            ]
+            shown(true, false),
+            ["referenced", "unreferenced"],
+            "hiding the unmapped drops the one outside every mapped section"
         );
         assert_eq!(
-            status(false, true),
-            [
-                ("referenced", false),
-                ("unreferenced", true),
-                ("not mapped", true)
-            ]
+            shown(false, true),
+            ["referenced"],
+            "hiding the unreferenced drops everything no instruction points at"
+        );
+        assert_eq!(
+            shown(true, true),
+            ["referenced"],
+            "both at once leave only what is both loaded and pointed at"
+        );
+    }
+
+    /// The text filter and the criteria narrow together too.
+    #[test]
+    fn the_text_filter_applies_alongside_the_criteria() {
+        let analysis = analysis_for_filters();
+        let references = CodeReferences::of(&analysis);
+        let shown: Vec<String> = matching(&analysis, &references, "referenc", false, true)
+            .into_iter()
+            .map(|item| item.string.value.clone())
+            .collect();
+
+        assert_eq!(
+            shown,
+            ["referenced"],
+            "the text matches two strings; the criterion drops the unreferenced one"
         );
     }
 
@@ -456,6 +723,36 @@ mod tests {
         };
 
         assert_eq!(instruction_addresses(&instruction), [0x402000]);
+    }
+
+    /// A number written against a base register is an offset into whatever
+    /// that register holds at run time. Reading it as an address made a
+    /// four-letter string look as though thirty instructions named it.
+    #[test]
+    fn a_displacement_against_a_register_is_not_a_reference() {
+        let displacement = Instruction {
+            address: 0x0040_1000,
+            bytes: desdec_core::InstructionBytes::new(&[0x89, 0x84, 0x24]).expect("short"),
+            text: "mov %eax,0x474(%rsp)".to_owned(),
+            section: std::sync::Arc::from(".text"),
+        };
+        assert_eq!(instruction_addresses(&displacement), [] as [u64; 0]);
+
+        let through_a_table = Instruction {
+            address: 0x0040_1000,
+            bytes: desdec_core::InstructionBytes::new(&[0xff, 0x25]).expect("short"),
+            text: "jmpq *0x129f388".to_owned(),
+            section: std::sync::Arc::from(".text"),
+        };
+        assert_eq!(instruction_addresses(&through_a_table), [] as [u64; 0]);
+
+        let arm64 = Instruction {
+            address: 0x0040_1000,
+            bytes: desdec_core::InstructionBytes::new(&[0x00, 0x00, 0x40, 0xf9]).expect("short"),
+            text: "ldr x0, [x1, #0x474]".to_owned(),
+            section: std::sync::Arc::from(".text"),
+        };
+        assert_eq!(instruction_addresses(&arm64), [] as [u64; 0]);
     }
 
     #[test]

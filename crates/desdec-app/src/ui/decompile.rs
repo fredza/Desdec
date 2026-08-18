@@ -10,15 +10,33 @@ use std::time::Duration;
 /// chosen in the preferences.
 pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
     if app.preferences.decompiler.engine().is_some() {
-        external(app, ui);
+        // An engine that is not installed, or that failed, leaves the view
+        // with nothing in it. The built-in translation depends on nothing and
+        // always answers, so it stands in rather than the reader being shown
+        // an error where the pseudo-code should be.
+        let answered = external(app, ui);
+        if !answered {
+            ui.add_space(12.0);
+            builtin(app, ui);
+        }
         show_assembly_preview(app, ui.ctx());
         return;
     }
+    builtin(app, ui);
+    show_assembly_preview(app, ui.ctx());
+}
+
+/// The translation this tool makes itself, from the flow it decoded.
+fn builtin(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let language = app.preferences.language;
     let Some(analysis) = &app.analysis else {
         return;
     };
     card(ui, text(language, Text::PseudoCode), |ui| {
+        if app.preferences.decompiler.engine().is_some() {
+            ui.small(egui::RichText::new(text(language, Text::BuiltinFallbackNote)).color(MUTED));
+            ui.add_space(4.0);
+        }
         ui.small(text(language, Text::PseudoCodeHelp));
         if analysis.instructions.is_empty() {
             ui.label(egui::RichText::new(text(language, Text::NoDisassembly)).color(MUTED));
@@ -41,14 +59,18 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
             app.pending_instruction_scroll = None;
         }
     });
-    show_assembly_preview(app, ui.ctx());
 }
 
 /// Output of an external decompiler, started on demand.
 ///
 /// The engine is named next to its text: two decompilers disagree often
-/// enough that reading one without knowing which would be misleading.
-fn external(app: &mut DesdecApp, ui: &mut egui::Ui) {
+/// enough that reading one without knowing which would be misleading. The
+/// card is named for the engine too — it used to be titled "local
+/// pseudo-code" while saying "produced by `RetDec`" underneath, which is a
+/// contradiction on the face of it.
+///
+/// Returns whether it actually put pseudo-code on screen.
+fn external(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
     let language = app.preferences.language;
     let engine = app.preferences.decompiler.engine();
     let title = engine.map_or_else(|| String::from("—"), |engine| engine.label().to_owned());
@@ -63,7 +85,10 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) {
     }
     app.request_decompilation(ui.ctx(), app.selected_function);
 
-    card(ui, text(language, Text::PseudoCode), |ui| {
+    let mut answered = false;
+    let mut fall_back = false;
+    let mut show_path = false;
+    card(ui, text(language, Text::ExternalPseudoCode), |ui| {
         ui.horizontal(|ui| {
             ui.small(text(language, Text::DecompiledBy));
             ui.small(egui::RichText::new(&title).strong());
@@ -95,6 +120,9 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 ui.spinner();
                 ui.label(text(language, Text::Decompiling));
             });
+            // Nothing is missing while it is still working: an answer is on
+            // its way, and standing in for it would put two texts on screen.
+            answered = true;
             return;
         }
         if let Some(error) = &app.external.error {
@@ -102,11 +130,23 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 ERROR,
                 format!("{} {error}", text(language, Text::DecompilerFailed)),
             );
+            ui.add_space(6.0);
+            // Both ways out, next to what went wrong: an engine that cannot be
+            // found is a preference to change, not a state to be stuck in —
+            // and it is as often installed somewhere the PATH does not reach
+            // as it is not installed at all.
+            ui.horizontal(|ui| {
+                fall_back = ui
+                    .button(text(language, Text::UseBuiltinDecompiler))
+                    .clicked();
+                show_path = ui.button(text(language, Text::ShowEnginePath)).clicked();
+            });
             return;
         }
         let Some(decompiled) = &app.external.text else {
             return;
         };
+        answered = true;
         // Only the visible rows are laid out: a large function decompiles to
         // thousands of lines, and building a widget for every one of them cost
         // more each frame than the decompilation itself.
@@ -121,6 +161,18 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 }
             });
     });
+
+    if fall_back {
+        app.run_command(ui.ctx(), crate::commands::Command::DecompilerBuiltin);
+        return true;
+    }
+    if show_path {
+        // Straight to the field that answers it, rather than "it is in the
+        // preferences somewhere".
+        app.preferences_tab = crate::ui::preferences_window::PreferencesTab::Decompiler;
+        app.dialogs.open(crate::app::Dialog::Preferences);
+    }
+    answered
 }
 
 /// Functions the engine can be pointed at: named, defined here, with an
@@ -559,8 +611,69 @@ fn unknown(asm: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        app::WorkspaceView,
+        i18n::{Language, Text, text},
+        preferences::DecompilerPreference,
+        testing::{drawn_text, window_input},
+        ui::views,
+    };
+    use eframe::egui;
+
+    /// A card titled "local pseudocode" that says "produced by `RetDec`"
+    /// underneath contradicts itself on the face of it.
+    #[test]
+    fn the_external_card_is_not_named_after_the_built_in_one() {
+        let ctx = egui::Context::default();
+        let mut app = crate::testing::opened_app(WorkspaceView::Decompile);
+        app.preferences.language = Language::French;
+        app.preferences.decompiler = DecompilerPreference::RetDec;
+        app.external.error = Some("not installed".to_owned());
+
+        let output = ctx.run(window_input(), |ctx| {
+            views::show_central_panel(&mut app, ctx);
+        });
+
+        let drawn = drawn_text(&output.shapes);
+        assert!(
+            drawn.contains(text(Language::French, Text::ExternalPseudoCode)),
+            "the external output must be named for what produced it"
+        );
+    }
+
+    /// An engine that is not installed used to leave the view with nothing but
+    /// an error where the pseudo-code should be. The built-in translation
+    /// depends on nothing, so it stands in.
+    #[test]
+    fn a_failed_engine_falls_back_to_the_translation_that_always_answers() {
+        let ctx = egui::Context::default();
+        let mut app = crate::testing::opened_app(WorkspaceView::Decompile);
+        app.preferences.language = Language::French;
+        app.preferences.decompiler = DecompilerPreference::RetDec;
+        app.external.error = Some("Ce décompilateur n’est pas installé.".to_owned());
+
+        let output = ctx.run(window_input(), |ctx| {
+            views::show_central_panel(&mut app, ctx);
+        });
+
+        let drawn = drawn_text(&output.shapes);
+        assert!(
+            drawn.contains(text(Language::French, Text::BuiltinFallbackNote)),
+            "the reader must be told why the built-in translation is there"
+        );
+        assert!(
+            drawn.contains(text(Language::French, Text::UseBuiltinDecompiler)),
+            "and offered the way out of a decompiler that cannot be found"
+        );
+        assert!(
+            drawn.contains(text(Language::French, Text::ShowEnginePath)),
+            "an engine installed off the PATH needs its path given, not a \
+             suggestion to install what is already there"
+        );
+    }
+
     use super::*;
-    use crate::testing::{opened_app, reference_analysis};
+    use crate::testing::reference_analysis;
 
     /// First decoded instruction of the reference binary.
     fn first_address() -> u64 {
@@ -622,7 +735,7 @@ mod tests {
         let address = first_address();
 
         let ctx = egui::Context::default();
-        let mut app = opened_app(WorkspaceView::Decompile);
+        let mut app = crate::testing::opened_app(WorkspaceView::Decompile);
         app.pseudocode_assembly = Some(PseudocodeAssembly::Instruction(address));
         app.dialogs.open(Dialog::Assembly);
 

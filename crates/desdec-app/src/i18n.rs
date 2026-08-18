@@ -10,6 +10,20 @@ pub enum Language {
 
 impl Language {
     pub const ALL: &[Self] = &[Self::French, Self::English, Self::Spanish];
+
+    /// The language named in itself, for a reader that is not this interface.
+    ///
+    /// The assistant is told which language to answer in, and it is told in
+    /// that language: "French" and "français" are not equally clear
+    /// instructions to a model being asked to write French.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::French => "français",
+            Self::English => "English",
+            Self::Spanish => "español",
+        }
+    }
 }
 
 /// Declares every visible string once, with its three translations.
@@ -70,6 +84,16 @@ translations! {
     ],
     StatusWorking => ["Analyse en cours…", "Analysing…", "Analizando…"],
     CancelAnalysis => ["Arrêter l’analyse", "Stop analysis", "Detener el análisis"],
+    CancelChoosing => [
+        "Abandonner l’ouverture",
+        "Give up opening",
+        "Abandonar la apertura",
+    ],
+    CancelOpening => [
+        "Abandonner l’ouverture en cours",
+        "Give up the opening under way",
+        "Abandonar la apertura en curso",
+    ],
     StatusChoosing => [
         "Sélection d’un fichier…",
         "Choosing a file…",
@@ -83,7 +107,141 @@ translations! {
     Disassembly => ["Désassemblage", "Disassembly", "Desensamblado"],
     Decompile => ["Décompiler", "Decompile", "Decompilar"],
     AiAssistance => ["Assistance IA", "AI assistance", "Asistencia de IA"],
-    AiAssistanceUnavailable => ["Bientôt disponible : choisissez alors un fournisseur IA dans les préférences.", "Coming soon: choose an AI provider in preferences then.", "Próximamente: elija entonces un proveedor de IA en preferencias."],
+    AiAssistanceIntro => [
+        "Un modèle relit le désassemblage déjà décodé. Sa réponse est une lecture proposée, jamais un fait établi : vérifiez-la contre le listing.",
+        "A model reads back the disassembly Desdec decoded. Its answer is a proposed reading, never an established fact: check it against the listing.",
+        "Un modelo relee el desensamblado ya decodificado. Su respuesta es una lectura propuesta, nunca un hecho: verifíquela con el listado.",
+    ],
+    ProposedReading => [
+        "Lecture proposée — à vérifier dans le listing",
+        "Proposed reading — check it against the listing",
+        "Lectura propuesta — verifíquela en el listado",
+    ],
+    AnsweredBy => ["Répondu par", "Answered by", "Respondido por"],
+    CopiedToClipboard => [
+        "Copié dans le presse-papiers",
+        "Copied to the clipboard",
+        "Copiado al portapapeles",
+    ],
+    CopyFullPath => [
+        "Cliquer pour copier le chemin complet",
+        "Click to copy the full path",
+        "Clic para copiar la ruta completa",
+    ],
+    AssistantTruncated => [
+        "Réponse interrompue à la limite de jetons : la fin manque. Posez une question plus étroite.",
+        "The answer stopped at the token limit: the end is missing. Ask a narrower question.",
+        "La respuesta se detuvo en el límite de tokens: falta el final. Haga una pregunta más concreta.",
+    ],
+    AskAboutBinary => ["Pistes d’analyse", "Where to start", "Por dónde empezar"],
+    AskAboutFunction => ["Expliquer la fonction", "Explain the function", "Explicar la función"],
+    AskAboutInstruction => [
+        "Expliquer l’instruction",
+        "Explain the instruction",
+        "Explicar la instrucción",
+    ],
+    Asking => ["Interrogation du modèle…", "Asking the model…", "Consultando al modelo…"],
+    NothingAskedYet => [
+        "Choisissez une question ci-dessus.",
+        "Pick a question above.",
+        "Elija una pregunta arriba.",
+    ],
+    ShowWhatIsSent => ["Voir ce qui est envoyé", "Show what is sent", "Ver lo que se envía"],
+    SelectFunctionFirst => [
+        "Sélectionnez d’abord une fonction dans la vue Fonctions.",
+        "Select a function in the Functions view first.",
+        "Seleccione antes una función en la vista Funciones.",
+    ],
+    SelectInstructionFirst => [
+        "Sélectionnez d’abord une instruction dans le désassemblage.",
+        "Select an instruction in the disassembly first.",
+        "Seleccione antes una instrucción en el desensamblado.",
+    ],
+    AssistantLeavesMachine => [
+        "Ce fournisseur envoie les faits extraits — instructions, symboles, chaînes — à un service distant. Le fichier lui-même ne part jamais.",
+        "This provider sends the extracted facts — instructions, symbols, strings — to a remote service. The file itself never leaves.",
+        "Este proveedor envía los datos extraídos — instrucciones, símbolos, cadenas — a un servicio remoto. El archivo nunca sale.",
+    ],
+    AssistantStaysLocal => [
+        "Ce modèle tourne sur cette machine : rien ne part sur le réseau.",
+        "This model runs on this machine: nothing goes over the network.",
+        "Este modelo se ejecuta en esta máquina: nada sale a la red.",
+    ],
+    AssistantNotConfigured => [
+        "Aucun assistant configuré. Choisissez un fournisseur dans Préférences → Assistance IA.",
+        "No assistant is configured. Choose a provider in Preferences → AI assistance.",
+        "No hay asistente configurado. Elija un proveedor en Preferencias → Asistencia de IA.",
+    ],
+    AssistantNoKey => [
+        "Aucune clé API : définissez ANTHROPIC_API_KEY, ou indiquez un fichier de clé dans les préférences.",
+        "No API key: set ANTHROPIC_API_KEY, or name a key file in the preferences.",
+        "Sin clave API: defina ANTHROPIC_API_KEY o indique un archivo de clave en las preferencias.",
+    ],
+    AssistantUnreachable => [
+        "Fournisseur injoignable :",
+        "The provider could not be reached:",
+        "No se pudo contactar al proveedor:",
+    ],
+    AssistantRejected => ["Requête refusée :", "The request was rejected:", "Solicitud rechazada:"],
+    AssistantTimedOut => [
+        "Le fournisseur n’a pas répondu dans le délai imparti. Essayez une question plus petite.",
+        "The provider did not answer in time. Try a smaller question.",
+        "El proveedor no respondió a tiempo. Pruebe una pregunta más pequeña.",
+    ],
+    AssistantDeclined => [
+        "Le modèle a décliné cette question.",
+        "The model declined this question.",
+        "El modelo declinó esta pregunta.",
+    ],
+    AssistantUnreadable => [
+        "Réponse illisible :",
+        "The answer could not be read:",
+        "No se pudo leer la respuesta:",
+    ],
+    ClearFilter => ["Effacer le filtre", "Clear filter", "Borrar el filtro"],
+    AllStrings => ["Toutes les chaînes", "All strings", "Todas las cadenas"],
+    CriteriaChosen => ["critères", "criteria", "criterios"],
+    FilterCriteriaHelp => [
+        "Restreindre la liste ; plusieurs critères se cumulent.",
+        "Narrow the list; several criteria apply together.",
+        "Restringir la lista; varios criterios se aplican juntos.",
+    ],
+    FilterUnmappedHelp => [
+        "Ne garde que les chaînes situées dans une section chargée en mémoire.",
+        "Keeps only strings inside a section the loader maps.",
+        "Conserva solo las cadenas dentro de una sección que el cargador mapea.",
+    ],
+    FilterUnreferencedHelp => [
+        "Ne garde que les chaînes qu’une instruction décodée désigne directement.",
+        "Keeps only strings a decoded instruction points at directly.",
+        "Conserva solo las cadenas a las que apunta directamente una instrucción decodificada.",
+    ],
+    AssistantProvider => ["Fournisseur", "Provider", "Proveedor"],
+    NoAssistant => ["Aucun (désactivé)", "None (off)", "Ninguno (desactivado)"],
+    LocalModel => [
+        "Modèle local (Ollama)",
+        "Local model (Ollama)",
+        "Modelo local (Ollama)",
+    ],
+    ClaudeApi => [
+        "API Claude (Anthropic) — réseau",
+        "Claude API (Anthropic) — network",
+        "API Claude (Anthropic) — red",
+    ],
+    CheckProvider => ["Vérifier", "Check", "Comprobar"],
+    AssistantModel => ["Modèle", "Model", "Modelo"],
+    AssistantModelHint => [
+        "Laisser vide pour le modèle par défaut",
+        "Leave empty for the default model",
+        "Dejar vacío para el modelo predeterminado",
+    ],
+    OllamaUrl => ["Adresse du serveur", "Server address", "Dirección del servidor"],
+    ApiKeyFile => ["Fichier de clé API", "API key file", "Archivo de clave API"],
+    ApiKeyFileHint => [
+        "ANTHROPIC_API_KEY est lue en premier ; la clé n’est jamais écrite dans les préférences.",
+        "ANTHROPIC_API_KEY is read first; the key is never written to the preferences.",
+        "ANTHROPIC_API_KEY se lee primero; la clave nunca se escribe en las preferencias.",
+    ],
     Patches => ["Correctifs", "Patches", "Parches"],
     Yara => ["YARA", "YARA", "YARA"],
     EnableYara => ["Activer le module YARA", "Enable the YARA module", "Activar el módulo YARA"],
@@ -124,6 +282,12 @@ translations! {
         "Licensed under Apache-2.0 or MIT, at your option.",
         "Bajo licencia Apache-2.0 o MIT, a su elección.",
     ],
+    SignedBy => ["Versions signées par", "Releases signed by", "Versiones firmadas por"],
+    SigningKeyHint => [
+        "Empreinte de la clef publique qui signe les versions publiées. Elle accompagne chaque release, avec les signatures détachées de chaque archive.",
+        "Fingerprint of the public key the published releases are signed with. It travels with every release, alongside the detached signature of each archive.",
+        "Huella de la clave pública con la que se firman las versiones publicadas. Acompaña a cada versión, junto a la firma separada de cada archivo.",
+    ],
     LegalNotice => [
         "Utilisez uniquement des binaires que vous pouvez légalement analyser.",
         "Only analyse binaries that you are legally allowed to inspect.",
@@ -134,11 +298,6 @@ translations! {
     Format => ["Format", "Format", "Formato"],
     Architecture => ["Architecture", "Architecture", "Arquitectura"],
     Size => ["Taille", "Size", "Tamaño"],
-    OpenFirst => [
-        "Ouvrez d’abord un binaire afin d’utiliser cette vue.",
-        "Open a binary before using this view.",
-        "Abra un binario antes de utilizar esta vista.",
-    ],
     ComingSoon => ["en préparation", "coming soon", "en preparación"],
     Decompiler => ["Décompilateur", "Decompiler", "Decompilador"],
     BuiltinDecompiler => [
@@ -167,9 +326,14 @@ translations! {
         "Dejar vacío para buscar en el PATH",
     ],
     EngineUnavailable => [
-        "Ce décompilateur n’est pas installé. Installation :",
-        "This decompiler is not installed. Install with:",
-        "Este decompilador no está instalado. Instalación:",
+        "Ce décompilateur est introuvable : rien de ce nom dans le PATH, et aucun chemin n’est indiqué pour lui dans les préférences. S’il est déjà installé ailleurs, donnez son chemin ; sinon, installation :",
+        "This decompiler cannot be found: nothing of that name on the PATH, and no path is given for it in the preferences. If it is already installed elsewhere, give its path; otherwise, install with:",
+        "No se encuentra este decompilador: nada con ese nombre en el PATH, y no hay ninguna ruta indicada para él en las preferencias. Si ya está instalado en otro sitio, indique su ruta; si no, instalación:",
+    ],
+    ShowEnginePath => [
+        "Indiquer où il est installé",
+        "Say where it is installed",
+        "Indicar dónde está instalado",
     ],
     Function => ["Fonction", "Function", "Función"],
     StrippedEntryPoint => [
@@ -311,6 +475,12 @@ translations! {
         "Alternar información sobre herramientas",
     ],
     Modify => ["Modifier", "Change", "Cambiar"],
+    RemoveShortcut => ["Retirer", "Remove", "Quitar"],
+    RemoveShortcutHint => [
+        "Laisse la commande sans raccourci ; elle reste dans la palette.",
+        "Leaves the command with no shortcut; it stays in the palette.",
+        "Deja el comando sin atajo; sigue en la paleta.",
+    ],
     ResetDefaults => [
         "Rétablir les raccourcis par défaut",
         "Restore default shortcuts",
@@ -328,6 +498,21 @@ translations! {
     Blocks => ["Blocs", "Blocks", "Bloques"],
     ControlFlow => ["Flot de contrôle", "Control flow", "Flujo de control"],
     PseudoCode => ["Pseudo-code local", "Local pseudocode", "Pseudocódigo local"],
+    ExternalPseudoCode => [
+        "Pseudo-code externe",
+        "External pseudocode",
+        "Pseudocódigo externo",
+    ],
+    UseBuiltinDecompiler => [
+        "Revenir au décompilateur intégré",
+        "Fall back to the built-in decompiler",
+        "Volver al decompilador integrado",
+    ],
+    BuiltinFallbackNote => [
+        "Le moteur choisi n’a rien produit. Voici la traduction intégrée, qui ne dépend d’aucune installation.",
+        "The chosen engine produced nothing. Here is the built-in translation, which depends on nothing being installed.",
+        "El motor elegido no produjo nada. Esta es la traducción integrada, que no depende de ninguna instalación.",
+    ],
     PseudoCodeHelp => [
         "Traduction déterministe du flot observé, sans code source inventé.",
         "Deterministic translation of the observed flow, with no invented source.",
@@ -424,6 +609,13 @@ translations! {
         "The file carries no mark of the language it came from. Stripped binaries often lose that trace; nothing is assumed here.",
         "El archivo no lleva ninguna marca de su lenguaje de origen. Los binarios despojados suelen perder ese rastro; aquí no se supone nada.",
     ],
+    Certainty => ["Certitude", "Certainty", "Certeza"],
+    AlsoTraces => ["porte aussi la trace de", "also carries traces of", "también lleva rastros de"],
+    AlsoTracesHint => [
+        "Un programme Rust, Go ou C++ embarque le moteur d’exécution du C, et un binaire en porte donc la trace sans avoir été écrit dedans. Ce n’est pas une seconde réponse, c’est ce qui a été lié.",
+        "A Rust, Go or C++ program carries the C runtime, so a binary shows its traces without having been written in it. This is not a second answer; it is what was linked in.",
+        "Un programa en Rust, Go o C++ incorpora el motor de ejecución de C, así que un binario lleva su rastro sin haber sido escrito en él. No es una segunda respuesta: es lo que se enlazó.",
+    ],
     EvidenceCertain => ["certain", "certain", "seguro"],
     EvidenceLikely => ["probable", "likely", "probable"],
     EvidencePossible => ["possible", "possible", "posible"],
@@ -468,6 +660,12 @@ translations! {
         "This string is not located in a mapped section.",
         "Esta cadena no está situada en una sección mapeada.",
     ],
+    CopyAddress => ["Copier l’adresse", "Copy the address", "Copiar la dirección"],
+    ReferenceHelp => [
+        "Clic sur une ligne pour l’ouvrir dans le désassemblage ; clic droit pour le reste.",
+        "Click a line to open it in the disassembly; right-click for the rest.",
+        "Haga clic en una línea para abrirla en el desensamblado; con el botón derecho, el resto.",
+    ],
     GoToDisassembly => [
         "Voir dans le désassemblage",
         "Show in disassembly",
@@ -489,8 +687,16 @@ translations! {
         "No se encontró ninguna cadena legible.",
     ],
     FilterStrings => ["Filtrer les chaînes", "Filter strings", "Filtrar cadenas"],
-    FilterUnmappedStrings => ["Non mappées", "Not mapped", "No mapeadas"],
-    FilterUnreferencedStrings => ["Sans référence directe", "No direct reference", "Sin referencia directa"],
+    FilterUnmappedStrings => [
+        "Masquer les non mappées",
+        "Hide unmapped",
+        "Ocultar las no mapeadas",
+    ],
+    FilterUnreferencedStrings => [
+        "Masquer les sans référence",
+        "Hide unreferenced",
+        "Ocultar las sin referencia",
+    ],
     FilterHint => ["Ex. http, .dll, erreur…", "E.g. http, .dll, error…", "Ej. http, .dll, error…"],
     ShownOfTotal => ["affichées sur", "shown of", "mostradas de"],
     TruncatedAnalysis => [
@@ -551,6 +757,51 @@ translations! {
         "Indépendant de la position (PIE)",
         "Position independent (PIE)",
         "Independiente de la posición (PIE)",
+    ],
+    Stack => ["Pile", "Stack", "Pila"],
+    StackHelp => [
+        "Profondeur de la pile avant chaque instruction, comptée depuis le début du cadre en suivant les déplacements du pointeur de pile. Lecture locale : elle ne vaut que tant que rien ne saute au milieu du cadre.",
+        "Stack depth before each instruction, counted from the start of the frame by following the moves of the stack pointer. A local reading: it holds only while nothing jumps into the middle of the frame.",
+        "Profundidad de la pila antes de cada instrucción, contada desde el inicio del marco siguiendo los movimientos del puntero de pila. Lectura local: solo vale mientras nada salte al medio del marco.",
+    ],
+    StackUnknown => [
+        "Le pointeur de pile a été déplacé d’une quantité que le texte ne dit pas ; la profondeur n’est plus connue jusqu’à la fin du cadre.",
+        "The stack pointer was moved by an amount the text does not state; the depth is no longer known until the frame ends.",
+        "El puntero de pila se movió una cantidad que el texto no indica; la profundidad ya no se conoce hasta el final del marco.",
+    ],
+    StackEmpty => [
+        "Rien de connu sur la pile à ce point.",
+        "Nothing known about the stack at this point.",
+        "Nada conocido sobre la pila en este punto.",
+    ],
+    StackFrameNotReached => [
+        "Le début du cadre n’a pas été atteint : ce qui est en dessous n’est pas listé.",
+        "The start of the frame was not reached: what lies below is not listed.",
+        "No se alcanzó el inicio del marco: lo que hay debajo no se lista.",
+    ],
+    StackReturnAddress => ["adresse de retour", "return address", "dirección de retorno"],
+    StackSaved => ["sauvegardé", "saved", "guardado"],
+    StackReserved => ["réservé", "reserved", "reservado"],
+    StackPushed => ["empilé", "pushed", "apilado"],
+    ImportedFunctions => [
+        "Fonctions importées",
+        "Imported functions",
+        "Funciones importadas",
+    ],
+    ImportsTruncated => [
+        "La liste est tronquée : toutes les fonctions importées ne sont pas affichées.",
+        "The list is truncated: not every imported function is shown.",
+        "La lista está truncada: no se muestran todas las funciones importadas.",
+    ],
+    NoImportedFunctions => [
+        "Le fichier nomme la bibliothèque sans dire ce qu’il lui demande.",
+        "The file names the library without saying what it asks of it.",
+        "El archivo nombra la biblioteca sin decir qué le pide.",
+    ],
+    NativeApiNote => [
+        "Appels directs à l’interface noyau de Windows : ce sont les routines que le programme demande à ntdll.dll, sous les couches habituelles.",
+        "Direct calls into the Windows kernel interface: these are the routines the program asks ntdll.dll for, underneath the usual layers.",
+        "Llamadas directas a la interfaz del núcleo de Windows: son las rutinas que el programa pide a ntdll.dll, bajo las capas habituales.",
     ],
     NonExecutableStack => ["Pile non exécutable (NX)", "Non-executable stack (NX)", "Pila no ejecutable (NX)"],
     RelroLabel => ["Relocations en lecture seule (RELRO)", "Read-only relocations (RELRO)", "Reubicaciones de solo lectura (RELRO)"],

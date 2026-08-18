@@ -17,3 +17,12 @@ pedantic = "warn"
 
 [profile.release]
 strip = "symbols"
+
+# The test suite analyses its own executable — the one binary certainly present
+# on every machine the tests run on. Full debug information made that
+# executable larger than `ANALYSIS_BYTE_LIMIT`, at which point the reference
+# analysis is a truncated one: no digest, no symbols, and a dozen tests failing
+# for a reason that has nothing to do with what they test. Line tables keep
+# backtraces readable at a fraction of the size.
+[profile.test]
+debug = "line-tables-only"

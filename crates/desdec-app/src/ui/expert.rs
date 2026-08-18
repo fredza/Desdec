@@ -75,23 +75,12 @@ fn source_language_row(ui: &mut egui::Ui, analysis: &Analysis, language: Languag
 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(headline.language.label()).strong());
-        ui.label(
-            egui::RichText::new(text(language, confidence_label(headline.confidence)))
-                .small()
-                .color(MUTED),
-        )
-        .on_hover_text(&headline.evidence);
-
-        // Anything else the file points at. A Rust or Go program carries a C
-        // runtime, so a second entry is normal rather than a contradiction.
-        for other in analysis.languages.iter().skip(1) {
-            ui.label(
-                egui::RichText::new(format!("· {}", other.language.label()))
-                    .small()
-                    .color(MUTED),
-            )
-            .on_hover_text(&other.evidence);
-        }
+        // How firmly the file points at that language, drawn rather than only
+        // named: "possible" and "certain" are one word apart and three steps
+        // apart, and a reader scanning the panel should see which it is
+        // without stopping to read.
+        confidence_bar(ui, headline.confidence, language, &headline.evidence);
+        also_carried(ui, analysis, language);
     });
     ui.end_row();
 
@@ -106,6 +95,95 @@ fn source_language_row(ui: &mut egui::Ui, analysis: &Analysis, language: Languag
         ui.label(egui::RichText::new(toolchain).monospace());
         ui.end_row();
     }
+}
+
+/// A three-step gauge of how firmly the evidence points, with the word for it
+/// and the evidence itself on hover.
+///
+/// The steps are the three the analysis actually distinguishes; drawing a
+/// smooth percentage would suggest a measurement that was never made.
+fn confidence_bar(ui: &mut egui::Ui, confidence: Confidence, language: Language, evidence: &str) {
+    const WIDTH: f32 = 66.0;
+    const HEIGHT: f32 = 10.0;
+    const STEPS: usize = 3;
+
+    let filled = match confidence {
+        Confidence::Possible => 1,
+        Confidence::Likely => 2,
+        Confidence::Certain => 3,
+    };
+    let colour = match confidence {
+        Confidence::Possible => egui::Color32::from_rgb(145, 155, 178),
+        Confidence::Likely => egui::Color32::from_rgb(241, 169, 75),
+        Confidence::Certain => egui::Color32::from_rgb(77, 180, 110),
+    };
+
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(WIDTH, HEIGHT), egui::Sense::hover());
+    let painter = ui.painter();
+    let visuals = ui.style().visuals.clone();
+    painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "three steps and a width in pixels"
+    )]
+    let step = rect.width() / STEPS as f32;
+    for index in 0..filled {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "three steps and a width in pixels"
+        )]
+        let left = rect.left() + step * index as f32;
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(left + 1.0, rect.top() + 1.0),
+                egui::pos2(left + step - 1.0, rect.bottom() - 1.0),
+            ),
+            1.0,
+            colour,
+        );
+    }
+    painter.rect_stroke(rect, 2.0, visuals.window_stroke, egui::StrokeKind::Inside);
+
+    let word = text(language, confidence_label(confidence));
+    response.on_hover_text(format!(
+        "{}: {word}\n{evidence}",
+        text(language, Text::Certainty)
+    ));
+    ui.label(egui::RichText::new(word).small().color(MUTED))
+        .on_hover_text(evidence);
+}
+
+/// The other languages the file shows traces of, said as what they are.
+///
+/// They used to be listed as `· C` after the verdict, which read as a second
+/// answer competing with the first: "certain — Rust — C" is a contradiction to
+/// anyone who has not been told that a Rust binary links the C runtime. The
+/// lead-in word is what makes it one statement instead of two.
+fn also_carried(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
+    let others: Vec<&desdec_core::LanguageEvidence> = analysis.languages.iter().skip(1).collect();
+    if others.is_empty() {
+        return;
+    }
+
+    let names = others
+        .iter()
+        .map(|other| other.language.label())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let evidence = others
+        .iter()
+        .map(|other| format!("{}: {}", other.language.label(), other.evidence))
+        .collect::<Vec<_>>()
+        .join("\n");
+    ui.label(
+        egui::RichText::new(format!("— {} {names}", text(language, Text::AlsoTraces)))
+            .small()
+            .color(MUTED),
+    )
+    .on_hover_text(format!(
+        "{}\n\n{evidence}",
+        text(language, Text::AlsoTracesHint)
+    ));
 }
 
 const fn confidence_label(confidence: Confidence) -> Text {
@@ -265,7 +343,7 @@ pub fn libraries_card(
             ui.label(text(language, Text::NoLinkedLibraries));
             return;
         }
-        for library in &analysis.details.linked_libraries {
+        for (position, library) in analysis.details.linked_libraries.iter().enumerate() {
             ui.horizontal(|ui| {
                 ui.monospace(library);
                 if !explain {
@@ -281,9 +359,80 @@ pub fn libraries_card(
                     });
                 }
             });
+            imported_functions(ui, analysis, library, position, language);
         }
     });
     asked
+}
+
+/// What the file asks one library for, when the format says.
+///
+/// Only PE records it: its import table names both the library and every
+/// function taken from it. It answers the question linking against a library
+/// leaves open — `ntdll.dll` most of all, where knowing the program reaches
+/// past the usual layers says far less than knowing which kernel routines it
+/// reaches for.
+///
+/// A file may name the same library in several import descriptors — installers
+/// routinely do — so the entry is taken by its place in the list rather than by
+/// name. Looking it up by name would show the first descriptor's functions
+/// under every repeat, and give every repeat the same widget identifier, which
+/// egui paints over the panel as a clash.
+fn imported_functions(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    library: &str,
+    position: usize,
+    language: Language,
+) {
+    let imports = &analysis.details.imports;
+    // PE builds both lists from the same descriptors, so the positions line
+    // up; a format that names its libraries without recording what it takes
+    // from them has only the name to go on.
+    let Some(entry) = imports
+        .get(position)
+        .filter(|entry| entry.library == library)
+        .or_else(|| imports.iter().find(|entry| entry.library == library))
+    else {
+        return;
+    };
+
+    let native = is_the_native_api(library);
+    let title = format!(
+        "{} ({})",
+        text(language, Text::ImportedFunctions),
+        entry.functions.len()
+    );
+    egui::CollapsingHeader::new(egui::RichText::new(title).small().color(MUTED))
+        .id_salt(("imports", position))
+        // The one library whose imports are the finding rather than a detail.
+        .default_open(native)
+        .show(ui, |ui| {
+            if native {
+                ui.small(text(language, Text::NativeApiNote));
+                ui.add_space(4.0);
+            }
+            if entry.functions.is_empty() {
+                ui.small(
+                    egui::RichText::new(text(language, Text::NoImportedFunctions))
+                        .color(MUTED)
+                        .italics(),
+                );
+                return;
+            }
+            for function in &entry.functions {
+                ui.monospace(function);
+            }
+            if entry.truncated {
+                ui.small(egui::RichText::new(text(language, Text::ImportsTruncated)).color(ERROR));
+            }
+        });
+}
+
+/// Whether this is Windows' own lowest-level library, whatever case the file
+/// spells it in.
+fn is_the_native_api(library: &str) -> bool {
+    library.eq_ignore_ascii_case("ntdll.dll") || library.eq_ignore_ascii_case("ntdll")
 }
 
 pub fn mapping_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
@@ -328,4 +477,89 @@ pub fn mapping_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) 
                     });
             });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        i18n::{Language, Text, text},
+        testing::{drawn_text, samples, window_input},
+    };
+    use eframe::egui;
+
+    /// A file may name one library in several import descriptors — installers
+    /// routinely do. Salting each imports header with the library's name gave
+    /// every repeat one identifier between them, and egui painted the clash
+    /// across the card the reader was trying to read.
+    #[test]
+    fn a_library_named_twice_keeps_its_headers_apart() {
+        for sample in samples() {
+            let mut analysis = sample.analysis.clone();
+            let Some(repeat) = analysis.details.imports.first().cloned() else {
+                continue; // A format that records no imports draws no headers.
+            };
+            analysis
+                .details
+                .linked_libraries
+                .push(repeat.library.clone());
+            analysis.details.imports.push(repeat);
+
+            let ctx = egui::Context::default();
+            // The warning is on in debug builds only; the test asks for it so
+            // it holds however the suite is compiled.
+            ctx.options_mut(|options| options.warn_on_id_clash = true);
+            let output = ctx.run(window_input(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    super::libraries_card(ui, &analysis, Language::French, true);
+                });
+            });
+
+            assert!(
+                !drawn_text(&output.shapes).contains("use of widget ID"),
+                "{}: the repeated library reused the first one's widget id",
+                sample.fixture.label
+            );
+        }
+    }
+
+    /// Each descriptor names what it alone takes from the library. Reaching
+    /// for the entry by name gives every repeat the first descriptor's list,
+    /// so a library asked for fifty functions in one descriptor and four in
+    /// another is reported as asking for the same fifty twice.
+    #[test]
+    fn a_library_named_twice_shows_each_descriptor_s_own_functions() {
+        for sample in samples() {
+            let mut analysis = sample.analysis.clone();
+            let Some(mut repeat) = analysis.details.imports.first().cloned() else {
+                continue; // A format that records no imports draws no headers.
+            };
+            let first = repeat.functions.len();
+            if first == 0 {
+                continue; // Nothing to tell the two lists apart by.
+            }
+            repeat.functions.clear();
+            analysis
+                .details
+                .linked_libraries
+                .push(repeat.library.clone());
+            analysis.details.imports.push(repeat);
+
+            let ctx = egui::Context::default();
+            let output = ctx.run(window_input(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    super::libraries_card(ui, &analysis, Language::French, true);
+                });
+            });
+
+            let drawn = drawn_text(&output.shapes);
+            let heading = text(Language::French, Text::ImportedFunctions);
+            for count in [first, 0] {
+                assert!(
+                    drawn.contains(&format!("{heading} ({count})")),
+                    "{}: the descriptor taking {count} functions was not reported as its own",
+                    sample.fixture.label
+                );
+            }
+        }
+    }
 }

@@ -19,6 +19,7 @@ pub enum Icon {
     Strings,
     Disassembly,
     Decompile,
+    Assistant,
     Patches,
     Yara,
     Open,
@@ -43,6 +44,7 @@ impl Icon {
         Self::Strings,
         Self::Disassembly,
         Self::Decompile,
+        Self::Assistant,
         Self::Patches,
         Self::Yara,
         Self::Open,
@@ -131,6 +133,7 @@ pub fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::
         Icon::Strings => strings(&pen),
         Icon::Disassembly => disassembly(&pen),
         Icon::Decompile => decompile(&pen),
+        Icon::Assistant => assistant(&pen),
         Icon::Patches => patches(&pen),
         Icon::Yara => yara(&pen),
         Icon::Open => open(&pen),
@@ -276,6 +279,30 @@ fn yara(pen: &Pen) {
     pen.circle((0.42, 0.42), 0.3);
     pen.line((0.64, 0.64), (1.0, 1.0));
     pen.line((0.3, 0.42), (0.54, 0.42));
+}
+
+/// Two sparks: a reading offered alongside the listing, not a measurement of
+/// it. Deliberately unlike every other glyph here, which draws a part of the
+/// file — this one draws something added to it.
+fn assistant(pen: &Pen) {
+    spark(pen, (0.38, 0.38), 0.34);
+    spark(pen, (0.82, 0.78), 0.18);
+}
+
+/// A four-pointed star, drawn as two crossed strokes pinched at the middle.
+fn spark(pen: &Pen, center: (f32, f32), size: f32) {
+    let (x, y) = center;
+    pen.path(&[
+        (x, y - size),
+        (x + size * 0.28, y - size * 0.28),
+        (x + size, y),
+        (x + size * 0.28, y + size * 0.28),
+        (x, y + size),
+        (x - size * 0.28, y + size * 0.28),
+        (x - size, y),
+        (x - size * 0.28, y - size * 0.28),
+        (x, y - size),
+    ]);
 }
 
 /// An open folder.

@@ -6,7 +6,7 @@ use crate::{
     app::{DesdecApp, Dialog, decompilation_cache_dir},
     commands::{Command, Shortcut},
     i18n::{Language, Text, text},
-    preferences::{DecompilerPreference, ThemePreference, accent, success},
+    preferences::{AssistantPreference, DecompilerPreference, ThemePreference, accent, success},
     ui::{ERROR, MUTED, format_size},
 };
 
@@ -17,6 +17,7 @@ pub enum PreferencesTab {
     Shortcuts,
     Behaviour,
     Decompiler,
+    Assistant,
     Yara,
 }
 
@@ -26,6 +27,7 @@ impl PreferencesTab {
         Self::Shortcuts,
         Self::Behaviour,
         Self::Decompiler,
+        Self::Assistant,
         Self::Yara,
     ];
 
@@ -35,6 +37,7 @@ impl PreferencesTab {
             Self::Shortcuts => Text::Shortcuts,
             Self::Behaviour => Text::Behaviour,
             Self::Decompiler => Text::Decompiler,
+            Self::Assistant => Text::AiAssistance,
             Self::Yara => Text::Yara,
         }
     }
@@ -86,6 +89,7 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
             PreferencesTab::Shortcuts => shortcuts(app, ctx, ui),
             PreferencesTab::Behaviour => behaviour(app, ui),
             PreferencesTab::Decompiler => decompiler(app, ui),
+            PreferencesTab::Assistant => assistant(app, ui),
             PreferencesTab::Yara => yara(app, ui),
         }
     });
@@ -135,11 +139,22 @@ fn shortcuts(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
                 .copied()
                 .filter(|command| command.configurable_shortcut())
             {
+                let bound = app.preferences.shortcuts.shortcut_for(command).is_some();
                 ui.horizontal(|ui| {
                     ui.label(command.label(app.preferences.language));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button(app.t(Text::Modify)).clicked() {
                             app.editing_shortcut = Some(command);
+                        }
+                        // Only where there is something to take away: a
+                        // command with no key needs no way to remove one.
+                        if bound
+                            && ui
+                                .button(app.t(Text::RemoveShortcut))
+                                .on_hover_text(app.t(Text::RemoveShortcutHint))
+                                .clicked()
+                        {
+                            app.preferences.shortcuts.clear(command);
                         }
                         ui.monospace(app.shortcut_label(command));
                     });
@@ -379,11 +394,128 @@ fn behaviour(app: &mut DesdecApp, ui: &mut egui::Ui) {
     ui.separator();
     ui.add_space(6.0);
     library_explanations(app, ui);
+}
 
-    ui.add_space(12.0);
-    ui.checkbox(
-        &mut app.preferences.ai_assistance,
-        text(language, Text::AiAssistance),
-    );
-    ui.small(text(language, Text::AiAssistanceUnavailable));
+/// Which model the assistant asks, and what it needs to reach it.
+///
+/// A tab of its own rather than a line in Behaviour: choosing a provider can
+/// mean the disassembly leaves the machine, and that is not a detail to be
+/// discovered under a checkbox.
+fn assistant(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    let language = app.preferences.language;
+    ui.heading(text(language, Text::AiAssistance));
+    ui.small(text(language, Text::AiAssistanceIntro));
+    ui.add_space(10.0);
+
+    ui.label(text(language, Text::AssistantProvider));
+    let mut chosen = app.preferences.assistant;
+    for provider in AssistantPreference::ALL {
+        ui.radio_value(
+            &mut chosen,
+            *provider,
+            text(language, assistant_label(*provider)),
+        );
+    }
+    if chosen != app.preferences.assistant {
+        app.preferences.assistant = chosen;
+        // The model of one provider means nothing to another, and a stale
+        // name is a request that fails for a reason nobody can see.
+        app.preferences.assistant_model.clear();
+    }
+
+    let provider = app.preferences.assistant.provider();
+    if provider == desdec_core::assistant::Provider::None {
+        return;
+    }
+
+    ui.add_space(8.0);
+    ui.small(text(
+        language,
+        if provider.leaves_the_machine() {
+            Text::AssistantLeavesMachine
+        } else {
+            Text::AssistantStaysLocal
+        },
+    ));
+
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label(text(language, Text::AssistantModel));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.preferences.assistant_model)
+                .hint_text(provider.default_model())
+                .desired_width(230.0),
+        );
+    });
+    ui.small(text(language, Text::AssistantModelHint));
+
+    match provider {
+        desdec_core::assistant::Provider::Ollama => {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(text(language, Text::OllamaUrl));
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.preferences.ollama_url)
+                        .hint_text(desdec_core::assistant::DEFAULT_OLLAMA_URL)
+                        .desired_width(230.0),
+                );
+            });
+        }
+        desdec_core::assistant::Provider::Claude => {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(text(language, Text::ApiKeyFile));
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.preferences.anthropic_key_path)
+                        .hint_text("~/.config/desdec/anthropic-key")
+                        .desired_width(230.0),
+                );
+            });
+            ui.small(text(language, Text::ApiKeyFileHint));
+        }
+        desdec_core::assistant::Provider::None => {}
+    }
+
+    ui.add_space(10.0);
+    availability(app, ui);
+}
+
+/// What the configured provider answers to a knock on the door.
+///
+/// Probing costs a request, so it happens when the reader asks rather than on
+/// every frame the window is open — the same rule the decompiler tab follows.
+fn availability(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    use desdec_core::assistant::Availability;
+    let language = app.preferences.language;
+
+    ui.horizontal(|ui| {
+        if ui.button(text(language, Text::CheckProvider)).clicked() {
+            app.assistance.availability = Some(desdec_core::assistant::availability(
+                &app.assistant_settings(),
+            ));
+        }
+        match &app.assistance.availability {
+            Some(Availability::Ready) => {
+                ui.small(text(language, Text::EngineAvailable));
+            }
+            Some(Availability::Missing(hint)) => {
+                ui.small(
+                    egui::RichText::new(format!(
+                        "{} — {hint}",
+                        text(language, Text::EngineMissing)
+                    ))
+                    .color(MUTED),
+                );
+            }
+            Some(Availability::NotConfigured) | None => {}
+        }
+    });
+}
+
+const fn assistant_label(provider: AssistantPreference) -> Text {
+    match provider {
+        AssistantPreference::None => Text::NoAssistant,
+        AssistantPreference::Ollama => Text::LocalModel,
+        AssistantPreference::Claude => Text::ClaudeApi,
+    }
 }

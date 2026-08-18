@@ -4,11 +4,11 @@
 //! libraries it needs in an import table addressed by RVA — an address in the
 //! mapped image, which the section table converts back to a file offset.
 
-use super::{BinaryDetails, FileKind, MAXIMUM_ENTRIES};
+use super::{BinaryDetails, FileKind, ImportedLibrary, MAXIMUM_ENTRIES};
 use crate::{
     analysis::sections::{self, Section},
     binary::{BinaryFormat, Endianness},
-    bytes::{read_c_string, read_u16, read_u32},
+    bytes::{read_c_string, read_u16, read_u32, read_u64},
 };
 
 /// Everything in a PE file is little-endian.
@@ -49,6 +49,30 @@ const IMPORT_DESCRIPTOR_SIZE: usize = 20;
 const IMPORT_NAME: usize = 12;
 const MAXIMUM_NAME: usize = 256;
 
+/// The two thunk arrays a descriptor points at.
+///
+/// Both describe the same imports. The lookup table is the one to read: the
+/// address table is overwritten with real addresses once the loader has run,
+/// so a dump taken from memory has names in the first and pointers in the
+/// second. It is absent in some linkers' output, hence the fallback.
+const IMPORT_LOOKUP_TABLE: usize = 0;
+const IMPORT_ADDRESS_TABLE: usize = 16;
+
+/// Top bit of a thunk: the import is by ordinal and carries no name.
+const ORDINAL_FLAG_32: u32 = 0x8000_0000;
+const ORDINAL_FLAG_64: u64 = 0x8000_0000_0000_0000;
+
+/// A thunk that names its import points at a `Hint` before the string itself.
+const IMPORT_HINT_SIZE: u64 = 2;
+
+/// Names read from one library before the walk gives up.
+///
+/// `kernel32` alone exports over a thousand, and a corrupt or hostile table
+/// can claim to go on forever; a reader is served by neither. Reaching it is
+/// reported through [`ImportedLibrary::truncated`] rather than passed over in
+/// silence.
+const MAXIMUM_IMPORTS: usize = 4096;
+
 pub fn details(file: &[u8]) -> BinaryDetails {
     let Some(signature) = sections::pe_signature(file) else {
         return BinaryDetails::default();
@@ -59,15 +83,15 @@ pub fn details(file: &[u8]) -> BinaryDetails {
     let characteristics = read_u16(file, signature + CHARACTERISTICS, ORDER).unwrap_or(0);
     let dll_characteristics = read_u16(file, optional + DLL_CHARACTERISTICS, ORDER);
 
+    let wide = read_u16(file, optional + MAGIC, ORDER) == Some(PE32_PLUS);
+    let imported = imports(file, signature, optional, &sections, wide);
+
     let mut details = BinaryDetails {
         file_kind: file_kind(characteristics),
-        bits: if read_u16(file, optional + MAGIC, ORDER) == Some(PE32_PLUS) {
-            64
-        } else {
-            32
-        },
+        bits: if wide { 64 } else { 32 },
         endianness: ORDER,
-        linked_libraries: imports(file, signature, optional, &sections),
+        linked_libraries: imported.iter().map(|entry| entry.library.clone()).collect(),
+        imports: imported,
         subsystem: subsystem(read_u16(file, optional + SUBSYSTEM, ORDER)),
         timestamp: read_u32(file, signature + TIMESTAMP, ORDER).filter(|stamp| *stamp != 0),
         ..BinaryDetails::default()
@@ -136,8 +160,21 @@ fn has_certificate(file: &[u8], optional: usize) -> bool {
         .is_some_and(|(offset, size)| offset != 0 && size != 0)
 }
 
-/// Walks the import descriptors, collecting the name of each library.
-fn imports(file: &[u8], signature: usize, optional: usize, sections: &[Section]) -> Vec<String> {
+/// Walks the import descriptors, collecting each library and what is taken
+/// from it.
+///
+/// The names matter as much as the library does. `ntdll.dll` in a dependency
+/// list says almost nothing — the toolchain adds it to most binaries — while
+/// the handful of functions actually taken from it says whether a program uses
+/// the documented Windows API or reaches under it. The same holds for every
+/// other library, so this is read for all of them rather than for one.
+fn imports(
+    file: &[u8],
+    signature: usize,
+    optional: usize,
+    sections: &[Section],
+    wide: bool,
+) -> Vec<ImportedLibrary> {
     let Some((address, _)) = data_directory(file, optional, IMPORT_DIRECTORY) else {
         return Vec::new();
     };
@@ -168,11 +205,96 @@ fn imports(file: &[u8], signature: usize, optional: usize, sections: &[Section])
             .and_then(|offset| read_c_string(file, offset, MAXIMUM_NAME))
             .filter(|name| !name.is_empty());
         match name {
-            Some(name) => libraries.push(name),
+            Some(library) => {
+                let (functions, truncated) = imported_names(file, descriptor, base, sections, wide);
+                libraries.push(ImportedLibrary {
+                    library,
+                    functions,
+                    truncated,
+                });
+            }
             None => break,
         }
     }
     libraries
+}
+
+/// The names one descriptor's thunk array asks for, in the order it asks, and
+/// whether the array went on past what was kept.
+///
+/// Ordinal-only imports are skipped rather than invented: the number identifies
+/// an export slot in a library this file does not contain, so naming it would
+/// mean guessing.
+fn imported_names(
+    file: &[u8],
+    descriptor: usize,
+    base: u64,
+    sections: &[Section],
+    wide: bool,
+) -> (Vec<String>, bool) {
+    // The lookup table first, and the address table only when there is none:
+    // see the constants above for why they are not interchangeable.
+    let table = [IMPORT_LOOKUP_TABLE, IMPORT_ADDRESS_TABLE]
+        .into_iter()
+        .filter_map(|field| read_u32(file, descriptor + field, ORDER))
+        .find(|address| *address != 0)
+        .and_then(|address| file_offset_of(sections, base + u64::from(address)));
+    let Some(table) = table.and_then(|offset| usize::try_from(offset).ok()) else {
+        return (Vec::new(), false);
+    };
+
+    let stride = if wide { 8 } else { 4 };
+    let mut names = Vec::new();
+    let mut truncated = false;
+    // One index past the limit, read only to tell a table that ended from one
+    // that went on: a reader shown a short list has to know which it is.
+    for index in 0..=MAXIMUM_IMPORTS {
+        let Some(entry) = index
+            .checked_mul(stride)
+            .and_then(|at| table.checked_add(at))
+        else {
+            break;
+        };
+        // A zero thunk ends the array.
+        let (thunk, by_ordinal) = if wide {
+            let Some(thunk) = read_u64(file, entry, ORDER) else {
+                break;
+            };
+            (thunk, thunk & ORDINAL_FLAG_64 != 0)
+        } else {
+            let Some(thunk) = read_u32(file, entry, ORDER) else {
+                break;
+            };
+            (
+                u64::from(thunk),
+                u64::from(thunk) & u64::from(ORDINAL_FLAG_32) != 0,
+            )
+        };
+        if thunk == 0 {
+            break;
+        }
+        if index == MAXIMUM_IMPORTS {
+            truncated = true;
+            break;
+        }
+        if by_ordinal {
+            continue;
+        }
+
+        let name = base
+            .checked_add(thunk)
+            .and_then(|address| file_offset_of(sections, address))
+            .and_then(|offset| offset.checked_add(IMPORT_HINT_SIZE))
+            .and_then(|offset| usize::try_from(offset).ok())
+            .and_then(|offset| read_c_string(file, offset, MAXIMUM_NAME))
+            .filter(|name| !name.is_empty());
+        // A name that cannot be read is one entry lost, not the end of the
+        // table: the rest of the array is still worth walking.
+        if let Some(name) = name {
+            names.push(name);
+        }
+    }
+    (names, truncated)
 }
 
 /// Converts an address in the mapped image to a file offset, using the section

@@ -133,10 +133,36 @@ jobs:
         with:
           pattern: desdec-*-release
           merge-multiple: true
+      # The public half of the signing key travels with the binaries, so a
+      # reader has both halves of the check without hunting for either. The
+      # private half is never here: it stays on the maintainer's machine, and
+      # `scripts/sign-release.sh` attaches the signatures afterwards. A key a
+      # build service holds is a key whoever reaches that service holds.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: desdec-signing-key.asc
+          sparse-checkout-cone-mode: false
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          append_body: true
+          body: |
+            Signed by **Frédéric Zawalski @2026 bdom** —
+            key `C9A3 1D07 46E0 65C4 E2EA  33F6 08FA 1D81 8A91 F329`.
+
+            The signatures are attached as `.asc` files next to each archive,
+            and the public key as `desdec-signing-key.asc`. To check one:
+
+            ```
+            gpg --import desdec-signing-key.asc
+            gpg --verify desdec-linux-x86_64-release.tar.gz.asc \
+                         desdec-linux-x86_64-release.tar.gz
+            ```
+
+            The `.sha256` files answer a different question: they say the
+            download is intact, not who made it.
           files: |
+            desdec-signing-key.asc
             desdec-linux-x86_64-release.tar.gz
             desdec-linux-x86_64-release.tar.gz.sha256
             desdec-windows-x86_64-release.zip

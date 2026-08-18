@@ -247,7 +247,7 @@ fn binary_actions(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui, d
             if open.clicked() {
                 app.choose_binary(ctx);
             }
-            if app.is_analysing() {
+            if app.is_opening() {
                 ui.add_space(4.0);
                 ui.spinner();
             }
@@ -265,16 +265,29 @@ fn binary_actions(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui, d
         app.choose_binary(ctx);
     }
 
-    if app.is_analysing() {
+    if app.is_opening() {
+        let analysing = app.is_analysing();
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.small(egui::RichText::new(app.t(Text::StatusWorking)).color(MUTED));
+            ui.small(
+                egui::RichText::new(app.t(if analysing {
+                    Text::StatusWorking
+                } else {
+                    Text::StatusChoosing
+                }))
+                .color(MUTED),
+            );
         });
         let cancel = ui.add_sized(
             [ui.available_width(), SECONDARY_BUTTON_HEIGHT],
             egui::Button::new(
-                egui::RichText::new(app.t(Text::CancelAnalysis)).color(egui::Color32::WHITE),
+                egui::RichText::new(app.t(if analysing {
+                    Text::CancelAnalysis
+                } else {
+                    Text::CancelChoosing
+                }))
+                .color(egui::Color32::WHITE),
             )
             .fill(ERROR.gamma_multiply(0.78))
             .truncate(),

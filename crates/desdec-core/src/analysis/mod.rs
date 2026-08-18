@@ -27,14 +27,16 @@ pub mod hash;
 pub mod language;
 pub mod operand;
 pub mod sections;
+pub mod stack;
 pub mod strings;
 pub mod symbols;
 
-pub use details::{BinaryDetails, FileKind, Hardening, Relro, Segment};
+pub use details::{BinaryDetails, FileKind, Hardening, ImportedLibrary, Relro, Segment};
 pub use disassembly::{Decoded, Instruction, InstructionBytes, decode_one};
 pub use language::{Confidence, LanguageEvidence, SourceLanguage};
 pub use operand::{LastWrite, Target};
 pub use sections::{Permissions, Section};
+pub use stack::{StackSlot, StackState, Trace};
 pub use strings::{ExtractedString, StringEncoding};
 pub use symbols::Symbol;
 
