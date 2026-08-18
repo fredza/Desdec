@@ -282,6 +282,12 @@ translations! {
         "Licensed under Apache-2.0 or MIT, at your option.",
         "Bajo licencia Apache-2.0 o MIT, a su elección.",
     ],
+    SignedBy => ["Versions signées par", "Releases signed by", "Versiones firmadas por"],
+    SigningKeyHint => [
+        "Empreinte de la clef publique qui signe les versions publiées. Elle accompagne chaque release, avec les signatures détachées de chaque archive.",
+        "Fingerprint of the public key the published releases are signed with. It travels with every release, alongside the detached signature of each archive.",
+        "Huella de la clave pública con la que se firman las versiones publicadas. Acompaña a cada versión, junto a la firma separada de cada archivo.",
+    ],
     LegalNotice => [
         "Utilisez uniquement des binaires que vous pouvez légalement analyser.",
         "Only analyse binaries that you are legally allowed to inspect.",

@@ -92,6 +92,23 @@ El flujo de trabajo `Platform binaries` publica archivos precompilados para
 Windows x86-64, macOS Apple Silicon y Linux x86-64 en cada etiqueta que empieza
 por `v`, junto con sus sumas SHA-256.
 
+### Comprobar una versión publicada
+
+Cada archivo está firmado por **Frédéric Zawalski @2026 bdom**, con la clave
+`C9A3 1D07 46E0 65C4 E2EA  33F6 08FA 1D81 8A91 F329`. La clave pública viaja
+con los binarios: se adjunta a cada versión con el nombre
+`desdec-signing-key.asc`, y también está en la raíz del repositorio.
+
+```sh
+gpg --import desdec-signing-key.asc
+gpg --verify desdec-linux-x86_64-release.tar.gz.asc \
+             desdec-linux-x86_64-release.tar.gz
+```
+
+La suma SHA-256 responde a otra pregunta: dice que la descarga está íntegra, no
+quién la produjo. La firma dice ambas cosas. La clave privada nunca sale de la
+máquina del mantenedor; el servicio de compilación no la tiene, solo compila.
+
 ## Qué hace con sus archivos y con su máquina
 
 - **Nunca ejecuta el binario analizado.** Nada de él se lanza, ni se mapea, ni

@@ -92,6 +92,24 @@ Des archives précompilées pour Windows x86-64, macOS Apple Silicon et Linux
 x86-64 sont publiées par le workflow `Platform binaries` à chaque étiquette
 commençant par `v`, avec leurs sommes SHA-256.
 
+### Vérifier une version publiée
+
+Chaque archive est signée par **Frédéric Zawalski @2026 bdom**, avec la clef
+`C9A3 1D07 46E0 65C4 E2EA  33F6 08FA 1D81 8A91 F329`. La clef publique voyage
+avec les binaires : elle est jointe à chaque release sous le nom
+`desdec-signing-key.asc`, et se trouve aussi à la racine du dépôt.
+
+```sh
+gpg --import desdec-signing-key.asc
+gpg --verify desdec-linux-x86_64-release.tar.gz.asc \
+             desdec-linux-x86_64-release.tar.gz
+```
+
+La somme SHA-256 répond à une autre question : elle dit que le téléchargement
+est intact, pas qui l'a produit. La signature dit les deux. La clef privée ne
+quitte jamais la machine du mainteneur ; le service de compilation ne la voit
+pas, il ne fait que compiler.
+
 ## Ce qu'il fait de vos fichiers et de votre machine
 
 - **Il n'exécute jamais le binaire analysé.** Rien n'en est lancé, ni mappé, ni

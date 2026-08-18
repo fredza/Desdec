@@ -90,6 +90,24 @@ Prebuilt archives for Windows x86-64, macOS Apple Silicon and Linux x86-64 are
 published by the `Platform binaries` workflow on every tag beginning with `v`,
 together with their SHA-256 checksums.
 
+### Checking a published release
+
+Every archive is signed by **Frédéric Zawalski @2026 bdom**, with the key
+`C9A3 1D07 46E0 65C4 E2EA  33F6 08FA 1D81 8A91 F329`. The public key travels
+with the binaries: it is attached to every release as
+`desdec-signing-key.asc`, and it also sits at the root of this repository.
+
+```sh
+gpg --import desdec-signing-key.asc
+gpg --verify desdec-linux-x86_64-release.tar.gz.asc \
+             desdec-linux-x86_64-release.tar.gz
+```
+
+The SHA-256 checksum answers a different question: it says the download is
+intact, not who produced it. The signature says both. The private key never
+leaves the maintainer's machine — the build service does not hold it, it only
+builds.
+
 ## What it does with your files and your machine
 
 - **It never executes the binary being analysed.** Nothing in it is run,

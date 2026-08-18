@@ -1,3 +1,8 @@
 /target/
 captures_moi/
 *.desdec-project
+# A private key must never reach the repository. The public one is committed
+# on purpose — a signature nobody can check is not a signature.
+*.private.asc
+*secret-key*
+*.gpg
