@@ -4,7 +4,7 @@
 //! libraries it needs in an import table addressed by RVA — an address in the
 //! mapped image, which the section table converts back to a file offset.
 
-use super::{BinaryDetails, FileKind, MAXIMUM_ENTRIES};
+use super::{BinaryDetails, FileKind, ImportedLibrary, MAXIMUM_ENTRIES};
 use crate::{
     analysis::sections::{self, Section},
     binary::{BinaryFormat, Endianness},
@@ -68,7 +68,9 @@ const IMPORT_HINT_SIZE: u64 = 2;
 /// Names read from one library before the walk gives up.
 ///
 /// `kernel32` alone exports over a thousand, and a corrupt or hostile table
-/// can claim to go on forever; a reader is served by neither.
+/// can claim to go on forever; a reader is served by neither. Reaching it is
+/// reported through [`ImportedLibrary::truncated`] rather than passed over in
+/// silence.
 const MAXIMUM_IMPORTS: usize = 4096;
 
 pub fn details(file: &[u8]) -> BinaryDetails {
@@ -88,11 +90,8 @@ pub fn details(file: &[u8]) -> BinaryDetails {
         file_kind: file_kind(characteristics),
         bits: if wide { 64 } else { 32 },
         endianness: ORDER,
-        linked_libraries: imported.iter().map(|(name, _)| name.clone()).collect(),
-        imported_functions: imported
-            .into_iter()
-            .filter(|(_, functions)| !functions.is_empty())
-            .collect(),
+        linked_libraries: imported.iter().map(|entry| entry.library.clone()).collect(),
+        imports: imported,
         subsystem: subsystem(read_u16(file, optional + SUBSYSTEM, ORDER)),
         timestamp: read_u32(file, signature + TIMESTAMP, ORDER).filter(|stamp| *stamp != 0),
         ..BinaryDetails::default()
@@ -175,7 +174,7 @@ fn imports(
     optional: usize,
     sections: &[Section],
     wide: bool,
-) -> Vec<(String, Vec<String>)> {
+) -> Vec<ImportedLibrary> {
     let Some((address, _)) = data_directory(file, optional, IMPORT_DIRECTORY) else {
         return Vec::new();
     };
@@ -206,9 +205,13 @@ fn imports(
             .and_then(|offset| read_c_string(file, offset, MAXIMUM_NAME))
             .filter(|name| !name.is_empty());
         match name {
-            Some(name) => {
-                let functions = imported_names(file, descriptor, base, sections, wide);
-                libraries.push((name, functions));
+            Some(library) => {
+                let (functions, truncated) = imported_names(file, descriptor, base, sections, wide);
+                libraries.push(ImportedLibrary {
+                    library,
+                    functions,
+                    truncated,
+                });
             }
             None => break,
         }
@@ -216,7 +219,8 @@ fn imports(
     libraries
 }
 
-/// The names one descriptor's thunk array asks for, in the order it asks.
+/// The names one descriptor's thunk array asks for, in the order it asks, and
+/// whether the array went on past what was kept.
 ///
 /// Ordinal-only imports are skipped rather than invented: the number identifies
 /// an export slot in a library this file does not contain, so naming it would
@@ -227,7 +231,7 @@ fn imported_names(
     base: u64,
     sections: &[Section],
     wide: bool,
-) -> Vec<String> {
+) -> (Vec<String>, bool) {
     // The lookup table first, and the address table only when there is none:
     // see the constants above for why they are not interchangeable.
     let table = [IMPORT_LOOKUP_TABLE, IMPORT_ADDRESS_TABLE]
@@ -236,12 +240,15 @@ fn imported_names(
         .find(|address| *address != 0)
         .and_then(|address| file_offset_of(sections, base + u64::from(address)));
     let Some(table) = table.and_then(|offset| usize::try_from(offset).ok()) else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
 
     let stride = if wide { 8 } else { 4 };
     let mut names = Vec::new();
-    for index in 0..MAXIMUM_IMPORTS {
+    let mut truncated = false;
+    // One index past the limit, read only to tell a table that ended from one
+    // that went on: a reader shown a short list has to know which it is.
+    for index in 0..=MAXIMUM_IMPORTS {
         let Some(entry) = index
             .checked_mul(stride)
             .and_then(|at| table.checked_add(at))
@@ -266,6 +273,10 @@ fn imported_names(
         if thunk == 0 {
             break;
         }
+        if index == MAXIMUM_IMPORTS {
+            truncated = true;
+            break;
+        }
         if by_ordinal {
             continue;
         }
@@ -283,7 +294,7 @@ fn imported_names(
             names.push(name);
         }
     }
-    names
+    (names, truncated)
 }
 
 /// Converts an address in the mapped image to a file offset, using the section

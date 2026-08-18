@@ -31,7 +31,7 @@ pub mod stack;
 pub mod strings;
 pub mod symbols;
 
-pub use details::{BinaryDetails, FileKind, Hardening, Relro, Segment};
+pub use details::{BinaryDetails, FileKind, Hardening, ImportedLibrary, Relro, Segment};
 pub use disassembly::{Decoded, Instruction, InstructionBytes, decode_one};
 pub use language::{Confidence, LanguageEvidence, SourceLanguage};
 pub use operand::{LastWrite, Target};

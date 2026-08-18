@@ -7,8 +7,6 @@
 //! format, or the structure that would answer was unreadable. Reporting an
 //! unknown as "absent" would be a security claim we cannot back.
 
-use std::collections::BTreeMap;
-
 use crate::{
     analysis::{sections::Permissions, strings::ExtractedString},
     binary::{BinaryFormat, Endianness},
@@ -92,6 +90,23 @@ pub struct Hardening {
     pub signed: Option<bool>,
 }
 
+/// The functions one library is asked for, as the import table names them.
+///
+/// One entry per import descriptor, not per library name: a file may name the
+/// same library several times, each descriptor asking for its own functions,
+/// and installers routinely do. Merging them by name loses which descriptor
+/// asked for what, and leaves the reader a list that no part of the file
+/// actually states.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportedLibrary {
+    /// The library's name, exactly as the file spells it.
+    pub library: String,
+    /// The functions taken from it, in import-table order.
+    pub functions: Vec<String>,
+    /// Set when the table held more names than were kept.
+    pub truncated: bool,
+}
+
 /// A region as the loader will map it, which is coarser than a section.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Segment {
@@ -122,10 +137,10 @@ pub struct BinaryDetails {
     /// `NtCreateThreadEx`. ELF and Mach-O leave this empty, so a reader is
     /// never shown an empty list as if it were an answer.
     ///
-    /// Ordered by library name, and only for libraries with at least one named
-    /// import; ordinal-only imports are not listed, since the number names
-    /// nothing without the library itself.
-    pub imported_functions: BTreeMap<String, Vec<String>>,
+    /// In import-table order, one entry per descriptor, running parallel to
+    /// [`Self::linked_libraries`]: the two are built from the same walk, so a
+    /// library listed there has its imports at the same index here.
+    pub imports: Vec<ImportedLibrary>,
     pub hardening: Hardening,
     /// ELF: the dynamic loader that will start this program.
     pub interpreter: Option<String>,
@@ -144,7 +159,7 @@ impl Default for BinaryDetails {
             endianness: Endianness::Unknown,
             segments: Vec::new(),
             linked_libraries: Vec::new(),
-            imported_functions: BTreeMap::new(),
+            imports: Vec::new(),
             hardening: Hardening::default(),
             interpreter: None,
             subsystem: None,

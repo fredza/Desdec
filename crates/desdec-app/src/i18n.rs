@@ -783,6 +783,26 @@ translations! {
     StackSaved => ["sauvegardé", "saved", "guardado"],
     StackReserved => ["réservé", "reserved", "reservado"],
     StackPushed => ["empilé", "pushed", "apilado"],
+    ImportedFunctions => [
+        "Fonctions importées",
+        "Imported functions",
+        "Funciones importadas",
+    ],
+    ImportsTruncated => [
+        "La liste est tronquée : toutes les fonctions importées ne sont pas affichées.",
+        "The list is truncated: not every imported function is shown.",
+        "La lista está truncada: no se muestran todas las funciones importadas.",
+    ],
+    NoImportedFunctions => [
+        "Le fichier nomme la bibliothèque sans dire ce qu’il lui demande.",
+        "The file names the library without saying what it asks of it.",
+        "El archivo nombra la biblioteca sin decir qué le pide.",
+    ],
+    NativeApiNote => [
+        "Appels directs à l’interface noyau de Windows : ce sont les routines que le programme demande à ntdll.dll, sous les couches habituelles.",
+        "Direct calls into the Windows kernel interface: these are the routines the program asks ntdll.dll for, underneath the usual layers.",
+        "Llamadas directas a la interfaz del núcleo de Windows: son las rutinas que el programa pide a ntdll.dll, bajo las capas habituales.",
+    ],
     NonExecutableStack => ["Pile non exécutable (NX)", "Non-executable stack (NX)", "Pila no ejecutable (NX)"],
     RelroLabel => ["Relocations en lecture seule (RELRO)", "Read-only relocations (RELRO)", "Reubicaciones de solo lectura (RELRO)"],
     StackCanary => ["Détection d’écrasement de pile", "Stack-smashing detection", "Detección de desbordamiento de pila"],
