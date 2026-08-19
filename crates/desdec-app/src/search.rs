@@ -121,10 +121,21 @@ fn mapped(analysis: &Analysis, offset: u64) -> (Option<u64>, Option<String>) {
     }
 }
 
-/// Runs of bytes matching a pattern.
+/// Runs of bytes matching a pattern, at most [`LIMIT`] of them.
 #[must_use]
 pub fn bytes(analysis: &Analysis, file: &[u8], pattern: &Pattern) -> Results {
-    let (offsets, truncated) = pattern.find(file, LIMIT);
+    bytes_within(analysis, file, pattern, LIMIT)
+}
+
+/// The same, bounded by the caller.
+///
+/// A reader is answered on screen, where a few hundred rows is already more
+/// than anyone reads; a script is answered in a loop it wrote itself, and
+/// cutting that at the same place would quietly rename four hundred of the
+/// nine hundred functions it found.
+#[must_use]
+pub fn bytes_within(analysis: &Analysis, file: &[u8], pattern: &Pattern, limit: usize) -> Results {
+    let (offsets, truncated) = pattern.find(file, limit);
     let hits = offsets
         .into_iter()
         .map(|offset| {
@@ -150,6 +161,12 @@ pub fn bytes(analysis: &Analysis, file: &[u8], pattern: &Pattern) -> Results {
 /// Decoded instructions whose text contains `needle`, ignoring case.
 #[must_use]
 pub fn instructions(analysis: &Analysis, needle: &str) -> Results {
+    instructions_within(analysis, needle, LIMIT)
+}
+
+/// The same, bounded by the caller.
+#[must_use]
+pub fn instructions_within(analysis: &Analysis, needle: &str, limit: usize) -> Results {
     let needle = needle.trim().to_lowercase();
     if needle.is_empty() {
         return Results::default();
@@ -159,7 +176,7 @@ pub fn instructions(analysis: &Analysis, needle: &str) -> Results {
         if !instruction.text.to_lowercase().contains(&needle) {
             continue;
         }
-        if results.hits.len() == LIMIT {
+        if results.hits.len() == limit {
             results.truncated = true;
             break;
         }
@@ -179,6 +196,17 @@ pub fn instructions(analysis: &Analysis, needle: &str) -> Results {
 /// bookmark list as well as a search.
 #[must_use]
 pub fn notes(analysis: &Analysis, annotations: &Annotations, needle: &str) -> Results {
+    notes_within(analysis, annotations, needle, LIMIT)
+}
+
+/// The same, bounded by the caller.
+#[must_use]
+pub fn notes_within(
+    analysis: &Analysis,
+    annotations: &Annotations,
+    needle: &str,
+    limit: usize,
+) -> Results {
     let needle = needle.trim().to_lowercase();
     let mut results = Results::default();
     for (address, annotation) in annotations.iter() {
@@ -186,7 +214,7 @@ pub fn notes(analysis: &Analysis, annotations: &Annotations, needle: &str) -> Re
         if !needle.is_empty() && !haystack.contains(&needle) {
             continue;
         }
-        if results.hits.len() == LIMIT {
+        if results.hits.len() == limit {
             results.truncated = true;
             break;
         }

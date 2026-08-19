@@ -23,6 +23,8 @@ pub enum Icon {
     Assistant,
     Patches,
     Yara,
+    Script,
+    Plugins,
     Open,
     Palette,
     Preferences,
@@ -57,6 +59,8 @@ impl Icon {
         Self::Assistant,
         Self::Patches,
         Self::Yara,
+        Self::Script,
+        Self::Plugins,
         Self::Open,
         Self::Palette,
         Self::Preferences,
@@ -154,6 +158,8 @@ pub fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::
         Icon::Assistant => assistant(&pen),
         Icon::Patches => patches(&pen),
         Icon::Yara => yara(&pen),
+        Icon::Script => script(&pen),
+        Icon::Plugins => plugins(&pen),
         Icon::Open => open(&pen),
         Icon::Palette => palette(&pen),
         Icon::Preferences => preferences(&pen),
@@ -366,6 +372,19 @@ fn output(pen: &Pen) {
         pen.dot((0.06, y));
         pen.line((0.28, y), (end, y));
     }
+}
+
+/// A prompt: the chevron and the line something is typed on.
+fn script(pen: &Pen) {
+    pen.path(&[(0.06, 0.22), (0.44, 0.5), (0.06, 0.78)]);
+    pen.line((0.56, 0.78), (0.98, 0.78));
+}
+
+/// A plug: a body outside, and the pins going into what it plugs into.
+fn plugins(pen: &Pen) {
+    pen.boxed((0.3, 0.14), (1.0, 0.86), 2.0);
+    pen.line((0.0, 0.36), (0.3, 0.36));
+    pen.line((0.0, 0.64), (0.3, 0.64));
 }
 
 /// Two sliders: settings that are chosen rather than toggled.

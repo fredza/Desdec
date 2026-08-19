@@ -10,7 +10,12 @@ desdec-core = { path = "../desdec-core" }
 eframe = { version = "0.31", features = ["persistence"] }
 pollster = "0.4"
 rfd = "0.15"
-# The reader's own notes are written in the same format the preferences use.
+# The scripting engine: pure Rust, and sandboxed by construction — it reaches
+# nothing the host does not hand it, so a script can read the analysis and ask
+# for annotations without ever seeing a file system or a process.
+rhai = "1.25"
+# The reader's own notes are written in the same format the preferences use,
+# and so are the plugin manifests.
 ron = "0.8"
 serde = { version = "1", features = ["derive"] }
 # The wall clock, for the session's account. `local-offset` is what turns UTC

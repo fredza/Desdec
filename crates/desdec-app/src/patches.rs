@@ -6,6 +6,8 @@
 
 use desdec_core::{Analysis, Architecture, Instruction, Patch, PatchError, assemble, decode_one};
 
+use crate::i18n::{Language, Text, text};
+
 /// An instruction being edited, with what its bytes currently decode to.
 pub struct Editor {
     /// Instruction the editor was opened on.
@@ -162,6 +164,42 @@ impl Editor {
             }
             other => Preview::Invalid(other.to_string()),
         })
+    }
+}
+
+/// Why the assembler could not read a line, in its own words.
+///
+/// Here rather than in the view that shows it: a script is refused by the same
+/// assembler, and a reader who typed the same line in the patch editor and in
+/// a script must not be told two different things about it.
+#[must_use]
+pub fn refusal(error: &assemble::Error, language: Language) -> String {
+    match error {
+        assemble::Error::UnsupportedArchitecture => {
+            text(language, Text::AssemblerUnsupported).to_owned()
+        }
+        assemble::Error::Empty => String::new(),
+        assemble::Error::UnknownMnemonic(mnemonic) => {
+            format!(
+                "{} {mnemonic}",
+                text(language, Text::AssemblerUnknownMnemonic)
+            )
+        }
+        assemble::Error::UnknownOperand(operand) => {
+            format!(
+                "{} {operand}",
+                text(language, Text::AssemblerUnknownOperand)
+            )
+        }
+        assemble::Error::WrongOperands(mnemonic) => {
+            format!(
+                "{} {mnemonic}",
+                text(language, Text::AssemblerWrongOperands)
+            )
+        }
+        assemble::Error::Refused(reason) => {
+            format!("{} {reason}", text(language, Text::AssemblerRefused))
+        }
     }
 }
 

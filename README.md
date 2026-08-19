@@ -32,6 +32,8 @@ so. Where it does not know, it says that instead of guessing.
 | **Patches** | Pending byte edits, and the export that writes them to a **copy**. The analysed file is never modified. |
 | **YARA** | Optional. Runs a locally installed `yara` or `yr` against the open file with rules you provide. Off by default. |
 | **AI assistance** | Optional, off by default. A model reads back what was decoded — a whole binary, a function, one instruction — and its answer is labelled a proposed reading, never a finding. A local model (Ollama) or Anthropic's API, whichever you configure. |
+| **Script** | The reader's own rule, written once and run over the whole file: name every function longer than a page, mark every call into a library, find what a listing will not scroll to. It runs in a sandbox that has no file system, no network and no processes — only the analysis it was handed. |
+| **Plugins** | A script someone else wrote, installed as a directory with a manifest. Its manifest *asks* for permissions — write notes, move the listing, propose patches — and the list is put in front of you before anything is enabled. A plugin that was never enabled has never run. |
 
 Everything is available in French, English and Spanish, from a command palette
 (`Ctrl+Shift+P`) with rebindable shortcuts.
@@ -134,6 +136,12 @@ builds.
   decompiler (`rizin`, `retdec-decompiler`), YARA, or a local model server.
   None is required, and none is started unless it is selected in the
   preferences.
+- **A script reaches nothing but the analysis.** The scripting engine is
+  handed the decoded binary and the notes on it, and there is no file system,
+  no network and no process in its vocabulary — not by a rule that could be
+  forgotten, but because none was ever registered. A script from somewhere
+  else runs with exactly the permissions you granted it, and one whose
+  manifest starts asking for more stops until you have seen the new list.
 - **An API key is never written to the preferences file.** The Anthropic key is
   read from `ANTHROPIC_API_KEY`, or from a file you name whose permissions are
   yours to set.
@@ -153,6 +161,12 @@ moments earlier; it does not any more. Persistence can be turned off entirely,
 which also clears what was already stored. Decompilations are cached under the
 SHA-256 of the file they came from, so a truncated file — which has no
 trustworthy digest — is never cached.
+
+Two more directories belong to you rather than to the application, and neither
+is a cache: the notes you take on a binary live under `desdec/notes`, one file
+per binary keyed by its SHA-256 rather than by its path, and plugins live under
+`desdec/plugins`, one directory each. The plugin window shows the exact path on
+your machine, and `examples/plugins` in this repository holds one to copy there.
 
 ## Development
 

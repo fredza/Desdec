@@ -32,6 +32,8 @@ dice. Cuando no lo sabe, también lo dice, en lugar de adivinar.
 | **Parches** | Las modificaciones de bytes pendientes, y la exportación que las escribe en una **copia**. El archivo analizado nunca se modifica. |
 | **YARA** | Opcional. Ejecuta un `yara` o `yr` instalado localmente sobre el archivo abierto, con sus propias reglas. Desactivado por defecto. |
 | **Asistencia de IA** | Opcional, desactivada por defecto. Un modelo relee lo decodificado —un binario entero, una función, una instrucción— y su respuesta se etiqueta como lectura propuesta, nunca como hallazgo. Un modelo local (Ollama) o la API de Anthropic, según lo que configure. |
+| **Script** | La regla del lector, escrita una vez y pasada sobre todo el archivo: nombrar cada función más larga que una página, marcar cada llamada a una biblioteca, encontrar aquello a lo que el listado no se desplaza. Se ejecuta en un recinto aislado sin sistema de archivos, sin red y sin procesos: solo el análisis que se le entrega. |
+| **Complementos** | Un script escrito por otra persona, instalado como una carpeta con un manifiesto. Ese manifiesto *solicita* permisos —escribir notas, mover el listado, proponer parches— y la lista se le muestra antes de activar nada. Un complemento que nunca se activó nunca se ha ejecutado. |
 
 Todo está disponible en francés, inglés y español, desde una paleta de comandos
 (`Ctrl+Mayús+P`) cuyos atajos se pueden reasignar.
@@ -137,6 +139,13 @@ máquina del mantenedor; el servicio de compilación no la tiene, solo compila.
   descompilador (`rizin`, `retdec-decompiler`), YARA o un servidor de modelo
   local. Ninguno es obligatorio, y ninguno se inicia sin haber sido
   seleccionado en las preferencias.
+- **Un script no alcanza nada más que el análisis.** El motor de scripts
+  recibe el binario decodificado y las notas tomadas sobre él; ni sistema de
+  archivos, ni red, ni procesos figuran en su vocabulario, no por una regla que
+  pudiera olvidarse, sino porque nunca se registró ninguno. Un script venido de
+  fuera se ejecuta exactamente con los permisos que usted le concedió, y aquel
+  cuyo manifiesto empieza a pedir más se detiene hasta que usted haya visto la
+  nueva lista.
 - **Una clave de API nunca se escribe en el archivo de preferencias.** La clave
   de Anthropic se lee de `ANTHROPIC_API_KEY`, o de un archivo que usted indique
   y cuyos permisos le pertenecen.
@@ -157,6 +166,13 @@ desactivarse por completo, lo que también borra lo ya guardado. Las
 descompilaciones se almacenan en caché bajo el SHA-256 del archivo del que
 provienen: un archivo truncado, que no tiene una huella fiable, nunca se
 almacena.
+
+Otras dos carpetas le pertenecen a usted más que a la aplicación, y ninguna es
+una caché: las notas tomadas sobre un binario viven en `desdec/notes`, un
+archivo por binario nombrado según su SHA-256 y no según su ruta, y los
+complementos viven en `desdec/plugins`, una carpeta cada uno. La ventana de
+complementos muestra la ruta exacta en su máquina, y `examples/plugins` en este
+repositorio contiene uno para copiar allí.
 
 ## Desarrollo
 

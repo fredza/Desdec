@@ -149,6 +149,16 @@ pub struct Preferences {
     /// choice. Whole points rather than a float so preferences stay comparable
     /// and round-trip exactly.
     pub navigation_width: u16,
+    /// What the reader has decided about each installed plugin, by the name of
+    /// the directory it lives in.
+    ///
+    /// Kept here because it is a decision, and one that must survive the
+    /// session that made it: a plugin the reader looked at, read the
+    /// permissions of and enabled should not ask again tomorrow. A plugin that
+    /// was uninstalled leaves its entry behind, which is deliberate —
+    /// reinstalling it does not silently inherit the old consent unless it
+    /// asks for the same things.
+    pub plugins: std::collections::BTreeMap<String, crate::plugins::Consent>,
     pub shortcuts: ShortcutBindings,
 }
 
@@ -175,6 +185,7 @@ impl Default for Preferences {
             explain_libraries: true,
             save_annotations: true,
             navigation_width: crate::ui::navigation::DEFAULT_WIDTH,
+            plugins: std::collections::BTreeMap::new(),
             shortcuts: ShortcutBindings::default(),
         }
     }

@@ -33,6 +33,8 @@ deviner.
 | **Correctifs** | Les modifications d'octets en attente, et l'export qui les écrit dans une **copie**. Le fichier analysé n'est jamais modifié. |
 | **YARA** | Optionnel. Lance un `yara` ou `yr` installé localement sur le fichier ouvert, avec vos propres règles. Désactivé par défaut. |
 | **Assistance IA** | Optionnelle, désactivée par défaut. Un modèle relit ce qui a été décodé — un binaire entier, une fonction, une instruction — et sa réponse est étiquetée comme une lecture proposée, jamais comme un constat. Un modèle local (Ollama) ou l'API d'Anthropic, selon ce que vous configurez. |
+| **Script** | La règle du lecteur, écrite une fois et passée sur tout le fichier : nommer chaque fonction plus longue qu'une page, marquer chaque appel vers une bibliothèque, trouver ce vers quoi le listing ne défilera pas. Elle s'exécute dans un bac à sable sans système de fichiers, sans réseau et sans processus — rien que l'analyse qu'on lui confie. |
+| **Greffons** | Un script écrit par quelqu'un d'autre, installé sous forme de dossier avec un manifeste. Ce manifeste *demande* des permissions — écrire des notes, déplacer le listing, proposer des correctifs — et la liste vous est présentée avant toute activation. Un greffon jamais activé n'a jamais été exécuté. |
 
 Tout est disponible en français, en anglais et en espagnol, depuis une palette
 de commandes (`Ctrl+Maj+P`) dont les raccourcis sont réassignables.
@@ -139,6 +141,13 @@ pas, il ne fait que compiler.
   un décompilateur (`rizin`, `retdec-decompiler`), YARA, ou un serveur de
   modèle local. Aucun n'est requis, aucun n'est lancé sans avoir été
   sélectionné dans les préférences.
+- **Un script n'atteint rien d'autre que l'analyse.** Le moteur de script
+  reçoit le binaire décodé et les notes prises dessus ; ni système de
+  fichiers, ni réseau, ni processus ne figurent dans son vocabulaire — non par
+  une règle qu'on pourrait oublier, mais parce que rien de tel n'y a jamais
+  été inscrit. Un script venu d'ailleurs s'exécute avec exactement les
+  permissions que vous lui avez accordées, et celui dont le manifeste se met à
+  en demander davantage s'arrête tant que vous n'avez pas vu la nouvelle liste.
 - **Une clé d'API n'est jamais écrite dans le fichier de préférences.** La clé
   Anthropic est lue depuis `ANTHROPIC_API_KEY`, ou depuis un fichier que vous
   désignez et dont les permissions vous appartiennent.
@@ -159,6 +168,13 @@ le cas. La persistance peut être désactivée entièrement, ce qui efface aussi
 qui était déjà enregistré. Les décompilations sont mises en cache sous le
 SHA-256 du fichier dont elles viennent : un fichier tronqué, qui n'a pas
 d'empreinte digne de confiance, n'est jamais mis en cache.
+
+Deux autres dossiers vous appartiennent plutôt qu'à l'application, et aucun des
+deux n'est un cache : les notes prises sur un binaire vivent sous
+`desdec/notes`, un fichier par binaire nommé d'après son SHA-256 plutôt que
+d'après son chemin, et les greffons vivent sous `desdec/plugins`, un dossier
+chacun. La fenêtre des greffons affiche le chemin exact sur votre machine, et
+`examples/plugins` dans ce dépôt en contient un à y copier.
 
 ## Développement
 

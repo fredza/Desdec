@@ -10,8 +10,11 @@ mod icons;
 mod journal;
 mod libraries;
 mod patches;
+mod plugins;
 mod preferences;
+mod script;
 mod search;
+mod storage;
 #[cfg(test)]
 mod testing;
 mod ui;

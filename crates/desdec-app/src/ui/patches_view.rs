@@ -4,7 +4,7 @@
 //! bytes became, so a patch is judged on what the processor will read rather
 //! than on what the editor meant.
 
-use desdec_core::{Architecture, assemble};
+use desdec_core::Architecture;
 use eframe::egui;
 
 use crate::{
@@ -158,42 +158,11 @@ fn assembled_row(ui: &mut egui::Ui, assembled: &Assembled, language: Language) {
             );
         }
         Assembled::Refused(error) => {
-            ui.colored_label(ERROR, refusal(error, language));
+            ui.colored_label(ERROR, crate::patches::refusal(error, language));
         }
         // Nothing typed is not a failure; the byte field is the way in.
         Assembled::Empty => {
             ui.label("");
-        }
-    }
-}
-
-/// Why the assembler could not read a line, in its own words.
-fn refusal(error: &assemble::Error, language: Language) -> String {
-    match error {
-        assemble::Error::UnsupportedArchitecture => {
-            text(language, Text::AssemblerUnsupported).to_owned()
-        }
-        assemble::Error::Empty => String::new(),
-        assemble::Error::UnknownMnemonic(mnemonic) => {
-            format!(
-                "{} {mnemonic}",
-                text(language, Text::AssemblerUnknownMnemonic)
-            )
-        }
-        assemble::Error::UnknownOperand(operand) => {
-            format!(
-                "{} {operand}",
-                text(language, Text::AssemblerUnknownOperand)
-            )
-        }
-        assemble::Error::WrongOperands(mnemonic) => {
-            format!(
-                "{} {mnemonic}",
-                text(language, Text::AssemblerWrongOperands)
-            )
-        }
-        assemble::Error::Refused(reason) => {
-            format!("{} {reason}", text(language, Text::AssemblerRefused))
         }
     }
 }
