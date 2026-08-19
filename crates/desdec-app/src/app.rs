@@ -2585,29 +2585,48 @@ mod tests {
     /// The function index is derived from the analysis, so opening a binary
     /// must fill it and closing one must drop it: a stale index would describe
     /// a file that is no longer open.
+    ///
+    /// Which binary names functions is a question about the *format*, not about
+    /// this code, so the filling is asserted on the fixtures — each declares
+    /// the functions it carries — and the host's own binary is held only to
+    /// what is true of any of them. A Windows executable exports nothing: its
+    /// symbol table is an import table, every entry of it belonging to another
+    /// file, and an empty index is the correct answer there rather than a
+    /// failure to build one.
     #[test]
     fn opening_a_binary_indexes_its_functions_and_closing_forgets_them() {
-        let path = crate::testing::reference_path();
+        for sample in crate::testing::samples() {
+            let mut app = DesdecApp::default();
+            app.apply_inspection(Path::new("fixture.bin"), Ok(sample.analysis.clone()));
+            assert!(
+                !app.functions.is_empty(),
+                "{} declares {} functions and none was indexed",
+                sample.fixture.label,
+                sample.fixture.functions.len()
+            );
+            app.close_binary();
+            assert!(app.functions.is_empty(), "{}", sample.fixture.label);
+        }
+
+        // The host's binary, for the one thing that holds whatever it is: an
+        // index built from a listing must point inside the listing it indexes.
         let mut app = DesdecApp::default();
-
-        app.apply_inspection(path, Ok(crate::testing::reference_analysis().clone()));
-
-        let functions = &app.functions;
-        assert!(
-            !functions.is_empty(),
-            "the reference binary names functions"
+        app.apply_inspection(
+            crate::testing::reference_path(),
+            Ok(crate::testing::reference_analysis().clone()),
         );
+        let listing = app
+            .analysis
+            .as_ref()
+            .expect("the analysis was installed")
+            .instructions
+            .len();
         assert!(
-            functions.iter().all(|function| function.instructions.end
-                <= app
-                    .analysis
-                    .as_ref()
-                    .expect("the analysis was installed")
-                    .instructions
-                    .len()),
+            app.functions
+                .iter()
+                .all(|function| function.instructions.end <= listing),
             "every indexed body must point inside the listing it indexes"
         );
-
         app.close_binary();
         assert!(app.functions.is_empty());
     }
