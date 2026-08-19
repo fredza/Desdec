@@ -17,7 +17,7 @@ dice. Cuando no lo sabe, también lo dice, en lugar de adivinar.
 > Analice y modifique únicamente binarios que le pertenezcan o que esté
 > explícitamente autorizado a estudiar.
 
-![La vista Desensamblado, con el pseudocódigo local al lado](docs/screenshots/disassembly.png)
+![La vista Desensamblado: el listado, las banderas de la instrucción seleccionada en la barra, y el pseudocódigo local al lado](docs/screenshots/disassembly.png)
 
 ## Lo que muestra
 
@@ -25,9 +25,9 @@ dice. Cuando no lo sabe, también lo dice, en lugar de adivinar.
 | --- | --- |
 | **Resumen** | Formato, arquitectura, punto de entrada, SHA-256, entropía, endurecimiento (RELRO, canario, NX, PIE, CFG), lenguaje de origen detectado, y cada biblioteca enlazada —con la explicación de para qué sirve. |
 | **Segmentos** | La tabla de secciones: direcciones, tamaños, permisos y entropía por sección, para que una zona comprimida o cifrada salte a la vista. |
-| **Funciones** | Las funciones con nombre, su cuerpo, sus bloques básicos y un grafo de flujo de control local. |
+| **Funciones** | Las funciones con nombre, su cuerpo, sus bloques básicos y un grafo de flujo de control local. Un clic en una fila abre el código de esa función en el listado. |
 | **Cadenas** | Las cadenas imprimibles con su desplazamiento y su codificación, filtrables, y las instrucciones que las referencian. |
-| **Desensamblado** | Listados x86, x86-64 (iced-x86) y AArch64 (Capstone), con edición de los bytes de una instrucción. Con el botón derecho se explica qué designa el operando y qué escribió por última vez en cada registro nombrado. |
+| **Desensamblado** | Listados x86, x86-64 (iced-x86) y AArch64 (Capstone), con edición de los bytes de una instrucción. Con el botón derecho se explica qué designa el operando y qué escribió por última vez en cada registro nombrado. La barra lleva las banderas de condición de la fila seleccionada —las que establece, las que consulta, y aquellas cuyo valor fijan los bytes pasara lo que pasara antes— y una fila sobre la que usted ha escrito se marca al margen. |
 | **Pseudocódigo** | Una traducción prudente del flujo decodificado, integrada en la herramienta —o la salida de Rizin/rz-ghidra o de RetDec si alguno está instalado y elegido. |
 | **Parches** | Las modificaciones de bytes pendientes, y la exportación que las escribe en una **copia**. El archivo analizado nunca se modifica. |
 | **YARA** | Opcional. Ejecuta un `yara` o `yr` instalado localmente sobre el archivo abierto, con sus propias reglas. Desactivado por defecto. |
@@ -50,6 +50,8 @@ vistas; la barra de acciones sigue disponible, esté el menú abierto o plegado.
 
 **Funciones.** Las funciones con nombre, su tamaño y su número de bloques, el
 grafo de flujo de control local de la seleccionada, y su pseudocódigo debajo.
+La flecha al principio de una fila —o el botón junto a la dirección— abre el
+código de esa función en el listado.
 
 ![La vista Funciones: la lista, un grafo de flujo de control y pseudocódigo](docs/screenshots/functions.png)
 
@@ -67,7 +69,7 @@ desensamblado correspondiente está a un botón.
 **Parches.** Las modificaciones de bytes esperan aquí hasta la exportación, y
 la exportación escribe una copia: el archivo analizado nunca se modifica.
 
-![La vista Parches, vacía, explicando de dónde vienen las modificaciones](docs/screenshots/patches.png)
+![La vista Parches, con un parche pendiente y la exportación que escribe una copia](docs/screenshots/patches.png)
 
 **Paleta de comandos** (`Ctrl+Mayús+P`). Todos los comandos, su atajo y los
 archivos abiertos recientemente, en una sola lista buscable.
@@ -202,8 +204,6 @@ DESDEC_ICON_SHEET=/tmp/icons.svg cargo test -p desdec-app icon_sheet
 - `crates/desdec-app` — la aplicación nativa `egui`.
 - `docs/ARCHITECTURE.md` — el sentido de las dependencias y lo que queda
   deliberadamente fuera del núcleo.
-- `docs/ai-collaboration/WORKLOG.md` — las reglas de trabajo comunes a los
-  colaboradores humanos y a los asistentes de IA.
 
 ## Licencia
 

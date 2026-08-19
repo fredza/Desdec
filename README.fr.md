@@ -18,7 +18,7 @@ deviner.
 > N'analysez et ne modifiez que des binaires qui vous appartiennent ou que vous
 > êtes explicitement autorisé à étudier.
 
-![La vue Désassemblage, avec le pseudo-code local à côté](docs/screenshots/disassembly.png)
+![La vue Désassemblage : le listing, les drapeaux de l'instruction sélectionnée dans la barre, et le pseudo-code local à côté](docs/screenshots/disassembly.png)
 
 ## Ce qu'il montre
 
@@ -26,9 +26,9 @@ deviner.
 | --- | --- |
 | **Aperçu** | Format, architecture, point d'entrée, SHA-256, entropie, durcissement (RELRO, canari, NX, PIE, CFG), langage source détecté, et chaque bibliothèque liée — avec l'explication de ce à quoi elle sert. |
 | **Segments** | La table des sections : adresses, tailles, permissions et entropie par section, pour qu'une zone compressée ou chiffrée saute aux yeux. |
-| **Fonctions** | Les fonctions nommées, leur corps, leurs blocs de base et un graphe de flot de contrôle local. |
+| **Fonctions** | Les fonctions nommées, leur corps, leurs blocs de base et un graphe de flot de contrôle local. Un clic sur une ligne ouvre le code de cette fonction dans le listing. |
 | **Chaînes** | Les chaînes imprimables avec leur décalage et leur encodage, filtrables, et les instructions qui les référencent. |
-| **Désassemblage** | Listings x86, x86-64 (iced-x86) et AArch64 (Capstone), avec édition des octets d'une instruction. Un clic droit explique ce que désigne l'opérande et ce qui a écrit en dernier dans chaque registre nommé. |
+| **Désassemblage** | Listings x86, x86-64 (iced-x86) et AArch64 (Capstone), avec édition des octets d'une instruction. Un clic droit explique ce que désigne l'opérande et ce qui a écrit en dernier dans chaque registre nommé. La barre porte les drapeaux de condition de la ligne sélectionnée — ceux qu'elle établit, ceux qu'elle consulte, et ceux dont les octets fixent la valeur quoi qu'il se soit passé avant — et une ligne sur laquelle vous avez écrit est marquée en marge. |
 | **Pseudo-code** | Une traduction prudente du flot décodé, intégrée à l'outil — ou la sortie de Rizin/rz-ghidra ou de RetDec si l'un d'eux est installé et choisi. |
 | **Correctifs** | Les modifications d'octets en attente, et l'export qui les écrit dans une **copie**. Le fichier analysé n'est jamais modifié. |
 | **YARA** | Optionnel. Lance un `yara` ou `yr` installé localement sur le fichier ouvert, avec vos propres règles. Désactivé par défaut. |
@@ -48,7 +48,8 @@ la barre d'actions reste disponible, que le menu soit ouvert ou replié.
 
 **Fonctions.** Les fonctions nommées avec leur taille et leur nombre de blocs,
 le graphe de flot de contrôle local de celle qui est sélectionnée, et son
-pseudo-code en dessous.
+pseudo-code en dessous. La flèche en tête d'une ligne — ou le bouton à côté de
+l'adresse — ouvre le code de cette fonction dans le listing.
 
 ![La vue Fonctions : la liste, un graphe de flot de contrôle et du pseudo-code](docs/screenshots/functions.png)
 
@@ -67,7 +68,7 @@ et le désassemblage correspondant est à un bouton de là.
 **Correctifs.** Les modifications d'octets attendent ici jusqu'à l'export, et
 l'export écrit une copie : le fichier analysé n'est jamais modifié.
 
-![La vue Correctifs, vide, expliquant d'où viennent les modifications](docs/screenshots/patches.png)
+![La vue Correctifs, avec un correctif en attente et l'export qui écrit une copie](docs/screenshots/patches.png)
 
 **Palette de commandes** (`Ctrl+Maj+P`). Toutes les commandes, leur raccourci
 et les fichiers récemment ouverts, dans une seule liste cherchable.
@@ -205,8 +206,6 @@ DESDEC_ICON_SHEET=/tmp/icons.svg cargo test -p desdec-app icon_sheet
 - `crates/desdec-app` — l'application native `egui`.
 - `docs/ARCHITECTURE.md` — le sens des dépendances et ce qui est délibérément
   hors du cœur.
-- `docs/ai-collaboration/WORKLOG.md` — les règles de travail communes aux
-  contributeurs humains et aux assistants IA.
 
 ## Licence
 

@@ -17,7 +17,7 @@ so. Where it does not know, it says that instead of guessing.
 > Only analyse and modify binaries you own or are explicitly authorised to
 > study.
 
-![The disassembly view, with the local pseudo-code beside it](docs/screenshots/disassembly.png)
+![The disassembly view: the listing, the condition flags of the selected instruction in the bar, and the local pseudo-code beside it](docs/screenshots/disassembly.png)
 
 ## What it shows
 
@@ -25,9 +25,9 @@ so. Where it does not know, it says that instead of guessing.
 | --- | --- |
 | **Overview** | Format, architecture, entry point, SHA-256, entropy, hardening (RELRO, canary, NX, PIE, CFG), detected source language, and every linked library — each with an explanation of what it is for. |
 | **Segments** | The section table: addresses, sizes, permissions and per-section entropy, so a packed or encrypted region stands out. |
-| **Functions** | Named functions with their bodies, basic blocks and a local control-flow graph. |
+| **Functions** | Named functions with their bodies, basic blocks and a local control-flow graph. One click on a row opens that function's code in the listing. |
 | **Strings** | Printable strings with their offsets and encodings, filterable, with the instructions that reference them. |
-| **Disassembly** | x86, x86-64 (iced-x86) and AArch64 (Capstone) listings, with per-instruction byte editing. Right-click an instruction to be told what its operand designates and what last wrote each register it names. |
+| **Disassembly** | x86, x86-64 (iced-x86) and AArch64 (Capstone) listings, with per-instruction byte editing. Right-click an instruction to be told what its operand designates and what last wrote each register it names. The bar carries the condition flags of the selected row — which it settles, which it consults, and which of them the bytes settle to a value known whatever ran before — and a row you have written about is marked in the margin. |
 | **Pseudo-code** | A conservative, built-in translation of the decoded flow — or the output of Rizin/rz-ghidra or RetDec when one is installed and chosen. |
 | **Patches** | Pending byte edits, and the export that writes them to a **copy**. The analysed file is never modified. |
 | **YARA** | Optional. Runs a locally installed `yara` or `yr` against the open file with rules you provide. Off by default. |
@@ -48,7 +48,9 @@ the action bar stays available whether the menu is open or shut.
 ![The empty state, with the navigation menu open](docs/screenshots/start.png)
 
 **Functions.** Named functions with their size and block count, the local
-control-flow graph of the selected one, and its pseudo-code underneath.
+control-flow graph of the selected one, and its pseudo-code underneath. The
+arrow at the head of a row — or the button beside the address — opens that
+function's code in the listing.
 
 ![The Functions view: the function list, a control-flow graph and pseudo-code](docs/screenshots/functions.png)
 
@@ -66,7 +68,7 @@ the matching assembly is one button away.
 **Patches.** Byte edits wait here until you export them, and the export writes
 a copy: the analysed file is never modified.
 
-![The Patches view, empty, saying where edits come from](docs/screenshots/patches.png)
+![The Patches view, with one pending edit and the export that writes a copy](docs/screenshots/patches.png)
 
 **Command palette** (`Ctrl+Shift+P`). Every command, its shortcut, and the
 recently opened files, in one searchable list.
@@ -196,8 +198,6 @@ DESDEC_ICON_SHEET=/tmp/icons.svg cargo test -p desdec-app icon_sheet
 - `crates/desdec-app` — the native `egui` application.
 - `docs/ARCHITECTURE.md` — the dependency direction and what is deliberately
   not in the core.
-- `docs/ai-collaboration/WORKLOG.md` — the working agreements shared by human
-  contributors and AI assistants.
 
 ## Licence
 
