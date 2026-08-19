@@ -6,7 +6,7 @@ use crate::{
     i18n::{Language, Text, text},
     preferences::accent,
     ui::{
-        ERROR, MUTED, assistant, card, columns, decompile, disassembly, expert, format_size,
+        ERROR, MUTED, assistant, card, columns, decompile, disassembly, dump, expert, format_size,
         functions, patches_view, segments, strings, yara,
     },
 };
@@ -60,8 +60,27 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
             yara::show(app, ui);
             return;
         }
+        WorkspaceView::Dump => {
+            dump::show(app, ui);
+            return;
+        }
         WorkspaceView::Assistant => {
             assistant::show(app, ui);
+            return;
+        }
+        WorkspaceView::Disassembly => {
+            let action = disassembly::show(app, ui);
+            if let Some(address) = action.inspect {
+                app.inspecting_operand = Some(address);
+                app.dialogs.open(Dialog::Operand);
+            }
+            if let Some(address) = action.edit {
+                // Editing happens where the patches live, so the pending list
+                // and the export are in front of the user straight away.
+                if patches_view::open_editor(app, address) {
+                    app.active_view = WorkspaceView::Patches;
+                }
+            }
             return;
         }
         _ => {}
@@ -108,29 +127,6 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
             &mut app.selected_function,
             language,
         ),
-        WorkspaceView::Disassembly => {
-            let action = disassembly::show(
-                ui,
-                analysis,
-                &mut app.selected_instruction,
-                &mut app.pending_instruction_scroll,
-                &mut app.instruction_attention,
-                &app.patches,
-                &app.stack,
-                language,
-            );
-            if let Some(address) = action.inspect {
-                app.inspecting_operand = Some(address);
-                app.dialogs.open(Dialog::Operand);
-            }
-            if let Some(address) = action.edit {
-                // Editing happens where the patches live, so the pending list
-                // and the export are in front of the user straight away.
-                if patches_view::open_editor(app, address) {
-                    app.active_view = WorkspaceView::Patches;
-                }
-            }
-        }
         view => {
             if let Some(explanation) = view.planned_explanation() {
                 planned_view(ui, view, explanation, language);

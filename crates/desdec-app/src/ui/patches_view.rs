@@ -4,13 +4,13 @@
 //! bytes became, so a patch is judged on what the processor will read rather
 //! than on what the editor meant.
 
-use desdec_core::Architecture;
+use desdec_core::{Architecture, assemble};
 use eframe::egui;
 
 use crate::{
     app::DesdecApp,
     i18n::{Language, Text, text},
-    patches::{Editor, Preview},
+    patches::{Assembled, Editor, Preview},
     ui::{ERROR, MUTED, card, syntax},
 };
 
@@ -48,6 +48,23 @@ fn editor(app: &mut DesdecApp, ui: &mut egui::Ui, architecture: Architecture) {
         ui.add_space(4.0);
         ui.small(text(language, Text::PatchLengthRule));
         ui.add_space(8.0);
+
+        // The assembler first: it is what a reader reaches for, and what it
+        // produces lands in the byte field underneath, where it can still be
+        // corrected by hand.
+        ui.horizontal(|ui| {
+            ui.label(text(language, Text::PatchAssembly));
+            ui.add(
+                egui::TextEdit::singleline(&mut editor.assembly)
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text(text(language, Text::PatchAssemblyHint))
+                    .desired_width(240.0),
+            );
+        });
+        let assembled = editor.take_assembled(architecture);
+        assembled_row(ui, &assembled, language);
+        ui.small(egui::RichText::new(text(language, Text::PatchAssemblyHelp)).color(MUTED));
+        ui.add_space(10.0);
 
         ui.horizontal(|ui| {
             ui.label(text(language, Text::PatchBytes));
@@ -90,11 +107,104 @@ fn editor(app: &mut DesdecApp, ui: &mut egui::Ui, architecture: Architecture) {
     });
 
     if let Some(patch) = record {
+        app.note(
+            crate::journal::Level::Note,
+            format!(
+                "{} {:#x} · {} {}",
+                text(language, Text::JournalPatchRecorded),
+                patch.address,
+                patch.replacement.len(),
+                text(language, Text::JournalBytes)
+            ),
+        );
         app.patches.set(patch);
     }
     if close {
         app.patch_editor = None;
     }
+}
+
+/// What the typed assembly encoded to, or why it could not be used.
+///
+/// Said in full: the bytes it produced, the `nop`s that filled the room it did
+/// not need, or the reason the line was refused. A patch is written to a file
+/// someone else will run, and none of that is a detail.
+fn assembled_row(ui: &mut egui::Ui, assembled: &Assembled, language: Language) {
+    match assembled {
+        Assembled::Fits { bytes, padding } => {
+            ui.horizontal(|ui| {
+                ui.label(syntax::dim(ui, &to_hex(bytes), egui::Color32::TRANSPARENT));
+                if *padding > 0 {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} {padding} {}",
+                            text(language, Text::PatchPadded),
+                            text(language, Text::PatchNops)
+                        ))
+                        .small()
+                        .color(MUTED),
+                    );
+                }
+            });
+        }
+        Assembled::TooLong { encoded, room } => {
+            ui.colored_label(
+                ERROR,
+                format!(
+                    "{} {encoded} {} {room}",
+                    text(language, Text::PatchTooLong),
+                    text(language, Text::PatchRoom)
+                ),
+            );
+        }
+        Assembled::Refused(error) => {
+            ui.colored_label(ERROR, refusal(error, language));
+        }
+        // Nothing typed is not a failure; the byte field is the way in.
+        Assembled::Empty => {
+            ui.label("");
+        }
+    }
+}
+
+/// Why the assembler could not read a line, in its own words.
+fn refusal(error: &assemble::Error, language: Language) -> String {
+    match error {
+        assemble::Error::UnsupportedArchitecture => {
+            text(language, Text::AssemblerUnsupported).to_owned()
+        }
+        assemble::Error::Empty => String::new(),
+        assemble::Error::UnknownMnemonic(mnemonic) => {
+            format!(
+                "{} {mnemonic}",
+                text(language, Text::AssemblerUnknownMnemonic)
+            )
+        }
+        assemble::Error::UnknownOperand(operand) => {
+            format!(
+                "{} {operand}",
+                text(language, Text::AssemblerUnknownOperand)
+            )
+        }
+        assemble::Error::WrongOperands(mnemonic) => {
+            format!(
+                "{} {mnemonic}",
+                text(language, Text::AssemblerWrongOperands)
+            )
+        }
+        assemble::Error::Refused(reason) => {
+            format!("{} {reason}", text(language, Text::AssemblerRefused))
+        }
+    }
+}
+
+/// A run of bytes as the editor writes them.
+fn to_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// What the typed bytes decode to, or why they cannot be used.

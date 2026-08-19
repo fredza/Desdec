@@ -1,6 +1,9 @@
 //! Stable, UI-independent primitives for inspecting executable files.
 
 mod analysis;
+/// Turning a typed instruction back into bytes; see the module's own
+/// documentation.
+pub mod assemble;
 /// Optional AI assistance; see the module's own documentation.
 pub mod assistant;
 mod binary;

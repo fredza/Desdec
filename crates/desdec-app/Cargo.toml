@@ -10,14 +10,18 @@ desdec-core = { path = "../desdec-core" }
 eframe = { version = "0.31", features = ["persistence"] }
 pollster = "0.4"
 rfd = "0.15"
+# The reader's own notes are written in the same format the preferences use.
+ron = "0.8"
 serde = { version = "1", features = ["derive"] }
+# The wall clock, for the session's account. `local-offset` is what turns UTC
+# into the reader's own time; it is read once in `main`, before any thread
+# exists, which is the only moment the library will answer.
+time = { version = "0.3", features = ["local-offset"] }
 
 [dev-dependencies]
 # Synthetic ELF, PE and Mach-O binaries, so the interface tests do not depend
 # on the format and architecture of the machine they happen to run on.
 desdec-core = { path = "../desdec-core", features = ["fixtures"] }
-# Same format eframe uses for its native storage file.
-ron = "0.8"
 
 [lints]
 workspace = true

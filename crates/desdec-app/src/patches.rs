@@ -4,7 +4,7 @@
 //! which instructions were edited, and the export writes exactly what it holds.
 //! Nothing here touches the disk — [`desdec_core::patch`] does that, to a copy.
 
-use desdec_core::{Analysis, Architecture, Instruction, Patch, PatchError, decode_one};
+use desdec_core::{Analysis, Architecture, Instruction, Patch, PatchError, assemble, decode_one};
 
 /// An instruction being edited, with what its bytes currently decode to.
 pub struct Editor {
@@ -14,6 +14,27 @@ pub struct Editor {
     pub original: Vec<u8>,
     /// Hex the user is typing. Kept as text so a half-typed byte is not lost.
     pub input: String,
+    /// The instruction the reader is typing, when they would rather write one
+    /// than count bytes.
+    pub assembly: String,
+    /// The assembly last encoded into `input`, so typing bytes by hand is not
+    /// undone on the next frame by an assembly line that has not changed.
+    assembled_from: String,
+}
+
+/// What the typed assembly became, or why it cannot be used.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Assembled {
+    /// Bytes that fit where they are going, and how many `nop`s were added to
+    /// fill the room left over.
+    Fits { bytes: Vec<u8>, padding: usize },
+    /// It encodes longer than the instruction it would replace. Writing it
+    /// would move every byte after it, which a patch must never do.
+    TooLong { encoded: usize, room: usize },
+    /// The assembler could not read the line.
+    Refused(assemble::Error),
+    /// Nothing has been typed.
+    Empty,
 }
 
 /// What the bytes currently in the editor mean.
@@ -39,12 +60,61 @@ impl Editor {
             file_offset,
             original: instruction.bytes.to_vec(),
             input: to_hex(&instruction.bytes),
+            assembly: String::new(),
+            assembled_from: String::new(),
         }
     }
 
     /// Restores the bytes the file actually contains.
     pub fn reset(&mut self) {
         self.input = to_hex(&self.original);
+        self.assembly.clear();
+        self.assembled_from.clear();
+    }
+
+    /// What the typed assembly would write here.
+    ///
+    /// A patch keeps the length of what it replaces — anything else moves
+    /// every byte after it — so a shorter encoding is filled out with `nop`s,
+    /// exactly as a reader would do by hand, and a longer one is refused with
+    /// the room it would have needed.
+    #[must_use]
+    pub fn assembled(&self, architecture: Architecture) -> Assembled {
+        if self.assembly.trim().is_empty() {
+            return Assembled::Empty;
+        }
+        let mut bytes = match assemble::assemble(&self.assembly, architecture, self.address) {
+            Ok(bytes) => bytes,
+            Err(error) => return Assembled::Refused(error),
+        };
+        let room = self.original.len();
+        if bytes.len() > room {
+            return Assembled::TooLong {
+                encoded: bytes.len(),
+                room,
+            };
+        }
+        let padding = room - bytes.len();
+        bytes.resize(room, assemble::PADDING);
+        Assembled::Fits { bytes, padding }
+    }
+
+    /// Puts the assembled bytes in the byte field, once, when the line they
+    /// came from has changed.
+    ///
+    /// Once and not every frame: the byte field stays the thing that gets
+    /// written, and a reader who edits it by hand afterwards must not have
+    /// their edit overwritten by an assembly line they have stopped touching.
+    pub fn take_assembled(&mut self, architecture: Architecture) -> Assembled {
+        let outcome = self.assembled(architecture);
+        if self.assembled_from == self.assembly {
+            return outcome;
+        }
+        self.assembled_from.clone_from(&self.assembly);
+        if let Assembled::Fits { bytes, .. } = &outcome {
+            self.input = to_hex(bytes);
+        }
+        outcome
     }
 
     /// Reads the typed hex, refusing anything that changes the length.
@@ -117,6 +187,21 @@ impl Patches {
         self.entries.len()
     }
 
+    /// The byte a pending patch would write at a file offset, if one would.
+    ///
+    /// By offset rather than by address, because that is what a dump of the
+    /// file is laid out in — and what the export will actually write to.
+    #[must_use]
+    pub fn byte_at_offset(&self, offset: u64) -> Option<u8> {
+        self.entries.iter().find_map(|patch| {
+            let within = offset.checked_sub(patch.file_offset)?;
+            patch
+                .replacement
+                .get(usize::try_from(within).ok()?)
+                .copied()
+        })
+    }
+
     /// Whether an instruction already carries a patch.
     #[must_use]
     pub fn patch_at(&self, address: u64) -> Option<&Patch> {
@@ -150,17 +235,7 @@ impl Patches {
 /// and friends — has no offset to write to, and cannot be patched.
 #[must_use]
 pub fn file_offset_of(analysis: &Analysis, address: u64) -> Option<u64> {
-    analysis.sections.iter().find_map(|section| {
-        let end = section.virtual_address.saturating_add(section.file_size);
-        (section.is_mapped()
-            && section.file_size > 0
-            && (section.virtual_address..end).contains(&address))
-        .then(|| {
-            section
-                .file_offset
-                .saturating_add(address.saturating_sub(section.virtual_address))
-        })
-    })
+    analysis.file_offset_of(address)
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -283,6 +358,78 @@ mod tests {
         patches.set(Patch::new(0x1136, 0x40_1136, vec![0x55], vec![0x55]).expect("same length"));
 
         assert!(patches.is_empty());
+    }
+
+    /// The point of the assembler: a reader types an instruction, and the
+    /// bytes that will be written appear underneath it.
+    #[test]
+    fn typing_an_instruction_fills_the_byte_field() {
+        let mut editor = Editor::new(&instruction(0x40_1000, &[0x90; 3]), 0x1000);
+        editor.assembly = "mov rbp, rsp".to_owned();
+
+        let outcome = editor.take_assembled(Architecture::X86_64);
+
+        assert_eq!(
+            outcome,
+            Assembled::Fits {
+                bytes: vec![0x48, 0x89, 0xe5],
+                padding: 0
+            }
+        );
+        assert_eq!(editor.input, "48 89 e5");
+    }
+
+    /// A patch keeps the length of what it replaces, so the room left over is
+    /// filled with `nop`s rather than left to move everything after it.
+    #[test]
+    fn a_short_encoding_is_filled_out_with_nops() {
+        let mut editor = Editor::new(&instruction(0x40_1000, &[0x90; 7]), 0x1000);
+        editor.assembly = "ret".to_owned();
+
+        let outcome = editor.take_assembled(Architecture::X86_64);
+
+        assert_eq!(
+            outcome,
+            Assembled::Fits {
+                bytes: vec![0xc3, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90],
+                padding: 6
+            }
+        );
+        assert_eq!(editor.input, "c3 90 90 90 90 90 90");
+    }
+
+    /// Longer than the room it has is refused: writing it would move every
+    /// byte after it.
+    #[test]
+    fn an_encoding_that_does_not_fit_is_refused_with_its_measurements() {
+        let mut editor = Editor::new(&instruction(0x40_1000, &[0x90; 2]), 0x1000);
+        editor.assembly = "mov rax, 0x1122334455667788".to_owned();
+
+        let outcome = editor.take_assembled(Architecture::X86_64);
+
+        assert_eq!(
+            outcome,
+            Assembled::TooLong {
+                encoded: 10,
+                room: 2
+            }
+        );
+        assert_eq!(editor.input, "90 90", "the bytes are left as they were");
+    }
+
+    /// The byte field is what gets written, so an edit made in it by hand must
+    /// survive the frames that follow.
+    #[test]
+    fn bytes_edited_by_hand_are_not_overwritten_by_a_settled_assembly_line() {
+        let mut editor = Editor::new(&instruction(0x40_1000, &[0x90]), 0x1000);
+        editor.assembly = "ret".to_owned();
+        let _ = editor.take_assembled(Architecture::X86_64);
+        assert_eq!(editor.input, "c3");
+
+        editor.input = "cc".to_owned();
+        let _ = editor.take_assembled(Architecture::X86_64);
+
+        assert_eq!(editor.input, "cc", "the hand edit stands");
     }
 
     #[test]
