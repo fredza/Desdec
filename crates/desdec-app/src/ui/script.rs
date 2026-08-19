@@ -415,4 +415,46 @@ mod tests {
             "the window names the permission to grant, not an engine error"
         );
     }
+
+    /// The shortcut, pressed as a reader presses it.
+    ///
+    /// Every other test here calls `run_command` directly, which proves what
+    /// the command does and nothing about whether a key ever reaches it. This
+    /// one goes through the whole frame — input, `process_shortcuts`, the
+    /// command registry — because a console nobody can open is a console that
+    /// does not exist.
+    #[test]
+    fn the_shortcut_opens_the_console_and_the_key_runs_what_is_in_it() {
+        let ctx = egui::Context::default();
+        let mut app = opened_app(WorkspaceView::Disassembly);
+        app.script.source = "print(instruction_count());".to_owned();
+
+        let mut held = window_input();
+        held.modifiers = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        held.events = vec![egui::Event::Key {
+            key: egui::Key::S,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: held.modifiers,
+        }];
+        let _ = ctx.run(held, |ctx| app.run_frame(ctx));
+        assert!(
+            app.dialogs.is_open(Dialog::Console),
+            "Ctrl+Shift+S opens the console"
+        );
+
+        let mut f5 = window_input();
+        f5.events = vec![egui::Event::Key {
+            key: egui::Key::F5,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }];
+        let _ = ctx.run(f5, |ctx| app.run_frame(ctx));
+        let last = app.script.last.as_ref().expect("F5 ran it");
+        assert_eq!(last.failure, None, "{last:?}");
+        assert_eq!(last.printed.len(), 1);
+    }
 }
