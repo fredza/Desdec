@@ -129,10 +129,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: desdec-*-release
-          merge-multiple: true
+      # The checkout comes first, and must stay first. `actions/checkout`
+      # cleans the working directory it lands in, and the artifacts land in
+      # that same directory: run the other way round, it deletes all three
+      # archives between downloading them and publishing them. v0.3.0 was
+      # published with nothing in it but the key, and the job went green.
+      #
       # The public half of the signing key travels with the binaries, so a
       # reader has both halves of the check without hunting for either. The
       # private half is never here: it stays on the maintainer's machine, and
@@ -142,10 +144,17 @@ jobs:
         with:
           sparse-checkout: desdec-signing-key.asc
           sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desdec-*-release
+          merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           append_body: true
+          # A named file that is not there is the failure this job exists to
+          # avoid, and it must stop the release rather than shrink it.
+          fail_on_unmatched_files: true
           body: |
             Signed by **Frédéric Zawalski @2026 bdom** —
             key `C9A3 1D07 46E0 65C4 E2EA  33F6 08FA 1D81 8A91 F329`.
