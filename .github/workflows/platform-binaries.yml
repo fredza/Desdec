@@ -42,6 +42,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
+      # Every job here compiled the whole dependency tree from nothing, twice
+      # over — capstone, iced-x86, eframe, rhai — and then the workspace in
+      # debug for the tests and again in release for the artifact. That is
+      # where the fifty-five minutes went, and none of it changes between one
+      # tag and the next.
+      #
+      # The cache is keyed by job, target and lockfile, so a dependency that
+      # really did change is rebuilt and one that did not is restored. The
+      # workspace's own crates are deliberately not cached: they change every
+      # time, and restoring a stale `desdec-core` is how a release ships code
+      # nobody wrote.
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo build --locked --release -p desdec-app --target x86_64-unknown-linux-gnu
       - name: Archive release executable and checksum
@@ -65,6 +77,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+      # Every job here compiled the whole dependency tree from nothing, twice
+      # over — capstone, iced-x86, eframe, rhai — and then the workspace in
+      # debug for the tests and again in release for the artifact. That is
+      # where the fifty-five minutes went, and none of it changes between one
+      # tag and the next.
+      #
+      # The cache is keyed by job, target and lockfile, so a dependency that
+      # really did change is rebuilt and one that did not is restored. The
+      # workspace's own crates are deliberately not cached: they change every
+      # time, and restoring a stale `desdec-core` is how a release ships code
+      # nobody wrote.
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo build --locked -p desdec-app --target x86_64-pc-windows-msvc
       - name: Archive debug executable
@@ -99,6 +123,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+      # Every job here compiled the whole dependency tree from nothing, twice
+      # over — capstone, iced-x86, eframe, rhai — and then the workspace in
+      # debug for the tests and again in release for the artifact. That is
+      # where the fifty-five minutes went, and none of it changes between one
+      # tag and the next.
+      #
+      # The cache is keyed by job, target and lockfile, so a dependency that
+      # really did change is rebuilt and one that did not is restored. The
+      # workspace's own crates are deliberately not cached: they change every
+      # time, and restoring a stale `desdec-core` is how a release ships code
+      # nobody wrote.
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo build --locked -p desdec-app --target aarch64-apple-darwin
       - name: Archive debug executable
