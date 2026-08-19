@@ -11,6 +11,7 @@ pub mod decompile;
 pub mod disassembly;
 pub mod dump;
 pub mod expert;
+pub mod flags;
 pub mod functions;
 pub mod library_note;
 pub mod navigation;

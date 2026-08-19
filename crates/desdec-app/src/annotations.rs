@@ -69,6 +69,17 @@ impl Annotations {
             .filter(|comment| !comment.is_empty())
     }
 
+    /// Whether the reader has written anything about this address — a name
+    /// or a sentence, as opposed to merely marking the row.
+    ///
+    /// Asked once per drawn row so the listing can put a mark in the margin
+    /// where a note sits: the note itself rides at the end of the line, which
+    /// is off the right edge of a listing scrolled to look at the bytes.
+    #[must_use]
+    pub fn has_note(&self, address: u64) -> bool {
+        self.label(address).is_some() || self.comment(address).is_some()
+    }
+
     #[must_use]
     pub fn is_bookmarked(&self, address: u64) -> bool {
         self.at(address)
@@ -214,6 +225,27 @@ mod tests {
         annotations.toggle_bookmark(0x0040_1000);
         assert!(!annotations.is_bookmarked(0x0040_1000));
         assert!(annotations.is_empty(), "an unmarked address is not a note");
+    }
+
+    /// The margin mark stands for something written, not for a bookmark: a
+    /// row marked to come back to already has its own star, and a dot beside
+    /// it would promise a note that is not there.
+    #[test]
+    fn a_bookmark_alone_is_not_a_note() {
+        let mut annotations = Annotations::default();
+        annotations.toggle_bookmark(0x0040_1000);
+        assert!(!annotations.has_note(0x0040_1000));
+
+        annotations.set(
+            0x0040_1000,
+            Annotation {
+                comment: "reads the magic".to_owned(),
+                bookmarked: true,
+                ..Annotation::default()
+            },
+        );
+        assert!(annotations.has_note(0x0040_1000));
+        assert!(!annotations.has_note(0x0040_2000), "an untouched address");
     }
 
     /// Notes are keyed by the bytes they were written about, so a renamed or

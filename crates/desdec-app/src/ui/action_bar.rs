@@ -6,6 +6,7 @@ use crate::{
     i18n::Text,
     icons::{self, Icon},
     preferences::accent,
+    ui::flags,
 };
 
 const HEIGHT: f32 = 48.0;
@@ -199,6 +200,16 @@ fn toolbar(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
         {
             app.run_command(ctx, command);
         }
+    }
+
+    // The condition flags of the selected instruction, following the listing
+    // row by row. Drawn in the bar's own direction rather than among the
+    // right-aligned actions, where they would have come out back to front, and
+    // only while there is room for them and for the actions after them: the
+    // bar is one fixed row, and a narrow window must not lose the palette.
+    if ui.available_width() > flags::NEEDED_WIDTH {
+        ui.separator();
+        flags::show(app, ui);
     }
 
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

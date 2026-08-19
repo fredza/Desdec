@@ -91,6 +91,10 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
         return;
     };
 
+    // An address a view asked the listing to show. Acted on after the borrow
+    // of the analysis has ended, since moving the workspace takes the whole
+    // application.
+    let mut go_to = None;
     match view {
         WorkspaceView::Overview => {
             let explain = app.preferences.explain_libraries;
@@ -120,18 +124,23 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 app.copy_to_clipboard(ui.ctx(), &value, Text::AddressCopied);
             }
         }
-        WorkspaceView::Functions => functions::show(
-            ui,
-            analysis,
-            &app.functions,
-            &mut app.selected_function,
-            language,
-        ),
+        WorkspaceView::Functions => {
+            go_to = functions::show(
+                ui,
+                analysis,
+                &app.functions,
+                &mut app.selected_function,
+                language,
+            );
+        }
         view => {
             if let Some(explanation) = view.planned_explanation() {
                 planned_view(ui, view, explanation, language);
             }
         }
+    }
+    if let Some(address) = go_to {
+        app.go_to_address(ui.ctx(), address);
     }
 }
 

@@ -26,7 +26,8 @@ what keeps it usable as a library and testable without a window.
   the analysis read.
 - **Analysis** — printable strings, per-region entropy, the source language a
   file gives evidence of, what an operand designates, what last wrote a
-  register, and the stack state at each instruction (`Trace`).
+  register, which condition flags an instruction settles and consults
+  (`flags`), and the stack state at each instruction (`Trace`).
 - **Assembly and patching** — one typed line encoded back to bytes
   (`assemble`), and patches that keep their length and are written to a copy.
 - **Optional external tools** — decompilers (`rizin` + `rz-ghidra`, RetDec),

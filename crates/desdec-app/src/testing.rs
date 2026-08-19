@@ -288,6 +288,16 @@ mod frame_sheet {
                     })
                 );
             }
+            egui::Shape::Circle(circle) => {
+                let _ = writeln!(
+                    out,
+                    "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{}\"/>",
+                    circle.center.x,
+                    circle.center.y,
+                    circle.radius,
+                    colour(circle.fill)
+                );
+            }
             egui::Shape::LineSegment { points, stroke } => {
                 let _ = writeln!(
                     out,

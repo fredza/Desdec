@@ -23,6 +23,7 @@ use std::{
 pub mod details;
 pub mod disassembly;
 pub mod entropy;
+pub mod flags;
 pub mod hash;
 pub mod language;
 pub mod operand;

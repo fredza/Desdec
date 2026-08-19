@@ -6,3 +6,7 @@ captures_moi/
 *.private.asc
 *secret-key*
 *.gpg
+
+# Le journal de collaboration reste local : il relaie le travail entre
+# sessions, il ne fait pas partie de ce que le dépôt publie.
+docs/ai-collaboration/

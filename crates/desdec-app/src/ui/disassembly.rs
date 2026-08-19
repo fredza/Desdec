@@ -24,8 +24,23 @@ const PATCHED: egui::Color32 = egui::Color32::from_rgb(224, 164, 104);
 /// the one thing in a listing the reader follows rather than reads.
 const JUMP: egui::Color32 = egui::Color32::from_rgb(91, 201, 139);
 
-/// Room kept to the left of every row for those arrows.
-const GUTTER_WIDTH: f32 = 26.0;
+/// A row the reader has written on. Blue, and quiet: the mark says "there is
+/// something of yours here", and the note itself is at the end of the line.
+const NOTE: egui::Color32 = egui::Color32::from_rgb(94, 158, 236);
+
+/// Room kept to the left of every row: the note dot, the bookmark star, and
+/// the arrows, in that order from the edge.
+const GUTTER_WIDTH: f32 = 36.0;
+
+/// Where the note dot sits in the gutter, from its left edge, and how big it
+/// is. Outside the arrows' lanes on purpose: a mark that a jump can be drawn
+/// through is one the reader has to look twice at.
+const NOTE_DOT_CENTRE: f32 = 4.5;
+const NOTE_DOT_RADIUS: f32 = 3.5;
+
+/// Where the bookmark star sits, from the same edge — just right of the dot,
+/// so a row carrying both reads as two marks rather than one smudge.
+const BOOKMARK_OFFSET: f32 = 9.0;
 
 /// Space between two arrows drawn over the same rows.
 const LANE_SPACING: f32 = 5.0;
@@ -578,17 +593,12 @@ fn instruction_row(
     let language = listing.language;
     let mut asked = Asked::default();
     let gutter = gutter_cell(ui);
-    // A mark in the margin, where a reader's eye runs down the listing looking
-    // for the rows they meant to come back to.
-    if listing.notes.is_bookmarked(instruction.address) {
-        ui.painter().text(
-            gutter.left_center(),
-            egui::Align2::LEFT_CENTER,
-            BOOKMARK,
-            egui::FontId::monospace(11.0),
-            listing.accent,
-        );
-    }
+    // Marks in the margin, where a reader's eye runs down the listing looking
+    // for the rows they worked on. The note itself rides at the end of the
+    // line, which is off screen the moment the listing is scrolled to read the
+    // bytes — so a row carrying one says so from the margin, which never
+    // scrolls away.
+    marks(ui, gutter, instruction.address, listing);
     let selected_fill =
         decompile::instruction_fill(ui, instruction.address, *selected_instruction, attention);
     let patch = listing.patches.patch_at(instruction.address);
@@ -698,6 +708,56 @@ fn instruction_row(
 /// The mark a bookmarked row carries. Drawn from the font rather than painted,
 /// so it sits on the same baseline as the rest of the row.
 const BOOKMARK: &str = "\u{2605}";
+
+/// What the reader has left on this row, drawn in the margin: a blue dot for a
+/// note, a star for a bookmark.
+///
+/// Hovering the margin says what the note is, so a listing full of dots can be
+/// read without opening each one in turn.
+fn marks(ui: &mut egui::Ui, gutter: egui::Rect, address: u64, listing: &Listing) {
+    if listing.notes.has_note(address) {
+        ui.painter().circle_filled(
+            egui::pos2(gutter.left() + NOTE_DOT_CENTRE, gutter.center().y),
+            NOTE_DOT_RADIUS,
+            NOTE,
+        );
+        // Interacted with after the fact rather than sensed when the cell was
+        // allocated: the cell is the arrows' canvas, and giving the whole
+        // width a tooltip would follow the pointer down every jump.
+        let dot = egui::Rect::from_center_size(
+            egui::pos2(gutter.left() + NOTE_DOT_CENTRE, gutter.center().y),
+            egui::vec2(NOTE_DOT_RADIUS * 2.0, ROW_HEIGHT),
+        );
+        ui.interact(
+            dot,
+            ui.id().with(("note_dot", address)),
+            egui::Sense::hover(),
+        )
+        .on_hover_text(note_text(address, listing));
+    }
+    if listing.notes.is_bookmarked(address) {
+        ui.painter().text(
+            gutter.left_center() + egui::vec2(BOOKMARK_OFFSET, 0.0),
+            egui::Align2::LEFT_CENTER,
+            BOOKMARK,
+            egui::FontId::monospace(11.0),
+            listing.accent,
+        );
+    }
+}
+
+/// The note behind a dot, as the margin reports it: what it is, then what it
+/// says.
+fn note_text(address: u64, listing: &Listing) -> String {
+    let mut lines = vec![text(listing.language, Text::RowHasNote).to_owned()];
+    if let Some(label) = listing.notes.label(address) {
+        lines.push(label.to_owned());
+    }
+    if let Some(comment) = listing.notes.comment(address) {
+        lines.push(comment.to_owned());
+    }
+    lines.join("\n")
+}
 
 /// The empty cell each row keeps to the left for the jump arrows.
 fn gutter_cell(ui: &mut egui::Ui) -> egui::Rect {
@@ -1116,6 +1176,86 @@ mod tests {
     fn first_two() -> Option<(u64, u64)> {
         let instructions = &reference_analysis().instructions;
         Some((instructions.first()?.address, instructions.get(1)?.address))
+    }
+
+    /// Every dot of the note colour a frame drew.
+    fn note_dots(shapes: &[egui::epaint::ClippedShape]) -> usize {
+        fn walk(shape: &egui::Shape, out: &mut usize) {
+            match shape {
+                egui::Shape::Circle(circle) if circle.fill == super::NOTE => *out += 1,
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = 0;
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// A note rides at the end of its line, which is off the right edge of a
+    /// listing scrolled to read the bytes. The margin says one is there, and
+    /// the margin never scrolls away.
+    #[test]
+    fn a_noted_row_is_marked_in_the_margin() {
+        let Some((first, _)) = first_two() else {
+            return;
+        };
+        let mut app = opened_app(WorkspaceView::Disassembly);
+        let ctx = egui::Context::default();
+
+        let output = ctx.run(window_input(), |ctx| {
+            views::show_central_panel(&mut app, ctx);
+        });
+        assert_eq!(
+            note_dots(&output.shapes),
+            0,
+            "nothing has been written about this binary yet"
+        );
+
+        app.annotations.set(
+            first,
+            crate::annotations::Annotation {
+                comment: "ce que fait cette ligne".to_owned(),
+                ..crate::annotations::Annotation::default()
+            },
+        );
+        let output = ctx.run(window_input(), |ctx| {
+            views::show_central_panel(&mut app, ctx);
+        });
+        assert_eq!(
+            note_dots(&output.shapes),
+            1,
+            "the noted row, and only it, must carry a dot"
+        );
+    }
+
+    /// A row marked to come back to is not a row written about: the star is
+    /// its own mark, and a dot beside it would promise a note that is not
+    /// there.
+    #[test]
+    fn a_bookmark_alone_draws_no_dot() {
+        let Some((first, _)) = first_two() else {
+            return;
+        };
+        let mut app = opened_app(WorkspaceView::Disassembly);
+        app.annotations.toggle_bookmark(first);
+        let ctx = egui::Context::default();
+
+        let output = ctx.run(window_input(), |ctx| {
+            views::show_central_panel(&mut app, ctx);
+        });
+
+        assert_eq!(note_dots(&output.shapes), 0);
+        assert!(
+            drawn_text(&output.shapes).contains(super::BOOKMARK),
+            "the bookmark itself must still be drawn"
+        );
     }
 
     /// The listing is where a reader spends their time, and reaching the next

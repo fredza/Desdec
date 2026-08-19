@@ -17,7 +17,10 @@ use crate::{
 };
 
 /// Size assumed the first time the window opens, before egui has measured it.
-const ASSUMED_SIZE: egui::Vec2 = egui::vec2(520.0, 340.0);
+const ASSUMED_SIZE: egui::Vec2 = egui::vec2(520.0, 440.0);
+
+/// Past this the contents scroll instead of pushing the window off screen.
+const MAXIMUM_HEIGHT: f32 = 560.0;
 
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     if !app.dialogs.is_open(Dialog::Operand) {
@@ -39,7 +42,14 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     if let Some(step) = app.dialogs.opening_step(Dialog::Operand) {
         window = window.current_pos(crate::ui::opening_position(ctx, id, step, ASSUMED_SIZE));
     }
-    window.show(ctx, |ui| contents(app, ui, address));
+    // The window says more than it used to, and an instruction naming three
+    // registers makes it taller than some screens. It scrolls rather than
+    // growing past the edge, where the last answer would be unreachable.
+    window.show(ctx, |ui| {
+        egui::ScrollArea::vertical()
+            .max_height(MAXIMUM_HEIGHT)
+            .show(ui, |ui| contents(app, ui, address));
+    });
 
     app.dialogs.set(Dialog::Operand, open);
     if !open {
@@ -48,7 +58,6 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
 }
 
 fn contents(app: &DesdecApp, ui: &mut egui::Ui, address: u64) {
-    let language = app.preferences.language;
     let Some(analysis) = app.analysis.as_ref() else {
         return;
     };
@@ -69,13 +78,24 @@ fn contents(app: &DesdecApp, ui: &mut egui::Ui, address: u64) {
             egui::Color32::TRANSPARENT,
         ));
     });
+    // What the window is for, said once at the top. The two answers below look
+    // alike on screen and are not worth the same, and a reader who has not
+    // been told that will read the second as if it were the first.
+    ui.add_space(6.0);
+    explanation(ui, app.t(Text::OperandInspectionIntro));
     ui.add_space(10.0);
 
-    match operand::resolve(analysis, instruction, &app.file_bytes) {
-        Some(target) => target_rows(ui, app, &target),
-        None => {
-            ui.label(egui::RichText::new(app.t(Text::NoTargetResolved)).color(MUTED));
-        }
+    heading(ui, app.t(Text::OperandTargetHeading));
+    if let Some(target) = operand::resolve(analysis, instruction, &app.file_bytes) {
+        explanation(ui, app.t(Text::OperandTargetExplained));
+        ui.add_space(6.0);
+        target_rows(ui, app, &target);
+    } else {
+        ui.label(egui::RichText::new(app.t(Text::NoTargetResolved)).color(MUTED));
+        // Why there is nothing here, rather than only that there is nothing:
+        // an empty answer reads as a failure of the tool, and this one is a
+        // fact about the instruction.
+        explanation(ui, app.t(Text::NoTargetExplained));
     }
 
     ui.add_space(12.0);
@@ -84,8 +104,24 @@ fn contents(app: &DesdecApp, ui: &mut egui::Ui, address: u64) {
     register_rows(ui, app, analysis, instruction, architecture);
 
     ui.add_space(12.0);
-    ui.small(egui::RichText::new(app.t(Text::StaticOnlyWarning)).color(MUTED));
-    let _ = language;
+    explanation(ui, app.t(Text::StaticOnlyWarning));
+}
+
+/// A numbered heading, so the two answers read as two answers rather than as
+/// one list that changes subject halfway down.
+fn heading(ui: &mut egui::Ui, title: &str) {
+    ui.label(egui::RichText::new(title).strong());
+    ui.add_space(2.0);
+}
+
+/// A sentence about what follows, wrapped to the window's width.
+///
+/// A `Label` rather than [`egui::Ui::small`]: two of those in a row are drawn
+/// at the same place, and the paragraphs here come in runs. Wrapping is asked
+/// for rather than left to the default — these are sentences, and one of them
+/// running off the edge would take the explanation with it.
+fn explanation(ui: &mut egui::Ui, sentence: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(sentence).small().color(MUTED)).wrap());
 }
 
 /// Where the operand points, and what is there.
@@ -94,29 +130,32 @@ fn target_rows(ui: &mut egui::Ui, app: &DesdecApp, target: &operand::Target) {
         .num_columns(2)
         .spacing([20.0, 6.0])
         .show(ui, |ui| {
-            ui.strong(app.t(Text::Designates));
+            // Each field says what it is on hover: the grid is five terse
+            // words down the left edge, and "Symbole" alone does not tell a
+            // reader whether the address is the symbol's or merely inside it.
+            field(ui, app, Text::Designates, Text::DesignatesExplained);
             ui.label(egui::RichText::new(format!("{:#018x}", target.address)).monospace());
             ui.end_row();
 
             if let Some(section) = &target.section {
-                ui.strong(app.t(Text::TargetSection));
+                field(ui, app, Text::TargetSection, Text::TargetSectionExplained);
                 ui.label(egui::RichText::new(section).monospace());
                 ui.end_row();
             }
             if let Some(symbol) = &target.symbol {
-                ui.strong(app.t(Text::TargetSymbol));
+                field(ui, app, Text::TargetSymbol, Text::TargetSymbolExplained);
                 ui.label(egui::RichText::new(symbol).monospace());
                 ui.end_row();
             }
             // Text is what a reader is usually after, so it comes before the
             // raw bytes it was read from.
             if let Some(text) = &target.text {
-                ui.strong(app.t(Text::TargetText));
+                field(ui, app, Text::TargetText, Text::TargetTextExplained);
                 ui.label(egui::RichText::new(format!("{text:?}")).monospace());
                 ui.end_row();
             }
             if !target.bytes.is_empty() {
-                ui.strong(app.t(Text::TargetBytes));
+                field(ui, app, Text::TargetBytes, Text::TargetBytesExplained);
                 ui.label(syntax::dim(
                     ui,
                     &hex(&target.bytes),
@@ -125,6 +164,12 @@ fn target_rows(ui: &mut egui::Ui, app: &DesdecApp, target: &operand::Target) {
                 ui.end_row();
             }
         });
+}
+
+/// A field's name, with the sentence saying what it means on hover.
+fn field(ui: &mut egui::Ui, app: &DesdecApp, label: Text, explained: Text) {
+    let response = ui.strong(app.t(label));
+    app.tooltip(response, app.t(explained));
 }
 
 /// What last wrote each register the instruction names.
@@ -139,6 +184,9 @@ fn register_rows(
     if registers.is_empty() {
         return;
     }
+    heading(ui, app.t(Text::OperandRegistersHeading));
+    explanation(ui, app.t(Text::OperandRegistersExplained));
+    ui.add_space(8.0);
     for register in registers {
         ui.horizontal(|ui| {
             ui.strong(app.t(Text::LastWriteTo));
@@ -159,7 +207,10 @@ fn register_rows(
                     ));
                 });
                 ui.horizontal(|ui| {
-                    ui.small(app.t(Text::WrittenValue));
+                    let title = ui.add(egui::Label::new(
+                        egui::RichText::new(app.t(Text::WrittenValue)).small(),
+                    ));
+                    app.tooltip(title, app.t(Text::WrittenValueExplained));
                     match write.value {
                         Some(value) => {
                             ui.label(egui::RichText::new(format!("{value:#x}")).monospace());

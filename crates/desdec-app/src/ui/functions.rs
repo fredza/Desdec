@@ -60,36 +60,71 @@ impl BasicBlock {
     }
 }
 
+/// Draws the view, returning the address the reader asked to see in the
+/// listing.
+///
+/// Returned rather than jumped to here: this view holds a borrow of the
+/// analysis, and moving the workspace to the disassembly is the application's
+/// business, not the table's.
 pub fn show(
     ui: &mut egui::Ui,
     analysis: &Analysis,
     functions: &[Function],
     selected_function: &mut Option<u64>,
     language: Language,
-) {
+) -> Option<u64> {
     if functions.is_empty() {
         ui.label(egui::RichText::new(text(language, Text::NoFunctionSymbols)).color(MUTED));
-        return;
+        return None;
     }
     if !selected_function.is_some_and(|address| functions.iter().any(|item| item.start == address))
     {
         *selected_function = Some(functions[0].start);
     }
 
+    let mut go_to = None;
     ui.columns(2, |columns| {
-        function_list(&mut columns[0], functions, selected_function, language);
+        go_to = function_list(
+            &mut columns[0],
+            analysis,
+            functions,
+            selected_function,
+            language,
+        );
         let selected = selected_function
             .and_then(|address| functions.iter().find(|function| function.start == address));
-        function_details(&mut columns[1], analysis, selected, language);
+        go_to = go_to.or(function_details(
+            &mut columns[1],
+            analysis,
+            selected,
+            language,
+        ));
     });
+    go_to
+}
+
+/// The first decoded instruction of a function, which is where the listing is
+/// sent when the reader asks to see it.
+///
+/// `None` for a symbol whose body was never decoded — one in a section the
+/// decoder does not read, or past the analysis limit. The offer to jump is
+/// withheld rather than made and refused.
+fn entry(function: &Function, analysis: &Analysis) -> Option<u64> {
+    analysis
+        .instructions
+        .get(function.instructions.start)
+        .filter(|_| !function.instructions.is_empty())
+        .map(|instruction| instruction.address)
 }
 
 fn function_list(
     ui: &mut egui::Ui,
+    analysis: &Analysis,
     functions: &[Function],
     selected_function: &mut Option<u64>,
     language: Language,
-) {
+) -> Option<u64> {
+    let mut go_to = None;
     card(ui, text(language, Text::Functions), |ui| {
         // Virtualised like the listings: a stripped-nothing binary declares
         // tens of thousands of function symbols, and the table never changes
@@ -100,7 +135,7 @@ fn function_list(
             .auto_shrink([false, false])
             .show_rows(ui, ROW_HEIGHT, functions.len() + 1, |ui, rows| {
                 egui::Grid::new("function_symbols")
-                    .num_columns(3)
+                    .num_columns(4)
                     .striped(true)
                     // Vertical spacing must be the one the virtualiser assumed
                     // when it placed this batch of rows, or they drift.
@@ -108,6 +143,10 @@ fn function_list(
                     .min_row_height(ROW_HEIGHT)
                     .show(ui, |ui| {
                         if rows.start == 0 {
+                            // The jump column carries no title: the arrow in
+                            // it is its own word, and a heading would be read
+                            // as a fourth thing measured about a function.
+                            ui.label("");
                             for title in [Text::Name, Text::Size, Text::Blocks] {
                                 ui.strong(text(language, title));
                             }
@@ -117,14 +156,41 @@ fn function_list(
                         let last = rows.end.saturating_sub(1).min(functions.len());
                         for function in &functions[first..last.max(first)] {
                             let selected = *selected_function == Some(function.start);
-                            if ui
+                            let entry = entry(function, analysis);
+                            // The button leads the row rather than trailing
+                            // it: a mangled Rust name is two hundred
+                            // characters wide, and anything after it is off
+                            // the right edge of the table.
+                            let jump = ui
+                                .add_enabled(entry.is_some(), egui::Button::new(JUMP).small())
+                                .on_hover_text(text(language, Text::GoToDisassembly))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if jump.clicked() {
+                                *selected_function = Some(function.start);
+                                go_to = entry;
+                            }
+                            let name = ui
                                 .selectable_label(selected, &function.name)
                                 .on_hover_text(format!("{:#018x}", function.start))
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if name.clicked() {
                                 *selected_function = Some(function.start);
                             }
+                            // The right button on the row, for a reader who
+                            // reaches for it: the same one offer the arrow
+                            // makes, where the pointer already is.
+                            name.context_menu(|ui| {
+                                if ui
+                                    .add_enabled(
+                                        entry.is_some(),
+                                        egui::Button::new(text(language, Text::GoToDisassembly)),
+                                    )
+                                    .clicked()
+                                {
+                                    go_to = entry;
+                                    ui.close_menu();
+                                }
+                            });
                             ui.label(format_size(function.size()));
                             ui.label(function.blocks.len().to_string());
                             ui.end_row();
@@ -132,25 +198,53 @@ fn function_list(
                     });
             });
     });
+    go_to
 }
+
+/// What the jump button carries: an arrow into the listing, drawn from the
+/// font so it sits on the row's own baseline. One per row, so reaching a
+/// function's code is a click rather than a right-click and a menu.
+const JUMP: &str = "\u{2192}";
 
 fn function_details(
     ui: &mut egui::Ui,
     analysis: &Analysis,
     selected: Option<&Function>,
     language: Language,
-) {
+) -> Option<u64> {
     let Some(function) = selected else {
         ui.label(egui::RichText::new(text(language, Text::SelectFunction)).color(MUTED));
-        return;
+        return None;
     };
 
+    let mut go_to = None;
     ui.heading(&function.name);
-    ui.monospace(format!("{:#018x}", function.start));
+    ui.horizontal(|ui| {
+        ui.monospace(format!("{:#018x}", function.start));
+        // Beside the address, because that is what the reader is about to go
+        // and read: the graph and the pseudo-code below are a summary of code
+        // that lives in the listing.
+        let entry = entry(function, analysis);
+        let button = ui.add_enabled(
+            entry.is_some(),
+            egui::Button::new(text(language, Text::GoToDisassembly)),
+        );
+        if button.clicked() {
+            go_to = entry;
+        }
+        if entry.is_none() {
+            ui.label(
+                egui::RichText::new(text(language, Text::FunctionNotDecoded))
+                    .small()
+                    .color(MUTED),
+            );
+        }
+    });
     ui.add_space(8.0);
     let hovered_block = control_flow_graph(ui, analysis, function, language);
     ui.add_space(12.0);
     pseudocode(ui, analysis, function, hovered_block, language);
+    go_to
 }
 
 /// Returns the block currently under the pointer so the pseudo-code can follow
@@ -545,6 +639,46 @@ mod tests {
             text: text.to_owned(),
             section: std::sync::Arc::from(".text"),
         }
+    }
+
+    /// Every function the table offers a way into must lead somewhere the
+    /// listing can really show. An address the decoder never reached would
+    /// move the workspace to the disassembly and leave it looking at nothing,
+    /// so the offer is withheld instead.
+    #[test]
+    fn the_way_into_the_listing_lands_on_a_decoded_instruction() {
+        let analysis = crate::testing::reference_analysis();
+        let functions = all(analysis);
+        assert!(!functions.is_empty(), "the host binary declares functions");
+
+        let mut offered = 0_usize;
+        for function in &functions {
+            let Some(address) = entry(function, analysis) else {
+                continue;
+            };
+            offered += 1;
+            assert!(
+                analysis.instruction_index(address).is_some(),
+                "{} leads to {address:#x}, which is not in the listing",
+                function.name
+            );
+        }
+        assert!(offered > 0, "no function could be reached at all");
+    }
+
+    /// A symbol whose body was never decoded is not offered: the button is
+    /// drawn disabled rather than drawn and refused.
+    #[test]
+    fn a_function_without_a_decoded_body_is_not_offered() {
+        let analysis = crate::testing::reference_analysis();
+        let empty = Function {
+            name: "jamais_decodee".to_owned(),
+            start: 0xdead_beef,
+            end: 0xdead_bef0,
+            instructions: 0..0,
+            blocks: Vec::new(),
+        };
+        assert_eq!(entry(&empty, analysis), None);
     }
 
     #[test]
