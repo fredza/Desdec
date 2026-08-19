@@ -109,6 +109,13 @@ commands! {
     LanguageEnglish => [Language, English], None,
     LanguageSpanish => [Language, Spanish], None,
     TogglePersistence => [Persistence], None,
+    // The reader's own rule, written once and run over the whole file. Its own
+    // window rather than a view: a script is written about the listing behind
+    // it, and both have to be on screen at once.
+    Script => [Script], Some(Shortcut::ctrl_shift(KeyName::S)),
+    RunScript => [Script, RunScript], Some(Shortcut::plain(KeyName::F5)),
+    Plugins => [Plugins], None,
+    ReloadPlugins => [Plugins, ReloadPlugins], None,
     Yara => [Yara], None,
     RunYara => [Yara, RunYara], None,
     ToggleYaraModule => [Yara, ToggleYaraModule], None,
@@ -182,6 +189,7 @@ impl Command {
                 | Self::ToggleBookmark
                 | Self::References
                 | Self::Search
+                | Self::RunScript
         )
     }
 

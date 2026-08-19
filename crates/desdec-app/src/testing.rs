@@ -165,6 +165,58 @@ pub fn drawn_text(shapes: &[eframe::egui::epaint::ClippedShape]) -> String {
 /// ```text
 /// DESDEC_FRAME=/tmp/frame.svg cargo test -p desdec-app frame_sheet
 /// ```
+/// Renders the windows to an SVG, for a human to look at.
+///
+/// The companion of [`frame_sheet`], for what that one cannot show: a window
+/// is drawn over the workspace and only when it is open. Two consecutive small
+/// labels overlapping exactly is the kind of thing every assertion here passes
+/// and no reader would accept.
+///
+/// ```text
+/// DESDEC_WINDOWS=/tmp/windows.svg cargo test -p desdec-app window_sheet
+/// ```
+#[cfg(test)]
+mod window_sheet {
+    use super::*;
+    use crate::app::Dialog;
+    use eframe::egui;
+
+    #[test]
+    fn window_sheet() {
+        let Ok(path) = std::env::var("DESDEC_WINDOWS") else {
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut app = opened_app(WorkspaceView::Disassembly);
+        app.script.source =
+            "for f in functions() {\n  if f.size > 512 { bookmark(f.address); }\n}".to_owned();
+        app.dialogs.open(Dialog::Console);
+        app.run_command(&ctx, crate::commands::Command::RunScript);
+        app.script.vocabulary_open = true;
+        app.plugins = crate::plugins::read(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins"),
+        );
+        app.dialogs.open(Dialog::Plugins);
+
+        let _ = ctx.run(window_input(), |ctx| app.run_frame(ctx));
+        let output = ctx.run(window_input(), |ctx| app.run_frame(ctx));
+        write_svg(&output.shapes, &path);
+    }
+}
+
+/// Writes one frame's shapes to an SVG file.
+#[cfg(test)]
+pub fn write_svg(shapes: &[eframe::egui::epaint::ClippedShape], path: &str) {
+    let mut body = String::new();
+    for clipped in shapes {
+        frame_sheet::emit(&clipped.shape, &mut body);
+    }
+    let svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1200\" height=\"800\" viewBox=\"0 0 1200 800\"><rect width=\"100%\" height=\"100%\" fill=\"#0d1017\"/>\n{body}</svg>"
+    );
+    std::fs::write(path, svg).expect("writable");
+}
+
 #[cfg(test)]
 mod frame_sheet {
     use super::*;
@@ -184,17 +236,10 @@ mod frame_sheet {
         let _ = ctx.run(window_input(), |ctx| app.run_frame(ctx));
         let output = ctx.run(window_input(), |ctx| app.run_frame(ctx));
 
-        let mut body = String::new();
-        for clipped in &output.shapes {
-            emit(&clipped.shape, &mut body);
-        }
-        let svg = format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1200\" height=\"800\" viewBox=\"0 0 1200 800\"><rect width=\"100%\" height=\"100%\" fill=\"#0d1017\"/>\n{body}</svg>"
-        );
-        std::fs::write(path, svg).expect("writable");
+        super::write_svg(&output.shapes, &path);
     }
 
-    fn colour(c: egui::Color32) -> String {
+    pub fn colour(c: egui::Color32) -> String {
         format!(
             "rgba({},{},{},{})",
             c.r(),
@@ -204,7 +249,7 @@ mod frame_sheet {
         )
     }
 
-    fn emit(shape: &egui::Shape, out: &mut String) {
+    pub fn emit(shape: &egui::Shape, out: &mut String) {
         match shape {
             egui::Shape::Vec(shapes) => {
                 for shape in shapes {

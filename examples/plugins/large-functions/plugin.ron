@@ -1,0 +1,13 @@
+(
+    name: "Large functions",
+    version: "1.0",
+    author: "Desdec",
+    description: "Marks every function longer than half a kilobyte, and says how many places call it.",
+    script: "plugin.rhai",
+    // OnOpen runs it once, as soon as a binary has been analysed. Use
+    // [OnDemand] instead for a plugin that should only run when asked.
+    hooks: [OnOpen],
+    // Everything this plugin is allowed to do. The reader sees this list
+    // before enabling it, and the engine refuses anything not in it.
+    permissions: [WriteNotes],
+)

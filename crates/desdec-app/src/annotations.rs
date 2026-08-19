@@ -115,19 +115,7 @@ impl Annotations {
 /// wrote about a binary is not something they should lose to a disk cleanup.
 #[must_use]
 pub fn directory() -> Option<PathBuf> {
-    let base = if cfg!(target_os = "windows") {
-        std::env::var_os("APPDATA").map(PathBuf::from)
-    } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support"))
-    } else {
-        std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
-            })
-    }?;
-    Some(base.join("desdec").join("notes"))
+    Some(crate::storage::data_directory()?.join("notes"))
 }
 
 /// The file one binary's notes live in, named after its digest.

@@ -160,10 +160,14 @@ pub enum Dialog {
     References,
     /// Finding a run of bytes, an instruction or a note.
     Search,
+    /// The reader's own script, and what running it did.
+    Console,
+    /// What is installed, what it asks for, and what was granted.
+    Plugins,
 }
 
 impl Dialog {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 12] = [
         Self::CommandPalette,
         Self::Preferences,
         Self::About,
@@ -174,6 +178,8 @@ impl Dialog {
         Self::Annotation,
         Self::References,
         Self::Search,
+        Self::Console,
+        Self::Plugins,
     ];
 
     const fn index(self) -> usize {
@@ -188,7 +194,13 @@ impl Dialog {
     /// first row they clicked. `Escape` and its own close button still shut
     /// it, which is what a window kept on purpose needs.
     const fn closed_by_a_press_outside(self) -> bool {
-        !matches!(self, Self::Output | Self::References | Self::Search)
+        // A script is written over several minutes, in a window the reader
+        // keeps beside the listing they are writing it about; closing it on a
+        // press would throw away what they had typed.
+        !matches!(
+            self,
+            Self::Output | Self::References | Self::Search | Self::Console | Self::Plugins
+        )
     }
 }
 
@@ -474,6 +486,11 @@ pub struct DesdecApp {
     pub references_address: Option<u64>,
     /// What is being looked for, and what was found.
     pub search: crate::ui::search::State,
+    /// What the reader is writing in the script console, and what running it
+    /// last did.
+    pub script: crate::ui::script::State,
+    /// What the plugin directory held when it was last read.
+    pub plugins: crate::plugins::Installed,
     /// Where the byte view is looking.
     pub dump: crate::ui::dump::State,
     /// The bytes of the open file, kept for reading what an operand points at.
@@ -512,6 +529,8 @@ impl DesdecApp {
             preferences,
             ..Self::default()
         };
+
+        app.reload_plugins();
 
         // `desdec-app <binary>` starts the analysis straight away, like a file
         // manager handing the application a file to open.
@@ -723,8 +742,9 @@ impl DesdecApp {
     }
 
     /// The reader's own reading of the file: what they name, what they mark,
-    /// what they look for, and who reaches an address.
-    fn run_reading_command(&mut self, command: Command) {
+    /// what they look for, who reaches an address, and the rules they write
+    /// about all of it.
+    fn run_reading_command(&mut self, ctx: &egui::Context, command: Command) {
         match command {
             Command::References => {
                 self.references_address = self.selected_instruction;
@@ -733,6 +753,20 @@ impl DesdecApp {
             // A window kept open beside the listing, so pressing its key again
             // puts it away rather than reopening it where it already is.
             Command::Search => self.dialogs.toggle(Dialog::Search),
+            Command::Script => self.dialogs.toggle(Dialog::Console),
+            // The key runs what is in the console, wherever the reader
+            // pressed it: a script is written to be run over and over while
+            // the listing it is about is on screen, and reaching for the
+            // window every time would be the whole friction it removes.
+            Command::RunScript => {
+                self.dialogs.open(Dialog::Console);
+                crate::ui::script::run_console(self, ctx);
+            }
+            Command::Plugins => self.dialogs.toggle(Dialog::Plugins),
+            Command::ReloadPlugins => {
+                self.reload_plugins();
+                self.dialogs.open(Dialog::Plugins);
+            }
             Command::EditAnnotation => {
                 self.open_view(command);
                 self.annotating_address = self.selected_instruction;
@@ -913,7 +947,11 @@ impl DesdecApp {
             Command::References
             | Command::Search
             | Command::EditAnnotation
-            | Command::ToggleBookmark => self.run_reading_command(command),
+            | Command::ToggleBookmark
+            | Command::Script
+            | Command::RunScript
+            | Command::Plugins
+            | Command::ReloadPlugins => self.run_reading_command(ctx, command),
             Command::WalkStepInto
             | Command::WalkStepOver
             | Command::WalkStepOut
@@ -1214,6 +1252,7 @@ impl DesdecApp {
             Some(Ok((path, result))) => {
                 self.jobs.inspection = None;
                 self.apply_inspection(&path, result);
+                self.run_plugins_on_open(ctx);
             }
             Some(Err(TryRecvError::Disconnected)) => self.jobs.inspection = None,
             Some(Err(TryRecvError::Empty)) | None => {}
@@ -1741,6 +1780,170 @@ impl DesdecApp {
         };
     }
 
+    /// Lends the open binary to a script, and carries out what it asked for.
+    ///
+    /// The analysis, the file's bytes and the reference index are moved out
+    /// for the duration rather than copied — eighteen million decoded
+    /// instructions are not something to duplicate because a key was pressed —
+    /// and moved back before this returns, whatever the script did with them.
+    pub fn run_script(
+        &mut self,
+        ctx: &egui::Context,
+        source: &str,
+        context: &crate::script::Context,
+    ) -> crate::script::Outcome {
+        let subject = crate::script::Subject {
+            analysis: self.analysis.take(),
+            file: std::mem::take(&mut self.file_bytes),
+            annotations: self.annotations.clone(),
+            xrefs: std::mem::take(&mut self.xrefs),
+            functions: self
+                .functions
+                .iter()
+                .map(|function| crate::script::FunctionBounds {
+                    name: function.name.clone(),
+                    start: function.start,
+                    end: function.end,
+                })
+                .collect(),
+        };
+        let (subject, outcome) = crate::script::run(source, subject, context);
+        self.analysis = subject.analysis;
+        self.file_bytes = subject.file;
+        self.xrefs = subject.xrefs;
+        self.apply_script_effects(ctx, &outcome.effects);
+        outcome
+    }
+
+    /// Carries out what a script asked for, in the order it asked.
+    ///
+    /// Every effect was already checked against the permissions when the
+    /// script asked for it; this is where the checked list becomes the notes
+    /// on the listing. A patch still lands in the pending list and not in the
+    /// file — a script has no more access to the analysed binary than the
+    /// interface does, which is none.
+    fn apply_script_effects(&mut self, ctx: &egui::Context, effects: &[crate::script::Effect]) {
+        use crate::script::Effect;
+
+        for effect in effects {
+            match effect {
+                Effect::Label { address, text } => {
+                    let mut annotation = self.annotations.at(*address).cloned().unwrap_or_default();
+                    annotation.label.clone_from(text);
+                    self.annotations.set(*address, annotation);
+                }
+                Effect::Comment { address, text } => {
+                    let mut annotation = self.annotations.at(*address).cloned().unwrap_or_default();
+                    annotation.comment.clone_from(text);
+                    self.annotations.set(*address, annotation);
+                }
+                Effect::Bookmark { address, on } => {
+                    let mut annotation = self.annotations.at(*address).cloned().unwrap_or_default();
+                    annotation.bookmarked = *on;
+                    self.annotations.set(*address, annotation);
+                }
+                Effect::ClearNote { address } => {
+                    self.annotations
+                        .set(*address, crate::annotations::Annotation::default());
+                }
+                Effect::Goto { address } => {
+                    self.go_to_address(ctx, *address);
+                }
+                Effect::Patch { address, bytes, .. } => {
+                    let made = self.analysis.as_ref().and_then(|analysis| {
+                        let instruction = analysis.instruction_at(*address)?;
+                        let offset = analysis.file_offset_of(*address)?;
+                        desdec_core::Patch::new(
+                            offset,
+                            *address,
+                            instruction.bytes.to_vec(),
+                            bytes.clone(),
+                        )
+                        .ok()
+                    });
+                    if let Some(patch) = made {
+                        self.patches.set(patch);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reads the plugin directory again, from scratch.
+    ///
+    /// From scratch because the reader edits plugins in a file manager and a
+    /// text editor, not here: what is on disk is the truth, and a list that
+    /// remembered a plugin deleted an hour ago would be lying about what is
+    /// installed.
+    pub fn reload_plugins(&mut self) {
+        self.plugins = crate::plugins::directory()
+            .map(|directory| crate::plugins::read(&directory))
+            .unwrap_or_default();
+    }
+
+    /// The plugins that may run at this hook: enabled, and granted everything
+    /// they currently ask for.
+    fn plugins_ready_for(
+        &self,
+        hook: crate::plugins::Hook,
+    ) -> Vec<(String, String, crate::script::Context)> {
+        self.plugins
+            .plugins
+            .iter()
+            .filter(|plugin| plugin.runs_on(hook))
+            .filter_map(|plugin| {
+                let consent = self.preferences.plugins.get(&plugin.id)?;
+                if !consent.enabled || !consent.covers(&plugin.wanted()) {
+                    return None;
+                }
+                Some((
+                    plugin.title().to_owned(),
+                    plugin.source.clone(),
+                    crate::script::Context {
+                        granted: consent.granted.clone(),
+                        limits: crate::script::Limits::default(),
+                        language: self.preferences.language,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    /// Runs the plugins that asked to see a binary as soon as it is opened.
+    ///
+    /// Each one is written to the session's account, whether it worked or not:
+    /// a plugin that quietly renamed forty addresses, and one that quietly
+    /// failed, must not look the same to the reader afterwards.
+    pub fn run_plugins_on_open(&mut self, ctx: &egui::Context) {
+        if self.analysis.is_none() {
+            return;
+        }
+        for (title, source, context) in self.plugins_ready_for(crate::plugins::Hook::OnOpen) {
+            let outcome = self.run_script(ctx, &source, &context);
+            self.record_script_run(&title, &outcome);
+        }
+    }
+
+    /// Writes one script run into the session's account.
+    pub fn record_script_run(&mut self, title: &str, outcome: &crate::script::Outcome) {
+        let language = self.preferences.language;
+        let (level, what) = match &outcome.failure {
+            Some(failure) => (
+                crate::journal::Level::Warning,
+                crate::ui::script::failure_text(language, failure),
+            ),
+            None => (
+                crate::journal::Level::Note,
+                format!(
+                    "{} {}",
+                    outcome.effects.len(),
+                    text(language, Text::ScriptChangesApplied)
+                ),
+            ),
+        };
+        self.note(level, format!("{title} : {what}"));
+    }
+
     pub fn close_binary(&mut self) {
         self.cancel_analysis();
         if self.analysis.is_some() {
@@ -2024,6 +2227,8 @@ impl DesdecApp {
         ui::annotation::show(self, ctx);
         ui::references::show(self, ctx);
         ui::search::show(self, ctx);
+        ui::script::show(self, ctx);
+        ui::plugins::show(self, ctx);
         ui::output::show(self, ctx);
         self.persist_settled_annotations(ctx);
         ui::notice::show(self, ctx);
