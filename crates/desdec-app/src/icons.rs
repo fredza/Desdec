@@ -19,18 +19,27 @@ pub enum Icon {
     Strings,
     Disassembly,
     Decompile,
+    Dump,
     Assistant,
     Patches,
     Yara,
     Open,
     Palette,
     Preferences,
+    Output,
     About,
     Menu,
     Close,
     /// Points at the edge the panel would move towards.
     CollapseLeft,
     ExpandRight,
+    /// The transport of the static walk, in the order the buttons sit.
+    WalkToEntry,
+    WalkBack,
+    WalkInto,
+    WalkOver,
+    WalkOut,
+    WalkClear,
 }
 
 impl Icon {
@@ -44,17 +53,25 @@ impl Icon {
         Self::Strings,
         Self::Disassembly,
         Self::Decompile,
+        Self::Dump,
         Self::Assistant,
         Self::Patches,
         Self::Yara,
         Self::Open,
         Self::Palette,
         Self::Preferences,
+        Self::Output,
         Self::About,
         Self::Menu,
         Self::Close,
         Self::CollapseLeft,
         Self::ExpandRight,
+        Self::WalkToEntry,
+        Self::WalkBack,
+        Self::WalkInto,
+        Self::WalkOver,
+        Self::WalkOut,
+        Self::WalkClear,
     ];
 }
 
@@ -133,17 +150,25 @@ pub fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::
         Icon::Strings => strings(&pen),
         Icon::Disassembly => disassembly(&pen),
         Icon::Decompile => decompile(&pen),
+        Icon::Dump => dump(&pen),
         Icon::Assistant => assistant(&pen),
         Icon::Patches => patches(&pen),
         Icon::Yara => yara(&pen),
         Icon::Open => open(&pen),
         Icon::Palette => palette(&pen),
         Icon::Preferences => preferences(&pen),
+        Icon::Output => output(&pen),
         Icon::About => about(&pen),
         Icon::Menu => menu(&pen),
         Icon::Close => close(&pen),
         Icon::CollapseLeft => chevron(&pen, -1.0),
         Icon::ExpandRight => chevron(&pen, 1.0),
+        Icon::WalkToEntry => walk_to_entry(&pen),
+        Icon::WalkBack => triangle(&pen, -1.0),
+        Icon::WalkInto => triangle(&pen, 1.0),
+        Icon::WalkOver => walk_over(&pen),
+        Icon::WalkOut => walk_out(&pen),
+        Icon::WalkClear => walk_clear(&pen),
     }
 }
 
@@ -250,6 +275,16 @@ fn disassembly(pen: &Pen) {
     }
 }
 
+/// The offset column, then the bytes: a hexadecimal dump seen from far away.
+fn dump(pen: &Pen) {
+    pen.line((0.0, 0.0), (0.0, 1.0));
+    for y in [0.08, 0.42, 0.76] {
+        for x in [0.26, 0.56, 0.86] {
+            pen.filled((x - 0.12, y), (x + 0.12, y + 0.16), 0.5);
+        }
+    }
+}
+
 /// A pair of braces: the pseudo-code rebuilt from those instructions.
 fn decompile(pen: &Pen) {
     for (edge, inward) in [(0.0_f32, 1.0_f32), (1.0, -1.0)] {
@@ -325,6 +360,14 @@ fn palette(pen: &Pen) {
     pen.line((0.5, 0.64), (0.8, 0.64));
 }
 
+/// Stamped lines, each with the moment it happened: an account kept in order.
+fn output(pen: &Pen) {
+    for (y, end) in [(0.12, 1.0), (0.5, 0.7), (0.88, 0.9)] {
+        pen.dot((0.06, y));
+        pen.line((0.28, y), (end, y));
+    }
+}
+
 /// Two sliders: settings that are chosen rather than toggled.
 fn preferences(pen: &Pen) {
     for (y, knob) in [(0.28, 0.66), (0.72, 0.34)] {
@@ -350,6 +393,51 @@ fn menu(pen: &Pen) {
 fn close(pen: &Pen) {
     pen.line((0.08, 0.08), (0.92, 0.92));
     pen.line((0.92, 0.08), (0.08, 0.92));
+}
+
+/// The transport of the walk, drawn as a tape deck's: a reader knows what a
+/// triangle on a button does before reading a word of the interface.
+///
+/// A triangle pointing right (`1.0`) or left (`-1.0`).
+fn triangle(pen: &Pen, direction: f32) {
+    let (back, tip) = if direction < 0.0 {
+        (0.86, 0.14)
+    } else {
+        (0.14, 0.86)
+    };
+    pen.path(&[(back, 0.1), (tip, 0.5), (back, 0.9), (back, 0.1)]);
+}
+
+/// Rewind to the beginning: a triangle brought up against a wall.
+fn walk_to_entry(pen: &Pen) {
+    pen.line((0.1, 0.12), (0.1, 0.88));
+    pen.path(&[(1.0, 0.1), (0.26, 0.5), (1.0, 0.9), (1.0, 0.1)]);
+}
+
+/// An arc jumping over a point on the line: the call that is passed rather
+/// than entered.
+fn walk_over(pen: &Pen) {
+    pen.path(&[
+        (0.0, 0.76),
+        (0.16, 0.76),
+        (0.34, 0.24),
+        (0.66, 0.24),
+        (0.84, 0.76),
+        (1.0, 0.76),
+    ]);
+    pen.dot((0.5, 0.76));
+}
+
+/// An arrow leaving the line it stands on: back out of the call.
+fn walk_out(pen: &Pen) {
+    pen.line((0.06, 0.9), (0.94, 0.9));
+    pen.line((0.5, 0.86), (0.5, 0.12));
+    pen.path(&[(0.24, 0.38), (0.5, 0.1), (0.76, 0.38)]);
+}
+
+/// The tape deck's stop: the walk put down where it stands.
+fn walk_clear(pen: &Pen) {
+    pen.boxed((0.14, 0.14), (0.86, 0.86), 1.0);
 }
 
 /// A chevron pointing left (`-1.0`) or right (`1.0`).

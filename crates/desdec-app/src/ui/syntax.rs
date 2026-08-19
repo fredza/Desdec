@@ -63,6 +63,41 @@ pub fn pseudo_code(ui: &egui::Ui, text: &str, background: egui::Color32) -> Layo
     job(ui, background, &pseudo_code_spans(text))
 }
 
+/// An assembly line with what the reader wrote about it after it, the way an
+/// assembler carries a comment.
+///
+/// After the instruction and never in place of it: the name a reader gives an
+/// address is theirs, and a listing that let it stand where the decoded text
+/// goes would be showing an opinion as a fact.
+pub fn annotated(
+    ui: &egui::Ui,
+    text: &str,
+    label: Option<&str>,
+    comment: Option<&str>,
+    background: egui::Color32,
+) -> LayoutJob {
+    let mut job = job(ui, background, &assembly_spans(text));
+    if let Some(label) = label {
+        append(
+            &mut job,
+            ui,
+            background,
+            &format!("   {label}:"),
+            Class::Call,
+        );
+    }
+    if let Some(comment) = comment {
+        append(
+            &mut job,
+            ui,
+            background,
+            &format!("   ; {comment}"),
+            Class::Comment,
+        );
+    }
+    job
+}
+
 /// Supporting monospace text — an address, a run of opcode bytes — drawn in a
 /// single dim colour so the code itself keeps the eye.
 pub fn dim(ui: &egui::Ui, text: &str, background: egui::Color32) -> LayoutJob {
@@ -70,22 +105,24 @@ pub fn dim(ui: &egui::Ui, text: &str, background: egui::Color32) -> LayoutJob {
 }
 
 fn job(ui: &egui::Ui, background: egui::Color32, spans: &[(&str, Class)]) -> LayoutJob {
-    let font_id = egui::TextStyle::Monospace.resolve(ui.style());
-    let visuals = ui.visuals();
     let mut job = LayoutJob::default();
     for &(text, class) in spans {
-        job.append(
-            text,
-            0.0,
-            TextFormat {
-                font_id: font_id.clone(),
-                color: colour(class, visuals),
-                background,
-                ..TextFormat::default()
-            },
-        );
+        append(&mut job, ui, background, text, class);
     }
     job
+}
+
+fn append(job: &mut LayoutJob, ui: &egui::Ui, background: egui::Color32, text: &str, class: Class) {
+    job.append(
+        text,
+        0.0,
+        TextFormat {
+            font_id: egui::TextStyle::Monospace.resolve(ui.style()),
+            color: colour(class, ui.visuals()),
+            background,
+            ..TextFormat::default()
+        },
+    );
 }
 
 /// Splits off a leading token: its first character, then every following

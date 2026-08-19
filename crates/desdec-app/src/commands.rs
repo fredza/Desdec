@@ -57,10 +57,32 @@ commands! {
     ToggleTooltips => [ToggleTooltips], Some(Shortcut::ctrl_alt(KeyName::I)),
     CommandPalette => [CommandPalette], Some(Shortcut::ctrl_shift(KeyName::P)),
     Preferences => [Preferences], Some(Shortcut::ctrl(KeyName::Comma)),
+    // The account of the session: what was opened, what was written, what
+    // failed. A window rather than a view, because it is about the
+    // application rather than about the file.
+    Output => [Output], Some(Shortcut::ctrl(KeyName::L)),
     About => [About], Some(Shortcut::plain(KeyName::F1)),
     Overview => [Overview], Some(Shortcut::ctrl(KeyName::Num1)),
     Disassembly => [Disassembly], Some(Shortcut::ctrl(KeyName::Num2)),
+    // The transport of the static walk. Debugger keys, because that is what a
+    // reader's fingers already know — F7 steps in, F8 steps over — even though
+    // nothing here runs: the walk follows the flow, it does not execute it.
+    WalkStepInto => [Disassembly, StepInto], Some(Shortcut::plain(KeyName::F7)),
+    WalkStepOver => [Disassembly, StepOver], Some(Shortcut::plain(KeyName::F8)),
+    WalkStepOut => [Disassembly, StepOut], Some(Shortcut::shift(KeyName::F8)),
+    WalkBack => [Disassembly, StepBack], Some(Shortcut::shift(KeyName::F7)),
+    WalkToEntry => [Disassembly, WalkToEntry], None,
+    // The reader's own reading of the file: a name for an address, a sentence
+    // about it, a mark to come back to.
+    // Who names an address, and finding what the listing will not scroll to.
+    References => [Disassembly, References], Some(Shortcut::ctrl(KeyName::R)),
+    Search => [Search], Some(Shortcut::ctrl(KeyName::F)),
+    EditAnnotation => [Disassembly, EditNote], Some(Shortcut::plain(KeyName::F2)),
+    ToggleBookmark => [Disassembly, Bookmark], Some(Shortcut::ctrl(KeyName::D)),
+    WalkClear => [Disassembly, WalkClear], None,
     Decompile => [Decompile], Some(Shortcut::ctrl_shift(KeyName::D)),
+    // The bytes themselves, sixteen to a row.
+    Dump => [Dump], Some(Shortcut::ctrl(KeyName::Num7)),
     AiAssistance => [AiAssistance], Some(Shortcut::ctrl_alt(KeyName::A)),
     AskAboutBinary => [AiAssistance, AskAboutBinary], None,
     AskAboutFunction => [AiAssistance, AskAboutFunction], None,
@@ -150,6 +172,16 @@ impl Command {
                 | Self::StringsHideUnmapped
                 | Self::StringsHideUnreferenced
                 | Self::StringsClearFilter
+                | Self::WalkStepInto
+                | Self::WalkStepOver
+                | Self::WalkStepOut
+                | Self::WalkBack
+                | Self::WalkToEntry
+                | Self::WalkClear
+                | Self::EditAnnotation
+                | Self::ToggleBookmark
+                | Self::References
+                | Self::Search
         )
     }
 
@@ -174,7 +206,17 @@ impl Command {
             | Self::StringsHideUnmapped
             | Self::StringsHideUnreferenced
             | Self::StringsClearFilter => WorkspaceView::Strings,
-            Self::Disassembly => WorkspaceView::Disassembly,
+            // The walk moves the selection in the listing, so it shows it.
+            Self::Dump => WorkspaceView::Dump,
+            Self::Disassembly
+            | Self::WalkStepInto
+            | Self::WalkStepOver
+            | Self::WalkStepOut
+            | Self::WalkBack
+            | Self::WalkToEntry
+            | Self::WalkClear
+            | Self::EditAnnotation
+            | Self::ToggleBookmark => WorkspaceView::Disassembly,
             Self::Decompile => WorkspaceView::Decompile,
             Self::AiAssistance
             | Self::AskAboutBinary
@@ -209,6 +251,13 @@ impl Shortcut {
     pub const fn ctrl(key: KeyName) -> Self {
         Self {
             ctrl: true,
+            ..Self::plain(key)
+        }
+    }
+
+    pub const fn shift(key: KeyName) -> Self {
+        Self {
+            shift: true,
             ..Self::plain(key)
         }
     }

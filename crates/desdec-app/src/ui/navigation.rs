@@ -412,6 +412,7 @@ fn tools_section(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui, de
 
     for (icon, text, command) in [
         (Icon::Palette, Text::CommandPalette, Command::CommandPalette),
+        (Icon::Output, Text::Output, Command::Output),
         (Icon::Preferences, Text::Preferences, Command::Preferences),
         (Icon::About, Text::About, Command::About),
     ] {

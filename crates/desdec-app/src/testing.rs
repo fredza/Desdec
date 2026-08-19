@@ -111,6 +111,21 @@ pub fn press_at(position: eframe::egui::Pos2) -> eframe::egui::RawInput {
     input
 }
 
+/// A frame in which the primary button is pressed and let go at a position.
+///
+/// A whole click, unlike [`press_at`]: a widget only reports one once the
+/// button has come back up over it.
+pub fn click_at(position: eframe::egui::Pos2) -> eframe::egui::RawInput {
+    let mut input = press_at(position);
+    input.events.push(eframe::egui::Event::PointerButton {
+        pos: position,
+        button: eframe::egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    input
+}
+
 /// Every string a frame actually drew, with where it was drawn.
 ///
 /// What a virtualised view leaves out is as much of its behaviour as what it

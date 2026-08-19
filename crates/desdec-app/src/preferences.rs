@@ -103,6 +103,12 @@ pub struct Preferences {
     pub language: Language,
     pub show_toolbar: bool,
     pub show_tooltips: bool,
+    /// Whether hovering a disassembly row says what its operand designates.
+    ///
+    /// Its own switch rather than a corner of `show_tooltips`: this one reads
+    /// the file at the address an instruction computes, and a reader who wants
+    /// the listing and nothing else should be able to say so.
+    pub show_operand_hints: bool,
     pub persistence_enabled: bool,
     /// Which model, if any, the assistant asks. `None` by default.
     pub assistant: AssistantPreference,
@@ -130,6 +136,11 @@ pub struct Preferences {
     pub yara_rules_path: String,
     /// Whether the linked-library list offers an explanation for each name.
     pub explain_libraries: bool,
+    /// Whether the reader's own notes are kept between sessions.
+    ///
+    /// They are written beside the application's data, keyed by the binary's
+    /// digest — never into the binary, and never into its directory.
+    pub save_annotations: bool,
     /// Width the navigation menu was last dragged to, in points.
     ///
     /// Kept because it is a choice, not a detail: the menu shows icons alone,
@@ -148,6 +159,7 @@ impl Default for Preferences {
             language: Language::French,
             show_toolbar: true,
             show_tooltips: true,
+            show_operand_hints: true,
             persistence_enabled: true,
             assistant: AssistantPreference::None,
             assistant_model: String::new(),
@@ -161,6 +173,7 @@ impl Default for Preferences {
             yara_path: String::new(),
             yara_rules_path: String::new(),
             explain_libraries: true,
+            save_annotations: true,
             navigation_width: crate::ui::navigation::DEFAULT_WIDTH,
             shortcuts: ShortcutBindings::default(),
         }
@@ -306,6 +319,8 @@ mod tests {
         assert_eq!(defaults.language, Language::French);
         assert!(defaults.show_toolbar);
         assert!(defaults.show_tooltips);
+        assert!(defaults.show_operand_hints);
+        assert!(defaults.save_annotations);
         assert!(defaults.persistence_enabled);
     }
 

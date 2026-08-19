@@ -161,6 +161,49 @@ impl Analysis {
             section.is_mapped() && (section.virtual_address..end).contains(&address)
         })
     }
+
+    /// Where an address's byte sits in the file, when the file holds it.
+    ///
+    /// `None` for an address in a region the file stores nothing for — `.bss`
+    /// is mapped but empty on disk, and pointing at a byte of the next section
+    /// instead would be a lie about where anything is.
+    #[must_use]
+    pub fn file_offset_of(&self, address: u64) -> Option<u64> {
+        self.sections.iter().find_map(|section| {
+            let end = section.virtual_address.saturating_add(section.file_size);
+            (section.is_mapped()
+                && section.file_size > 0
+                && (section.virtual_address..end).contains(&address))
+            .then(|| {
+                section
+                    .file_offset
+                    .saturating_add(address.saturating_sub(section.virtual_address))
+            })
+        })
+    }
+
+    /// Where a byte of the file is mapped, when it is mapped at all.
+    ///
+    /// The other direction of [`Analysis::file_offset_of`], and just as
+    /// partial: headers, symbol tables and debug sections are in the file and
+    /// nowhere in memory.
+    #[must_use]
+    pub fn address_at(&self, file_offset: u64) -> Option<(u64, &Section)> {
+        self.sections.iter().find_map(|section| {
+            let end = section.file_offset.saturating_add(section.file_size);
+            (section.is_mapped()
+                && section.file_size > 0
+                && (section.file_offset..end).contains(&file_offset))
+            .then(|| {
+                (
+                    section
+                        .virtual_address
+                        .saturating_add(file_offset.saturating_sub(section.file_offset)),
+                    section,
+                )
+            })
+        })
+    }
 }
 
 /// Reads a binary and analyses it in depth.

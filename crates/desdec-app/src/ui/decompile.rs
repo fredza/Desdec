@@ -378,7 +378,23 @@ pub fn listing_area(
     scroll_target: Option<u64>,
     leading: usize,
 ) -> egui::ScrollArea {
-    let Some(index) = scroll_target.and_then(|address| analysis.instruction_index(address)) else {
+    let row = scroll_target
+        .and_then(|address| analysis.instruction_index(address))
+        .map(|index| index + leading);
+    listing_area_at_row(area, ui, row)
+}
+
+/// The same, for a listing whose rows are not one per instruction.
+///
+/// The disassembly draws a heading where each section begins, so the row an
+/// instruction sits on is its index plus the headings above it; only the
+/// caller knows how many those are.
+pub fn listing_area_at_row(
+    area: egui::ScrollArea,
+    ui: &egui::Ui,
+    row: Option<usize>,
+) -> egui::ScrollArea {
+    let Some(row) = row else {
         return area;
     };
     // The virtualiser spaces its rows by the row height *plus* the item
@@ -389,10 +405,10 @@ pub fn listing_area(
         clippy::cast_precision_loss,
         reason = "a listing long enough to lose f32 precision is far beyond what a file can hold"
     )]
-    let row = (index + leading) as f32 * (ROW_HEIGHT + ui.spacing().item_spacing.y);
+    let offset = row as f32 * (ROW_HEIGHT + ui.spacing().item_spacing.y);
     // Centred rather than pinned to the top, so the instructions around the
     // one being shown are part of the answer.
-    let offset = (row - ui.available_height() / 2.0).max(0.0);
+    let offset = (offset - ui.available_height() / 2.0).max(0.0);
     area.vertical_scroll_offset(offset)
 }
 

@@ -375,10 +375,24 @@ fn yara(app: &mut DesdecApp, ui: &mut egui::Ui) {
 fn behaviour(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let language = app.preferences.language;
     ui.heading(text(language, Text::Behaviour));
-    for (index, (value, label)) in [
-        (&mut app.preferences.show_toolbar, Text::ShowToolbar),
-        (&mut app.preferences.show_tooltips, Text::ShowTooltips),
-        (&mut app.preferences.persistence_enabled, Text::Persistence),
+    for (index, (value, label, note)) in [
+        (&mut app.preferences.show_toolbar, Text::ShowToolbar, None),
+        (&mut app.preferences.show_tooltips, Text::ShowTooltips, None),
+        (
+            &mut app.preferences.show_operand_hints,
+            Text::ShowOperandHints,
+            Some(Text::OperandHintsInfo),
+        ),
+        (
+            &mut app.preferences.save_annotations,
+            Text::SaveAnnotations,
+            Some(Text::SaveAnnotationsInfo),
+        ),
+        (
+            &mut app.preferences.persistence_enabled,
+            Text::Persistence,
+            Some(Text::PersistenceInfo),
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -387,8 +401,10 @@ fn behaviour(app: &mut DesdecApp, ui: &mut egui::Ui) {
             ui.add_space(8.0);
         }
         ui.checkbox(value, text(language, label));
+        if let Some(note) = note {
+            ui.small(text(language, note));
+        }
     }
-    ui.small(text(language, Text::PersistenceInfo));
 
     ui.add_space(12.0);
     ui.separator();

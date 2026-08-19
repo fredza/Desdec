@@ -117,15 +117,52 @@ pub fn target_address(instruction: &Instruction) -> Option<u64> {
     if let Some(target) = rip_relative(instruction) {
         return Some(target);
     }
-    // A bare hexadecimal operand: a call or jump destination, or an absolute
-    // address. Only one is considered, so an instruction with several numbers
-    // is left alone rather than guessed at.
-    let numbers: Vec<u64> = instruction
-        .text
-        .split(|c: char| !c.is_ascii_hexdigit() && c != 'x' && c != 'X')
-        .filter_map(read_hex)
-        .collect();
-    (numbers.len() == 1).then(|| numbers[0])
+    absolute(&instruction.text)
+}
+
+/// The one bare address in a line, if there is exactly one.
+///
+/// Two spellings are deliberately not addresses, and both used to be read as
+/// one:
+///
+/// - `$0x10`, `#8` — an immediate. `mov $0x10,%eax` moves the number sixteen,
+///   it does not designate address sixteen.
+/// - `0x4f0(%rsp)` — a displacement from a register. `mov %rcx,0x4f0(%rsp)`
+///   writes near the stack pointer; reading it as address `0x4f0` claimed that
+///   every stack write in the file referred to whatever happens to be mapped
+///   there, and a cross-reference list filled up with them.
+///
+/// Several candidates in one line is ambiguity, and nothing is returned rather
+/// than the first of them.
+fn absolute(text: &str) -> Option<u64> {
+    let bytes = text.as_bytes();
+    let mut found = None;
+    let mut index = 0;
+    while let Some(start) = text
+        .get(index..)
+        .and_then(|rest| rest.find("0x"))
+        .map(|at| index + at)
+    {
+        let mut end = start + 2;
+        while bytes.get(end).is_some_and(u8::is_ascii_hexdigit) {
+            end += 1;
+        }
+        index = end.max(start + 2);
+
+        let immediate = start > 0 && matches!(bytes[start - 1], b'$' | b'#');
+        let displacement = bytes.get(end) == Some(&b'(');
+        if immediate || displacement {
+            continue;
+        }
+        let Some(value) = u64::from_str_radix(&text[start + 2..end], 16).ok() else {
+            continue;
+        };
+        if found.is_some() {
+            return None;
+        }
+        found = Some(value);
+    }
+    found
 }
 
 fn read_hex(word: &str) -> Option<u64> {
@@ -324,6 +361,25 @@ mod tests {
     fn an_ambiguous_operand_resolves_to_nothing() {
         let odd = instruction(0x40_1000, "movq $0x10,0x20(%rax)", 8);
         assert_eq!(target_address(&odd), None);
+    }
+
+    /// A displacement from a register is not an address, and neither is an
+    /// immediate. Reading them as addresses made every stack write in a file
+    /// look like a reference to whatever is mapped at that offset.
+    #[test]
+    fn a_displacement_and_an_immediate_designate_nothing() {
+        let stack = instruction(0x40_1000, "mov %rcx,0x4f0(%rsp)", 8);
+        assert_eq!(target_address(&stack), None);
+
+        let immediate = instruction(0x40_1000, "mov $0x4f0,%eax", 5);
+        assert_eq!(target_address(&immediate), None);
+
+        let arm = instruction(0x40_1000, "mov x0, #0x4f0", 4);
+        assert_eq!(target_address(&arm), None);
+
+        // Still an address when it is written as one.
+        let absolute = instruction(0x40_1000, "callq 0x4f0", 5);
+        assert_eq!(target_address(&absolute), Some(0x4f0));
     }
 
     #[test]

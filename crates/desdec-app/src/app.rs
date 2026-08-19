@@ -53,6 +53,8 @@ pub enum WorkspaceView {
     Strings,
     Disassembly,
     Decompile,
+    /// The file's bytes as they are, sixteen to a row.
+    Dump,
     /// A model's reading of what has been decoded; see [`crate::ui::assistant`].
     Assistant,
     Patches,
@@ -67,6 +69,7 @@ impl WorkspaceView {
         Self::Strings,
         Self::Disassembly,
         Self::Decompile,
+        Self::Dump,
         Self::Assistant,
         Self::Patches,
         Self::Yara,
@@ -80,6 +83,7 @@ impl WorkspaceView {
             Self::Strings => Text::Strings,
             Self::Disassembly => Text::Disassembly,
             Self::Decompile => Text::Decompile,
+            Self::Dump => Text::Dump,
             Self::Assistant => Text::AiAssistance,
             Self::Patches => Text::Patches,
             Self::Yara => Text::Yara,
@@ -96,6 +100,7 @@ impl WorkspaceView {
             Self::Strings => Icon::Strings,
             Self::Disassembly => Icon::Disassembly,
             Self::Decompile => Icon::Decompile,
+            Self::Dump => Icon::Dump,
             Self::Assistant => Icon::Assistant,
             Self::Patches => Icon::Patches,
             Self::Yara => Icon::Yara,
@@ -112,6 +117,7 @@ impl WorkspaceView {
             Self::Strings => Command::Strings,
             Self::Disassembly => Command::Disassembly,
             Self::Decompile => Command::Decompile,
+            Self::Dump => Command::Dump,
             Self::Assistant => Command::AiAssistance,
             Self::Patches => Command::Patches,
             Self::Yara => Command::Yara,
@@ -123,7 +129,7 @@ impl WorkspaceView {
     pub const fn planned_explanation(self) -> Option<Text> {
         match self {
             Self::Overview | Self::Segments | Self::Functions | Self::Strings => None,
-            Self::Disassembly | Self::Decompile | Self::Assistant => None,
+            Self::Disassembly | Self::Decompile | Self::Dump | Self::Assistant => None,
             Self::Patches | Self::Yara => None,
         }
     }
@@ -146,20 +152,43 @@ pub enum Dialog {
     Operand,
     /// The assembly behind a pseudo-code line.
     Assembly,
+    /// The account of what the application has done this session.
+    Output,
+    /// The reader's own note on one address.
+    Annotation,
+    /// Who names an address.
+    References,
+    /// Finding a run of bytes, an instruction or a note.
+    Search,
 }
 
 impl Dialog {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 10] = [
         Self::CommandPalette,
         Self::Preferences,
         Self::About,
         Self::Library,
         Self::Operand,
         Self::Assembly,
+        Self::Output,
+        Self::Annotation,
+        Self::References,
+        Self::Search,
     ];
 
     const fn index(self) -> usize {
         self as usize
+    }
+
+    /// Whether a press on the workspace behind this window closes it.
+    ///
+    /// True of every window that answers one question and is then done with.
+    /// The session's account is not one of those: a reader keeps it open
+    /// beside the listing to watch what happens, and it would be gone on the
+    /// first row they clicked. `Escape` and its own close button still shut
+    /// it, which is what a window kept on purpose needs.
+    const fn closed_by_a_press_outside(self) -> bool {
+        !matches!(self, Self::Output | Self::References | Self::Search)
     }
 }
 
@@ -186,6 +215,16 @@ impl Dialogs {
     #[must_use]
     pub const fn is_open(&self, dialog: Dialog) -> bool {
         self.open[dialog.index()]
+    }
+
+    /// Whether any window is on screen.
+    ///
+    /// A view that reads bare keys asks first: the windows are drawn after the
+    /// central panel, so a key the panel takes never reaches the palette
+    /// walking its own list with the same arrows.
+    #[must_use]
+    pub fn any_open(&self) -> bool {
+        self.open.iter().any(|open| *open)
     }
 
     /// Every window calls this once a frame with the state of its close
@@ -229,9 +268,14 @@ impl Dialogs {
 
     /// Closes the most recently opened dialog and says which it was.
     fn dismiss_topmost(&mut self) -> Option<Dialog> {
+        self.dismiss_topmost_of(|_| true)
+    }
+
+    /// Closes the most recently opened window the filter accepts.
+    fn dismiss_topmost_of(&mut self, wanted: impl Fn(Dialog) -> bool) -> Option<Dialog> {
         let topmost = Dialog::ALL
             .into_iter()
-            .filter(|dialog| self.is_open(*dialog))
+            .filter(|dialog| self.is_open(*dialog) && wanted(*dialog))
             .max_by_key(|dialog| self.ranks[dialog.index()])?;
         self.open[topmost.index()] = false;
         Some(topmost)
@@ -373,6 +417,14 @@ pub struct DesdecApp {
     pub pending_instruction_scroll: Option<u64>,
     /// Temporarily draws attention to an instruction reached from another view.
     pub instruction_attention: Option<(u64, f64)>,
+    /// The static walk through the code, and the trail it has left.
+    pub walk: crate::walk::Walk,
+    /// Where each section begins in the listing, indexed once per binary.
+    ///
+    /// Derived from the analysis, like the stack and the function index, and
+    /// for the same reason: finding the section boundaries means walking every
+    /// decoded instruction, and a large shared library holds eighteen million.
+    pub section_starts: Vec<usize>,
     /// The assembly bubble opened from a pseudo-code line.
     pub pseudocode_assembly: Option<PseudocodeAssembly>,
     /// File offset of the string inspected in the Strings view.
@@ -385,6 +437,19 @@ pub struct DesdecApp {
     pub strings_hide_unreferenced: bool,
     /// A short confirmation of something that left no trace on screen.
     pub notice: Option<Notice>,
+    /// What the reader has written about the open binary's addresses.
+    pub annotations: crate::annotations::Annotations,
+    /// The notes as they were last written to disk, and as they stood on the
+    /// previous frame: the pair is what says whether there is anything to
+    /// write, and whether the reader has stopped typing.
+    annotations_saved: crate::annotations::Annotations,
+    annotations_last_seen: crate::annotations::Annotations,
+    annotations_changed_at: Option<f64>,
+    /// Everything the application has done this session, in order.
+    ///
+    /// Held in this process alone: an account of a session is an account of
+    /// which files someone opened, and it is never written anywhere.
+    pub journal: crate::journal::Journal,
     /// Pending byte patches, and the instruction being edited.
     pub patches: Patches,
     pub patch_editor: Option<Editor>,
@@ -401,6 +466,16 @@ pub struct DesdecApp {
     pub explaining_library_at: Option<egui::Rect>,
     /// The instruction whose operand is being inspected.
     pub inspecting_operand: Option<u64>,
+    /// The address whose note is open for editing.
+    pub annotating_address: Option<u64>,
+    /// Who names which address, indexed once per binary.
+    pub xrefs: crate::xrefs::Index,
+    /// The address the references window is answering about.
+    pub references_address: Option<u64>,
+    /// What is being looked for, and what was found.
+    pub search: crate::ui::search::State,
+    /// Where the byte view is looking.
+    pub dump: crate::ui::dump::State,
     /// The bytes of the open file, kept for reading what an operand points at.
     pub file_bytes: Vec<u8>,
     /// Text produced by the selected external decompiler.
@@ -523,6 +598,22 @@ impl DesdecApp {
         if command == Command::AskAboutInstruction && self.selected_instruction.is_none() {
             return false;
         }
+        // The walk's transport. A button that cannot move must be greyed out
+        // rather than swallow the press: the reader is following a flow, and
+        // an unresolved call is an answer they need to see, not a dead key.
+        match command {
+            // A note is written about an address, so there has to be one.
+            Command::EditAnnotation | Command::ToggleBookmark | Command::References => {
+                return self.selected_instruction.is_some();
+            }
+            Command::WalkBack => return self.walk.can_go_back(),
+            Command::WalkClear => return !self.walk.is_empty(),
+            Command::WalkToEntry => return self.entry_instruction().is_some(),
+            Command::WalkStepInto => return self.walk_lands(crate::walk::Step::Into).is_some(),
+            Command::WalkStepOver => return self.walk_lands(crate::walk::Step::Over).is_some(),
+            Command::WalkStepOut => return self.walk_lands(crate::walk::Step::Out).is_some(),
+            _ => {}
+        }
         // Choosing an engine always does something — it records the choice —
         // even when that engine is not installed yet. Detecting one spawns a
         // process, and this is asked for every command on every frame the
@@ -535,6 +626,253 @@ impl DesdecApp {
         self.preferences.decompiler = choice;
         // The shown text belongs to the previous engine.
         self.external = ExternalDecompilation::default();
+    }
+
+    /// Where this binary's notes are kept, and the digest that names them.
+    ///
+    /// `None` when they must not be kept: the reader turned it off, or the
+    /// file was only read in part and so has no digest — notes keyed on
+    /// anything weaker could be shown for a different binary.
+    fn notes_target(&self) -> Option<(PathBuf, [u8; 32])> {
+        if !self.preferences.save_annotations {
+            return None;
+        }
+        let digest = self.analysis.as_ref()?.sha256?;
+        Some((crate::annotations::directory()?, digest))
+    }
+
+    fn stored_annotations(&self) -> Option<crate::annotations::Annotations> {
+        let (directory, digest) = self.notes_target()?;
+        crate::annotations::read(&directory, &digest)
+    }
+
+    /// Writes the notes out, if there is anywhere to write them and anything
+    /// to say.
+    fn write_annotations(&mut self) {
+        if self.annotations == self.annotations_saved {
+            return;
+        }
+        let Some((directory, digest)) = self.notes_target() else {
+            return;
+        };
+        match crate::annotations::write(&directory, &digest, &self.annotations) {
+            Ok(()) => self.annotations_saved = self.annotations.clone(),
+            Err(error) => self.note(
+                crate::journal::Level::Failure,
+                format!("{} : {error}", self.t(Text::JournalNotesFailed)),
+            ),
+        }
+        // Either way, not again until something else changes: a directory that
+        // cannot be written to would otherwise be attempted every frame.
+        self.annotations_changed_at = None;
+    }
+
+    /// Writes the notes once the reader has stopped typing.
+    ///
+    /// The same settling as the preferences, and for the same reason: a write
+    /// per keystroke is a hundred writes for one sentence.
+    fn persist_settled_annotations(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|input| input.time);
+        if self.annotations != self.annotations_last_seen {
+            self.annotations_last_seen = self.annotations.clone();
+            self.annotations_changed_at = Some(now);
+        }
+        if self.annotations == self.annotations_saved {
+            self.annotations_changed_at = None;
+            return;
+        }
+        let Some(changed_at) = self.annotations_changed_at else {
+            return;
+        };
+        if now - changed_at < SETTLE_DELAY.as_secs_f64() {
+            // Come back when the delay is up, even if nothing else asks for a
+            // frame: an idle application must still save what it was given.
+            ctx.request_repaint_after(SETTLE_DELAY);
+            return;
+        }
+        self.write_annotations();
+    }
+
+    /// Records a line in the session's account.
+    ///
+    /// Every call site is somewhere the application did something the reader
+    /// cannot otherwise look back on: a view shows the last answer, never the
+    /// one before it.
+    pub fn note(&mut self, level: crate::journal::Level, text: impl Into<String>) {
+        self.journal.record(level, text);
+    }
+
+    /// The entry point, when the format declares one and it was decoded.
+    ///
+    /// An address with no instruction behind it is no place to start walking:
+    /// a packed or stripped file can name an entry in a section that holds no
+    /// decoded code, and the transport says so by staying greyed out.
+    #[must_use]
+    pub fn entry_instruction(&self) -> Option<u64> {
+        let analysis = self.analysis.as_ref()?;
+        let entry = analysis.entry_point?;
+        analysis.instruction_index(entry).map(|_| entry)
+    }
+
+    /// Where one step of the walk would land, from where the reader stands.
+    #[must_use]
+    pub fn walk_lands(&self, step: crate::walk::Step) -> Option<u64> {
+        let analysis = self.analysis.as_ref()?;
+        self.walk
+            .preview_from(analysis, self.selected_instruction, step)
+    }
+
+    /// The reader's own reading of the file: what they name, what they mark,
+    /// what they look for, and who reaches an address.
+    fn run_reading_command(&mut self, command: Command) {
+        match command {
+            Command::References => {
+                self.references_address = self.selected_instruction;
+                self.dialogs.open(Dialog::References);
+            }
+            // A window kept open beside the listing, so pressing its key again
+            // puts it away rather than reopening it where it already is.
+            Command::Search => self.dialogs.toggle(Dialog::Search),
+            Command::EditAnnotation => {
+                self.open_view(command);
+                self.annotating_address = self.selected_instruction;
+                self.dialogs.open(Dialog::Annotation);
+            }
+            Command::ToggleBookmark => {
+                self.open_view(command);
+                if let Some(address) = self.selected_instruction {
+                    self.annotations.toggle_bookmark(address);
+                }
+            }
+            // Every other command reaches this through its own arm.
+            _ => {}
+        }
+    }
+
+    /// The transport of the static walk: six commands that all end by moving
+    /// the selection through the listing they open.
+    fn run_walk_command(&mut self, command: Command) {
+        self.open_view(command);
+        match command {
+            Command::WalkStepInto => self.walk_step(crate::walk::Step::Into),
+            Command::WalkStepOver => self.walk_step(crate::walk::Step::Over),
+            Command::WalkStepOut => self.walk_step(crate::walk::Step::Out),
+            Command::WalkBack => {
+                self.walk.follow_selection(self.selected_instruction);
+                if let Some(address) = self.walk.back() {
+                    self.go_to_instruction(address);
+                }
+            }
+            Command::WalkToEntry => {
+                if let Some(entry) = self.entry_instruction() {
+                    self.walk.start(entry);
+                    self.go_to_instruction(entry);
+                }
+            }
+            Command::WalkClear => self.walk.clear(),
+            // Every other command reaches this through its own arm.
+            _ => {}
+        }
+    }
+
+    /// Throws away every pending patch, and says how many there were.
+    fn discard_patches(&mut self) {
+        self.note(
+            crate::journal::Level::Note,
+            format!(
+                "{} {}",
+                self.t(Text::JournalPatchesDiscarded),
+                self.patches.len()
+            ),
+        );
+        self.patches.clear();
+        self.patch_editor = None;
+        self.export_report = None;
+    }
+
+    /// Empties the decompilation cache on disk, and says how much it held.
+    fn clear_decompilation_cache(&mut self) {
+        self.cache_report = decompilation_cache_dir()
+            .and_then(|directory| decompiler::cache::clear(&directory).ok());
+        if let Some(removed) = self.cache_report {
+            self.note(
+                crate::journal::Level::Note,
+                format!("{} {removed}", self.t(Text::JournalCacheCleared)),
+            );
+        }
+    }
+
+    /// Takes one step, and brings the listing with it.
+    fn walk_step(&mut self, step: crate::walk::Step) {
+        let Some(analysis) = &self.analysis else {
+            return;
+        };
+        // A selection moved by hand was not walked to, so the trail restarts
+        // there rather than claiming to have arrived by stepping.
+        self.walk.follow_selection(self.selected_instruction);
+        if let Some(address) = self.walk.step(analysis, step) {
+            self.go_to_instruction(address);
+        }
+    }
+
+    /// Sends the reader to an address in the disassembly, and marks the row
+    /// so it can be found on a screen full of hexadecimal.
+    ///
+    /// Only an address that was decoded: a hit in a data section is somewhere
+    /// the listing cannot show, and jumping to the nearest instruction instead
+    /// would put the reader somewhere they did not ask for.
+    pub fn go_to_address(&mut self, ctx: &egui::Context, address: u64) -> bool {
+        let decoded = self
+            .analysis
+            .as_ref()
+            .and_then(|analysis| analysis.instruction_index(address))
+            .is_some();
+        if !decoded {
+            return false;
+        }
+        self.active_view = WorkspaceView::Disassembly;
+        self.go_to_instruction(address);
+        self.instruction_attention = Some((address, ctx.input(|input| input.time) + 3.0));
+        true
+    }
+
+    /// Shows the byte view at a file offset.
+    pub fn show_bytes_at_offset(&mut self, offset: u64) {
+        self.active_view = WorkspaceView::Dump;
+        self.dump.offset = Some(offset);
+        self.dump.pending_scroll = Some(offset);
+        self.dump.goto_failed = false;
+    }
+
+    /// Shows the byte view at whatever address names, when the file holds it.
+    ///
+    /// `.bss` is mapped and stores nothing, so an address in it has no byte to
+    /// show; the view is left where it was rather than sent to the wrong one.
+    pub fn follow_in_dump(&mut self, address: u64) -> bool {
+        let Some(offset) = self
+            .analysis
+            .as_ref()
+            .and_then(|analysis| analysis.file_offset_of(address))
+        else {
+            return false;
+        };
+        self.show_bytes_at_offset(offset);
+        true
+    }
+
+    /// Whether the listing could show this address at all.
+    #[must_use]
+    pub fn is_decoded(&self, address: u64) -> bool {
+        self.analysis
+            .as_ref()
+            .and_then(|analysis| analysis.instruction_index(address))
+            .is_some()
+    }
+
+    /// Selects an instruction and brings it into view in both listings.
+    fn go_to_instruction(&mut self, address: u64) {
+        self.selected_instruction = Some(address);
+        self.pending_instruction_scroll = Some(address);
     }
 
     pub fn run_command(&mut self, ctx: &egui::Context, command: Command) {
@@ -556,28 +894,32 @@ impl DesdecApp {
                 }
             }
             Command::Preferences => self.dialogs.open(Dialog::Preferences),
+            Command::Output => self.dialogs.toggle(Dialog::Output),
             Command::About => self.dialogs.open(Dialog::About),
             Command::Overview | Command::Segments => self.open_view(command),
             Command::ExportPatched => {
                 self.open_view(command);
                 self.export_patched_copy(ctx);
             }
-            Command::DiscardPatches => {
-                self.patches.clear();
-                self.patch_editor = None;
-                self.export_report = None;
-            }
+            Command::DiscardPatches => self.discard_patches(),
             Command::DecompilerBuiltin => self.set_decompiler(DecompilerPreference::Builtin),
             Command::DecompilerRzGhidra => self.set_decompiler(DecompilerPreference::RzGhidra),
             Command::DecompilerRetDec => self.set_decompiler(DecompilerPreference::RetDec),
             Command::ToggleDecompilationCache => {
                 self.preferences.cache_decompilations = !self.preferences.cache_decompilations;
             }
-            Command::ClearDecompilationCache => {
-                self.cache_report = decompilation_cache_dir()
-                    .and_then(|directory| decompiler::cache::clear(&directory).ok());
-            }
-            Command::Disassembly => self.open_view(command),
+            Command::ClearDecompilationCache => self.clear_decompilation_cache(),
+            Command::Disassembly | Command::Dump => self.open_view(command),
+            Command::References
+            | Command::Search
+            | Command::EditAnnotation
+            | Command::ToggleBookmark => self.run_reading_command(command),
+            Command::WalkStepInto
+            | Command::WalkStepOver
+            | Command::WalkStepOut
+            | Command::WalkBack
+            | Command::WalkToEntry
+            | Command::WalkClear => self.run_walk_command(command),
             Command::Decompile => self.open_view(command),
             Command::AiAssistance => self.open_view(command),
             Command::AskAboutBinary => {
@@ -703,7 +1045,9 @@ impl DesdecApp {
             // A press elsewhere gives up on capturing a shortcut as well as
             // closing the window that was asking for it.
             self.editing_shortcut = None;
-            self.dialogs.dismissed_by_press = self.dialogs.dismiss_topmost();
+            self.dialogs.dismissed_by_press = self
+                .dialogs
+                .dismiss_topmost_of(Dialog::closed_by_a_press_outside);
         }
     }
 
@@ -755,6 +1099,10 @@ impl DesdecApp {
         // The previous failure belongs to the previous file; leaving it on
         // screen next to a running analysis reads as this one having failed.
         self.error = None;
+        self.note(
+            crate::journal::Level::Note,
+            format!("{} {}", self.t(Text::JournalOpening), path.display()),
+        );
         let repaint = ctx.clone();
         let (sender, receiver) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -785,20 +1133,53 @@ impl DesdecApp {
                 self.functions = crate::ui::functions::all(&analysis);
                 self.stack = desdec_core::Trace::of(&analysis);
                 self.string_references = crate::ui::strings::CodeReferences::of(&analysis);
+                self.section_starts = crate::ui::disassembly::section_starts(&analysis);
                 self.analysis = Some(analysis);
                 self.error = None;
                 // Kept so an operand's target can be read without going back
                 // to the disk on every inspection.
                 self.file_bytes = std::fs::read(path).unwrap_or_default();
+                self.xrefs = crate::xrefs::Index::of(
+                    self.analysis.as_ref().expect("just installed"),
+                    &self.file_bytes,
+                );
+                // Whatever was worked out about these bytes last time.
+                self.annotations = self.stored_annotations().unwrap_or_default();
+                self.annotations_saved = self.annotations.clone();
+                self.annotations_last_seen = self.annotations.clone();
+                self.note(crate::journal::Level::Note, self.opened_summary(path));
             }
             Err(error) => {
-                self.error = Some(format!(
+                let failure = format!(
                     "{} {}: {error}",
                     self.t(Text::CannotInspect),
                     path.display()
-                ));
+                );
+                self.note(crate::journal::Level::Failure, failure.clone());
+                self.error = Some(failure);
             }
         }
+    }
+
+    /// What was found in the file just opened, in one line.
+    fn opened_summary(&self, path: &Path) -> String {
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let Some(analysis) = &self.analysis else {
+            return name;
+        };
+        format!(
+            "{name} : {} {} · {} · {} {} · {} {}",
+            analysis.summary.format.label(),
+            analysis.summary.architecture.label(),
+            crate::ui::format_size(analysis.summary.size),
+            analysis.symbols.len(),
+            self.t(Text::JournalSymbols),
+            analysis.instructions.len(),
+            self.t(Text::SectionInstructions),
+        )
     }
 
     /// Places `path` first, removes an older duplicate and caps the history.
@@ -838,14 +1219,40 @@ impl DesdecApp {
             Some(Err(TryRecvError::Empty)) | None => {}
         }
 
+        self.poll_decompilation();
+        self.poll_yara();
+        self.poll_assistance();
+
+        let export = self.jobs.export_picker.as_ref().map(Receiver::try_recv);
+        match export {
+            Some(Ok(Some(destination))) => {
+                self.jobs.export_picker = None;
+                self.write_export(&destination);
+            }
+            Some(Ok(None) | Err(TryRecvError::Disconnected)) => self.jobs.export_picker = None,
+            Some(Err(TryRecvError::Empty)) | None => {}
+        }
+    }
+
+    /// The text an external decompiler was asked for, when it comes back.
+    fn poll_decompilation(&mut self) {
         let decompilation = self.jobs.decompilation.as_ref().map(Receiver::try_recv);
         match decompilation {
             Some(Ok(result)) => {
                 self.jobs.decompilation = None;
                 self.external.running = false;
                 match result {
-                    Ok(text) => self.external.text = Some(text),
-                    Err(error) => self.external.error = Some(error.to_string()),
+                    Ok(text) => {
+                        self.note(crate::journal::Level::Note, self.t(Text::JournalDecompiled));
+                        self.external.text = Some(text);
+                    }
+                    Err(error) => {
+                        self.note(
+                            crate::journal::Level::Failure,
+                            format!("{} : {error}", self.t(Text::JournalDecompileFailed)),
+                        );
+                        self.external.error = Some(error.to_string());
+                    }
                 }
             }
             Some(Err(TryRecvError::Disconnected)) => {
@@ -854,15 +1261,35 @@ impl DesdecApp {
             }
             Some(Err(TryRecvError::Empty)) | None => {}
         }
+    }
 
+    /// What the local YARA scan matched, when it finishes.
+    fn poll_yara(&mut self) {
         let yara = self.jobs.yara.as_ref().map(Receiver::try_recv);
         match yara {
             Some(Ok(result)) => {
                 self.jobs.yara = None;
                 self.yara.running = false;
                 match result {
-                    Ok(matches) => self.yara.matches = matches,
-                    Err(error) => self.yara.error = Some(error),
+                    Ok(matches) => {
+                        self.note(
+                            crate::journal::Level::Note,
+                            format!(
+                                "{} : {} {}",
+                                self.t(Text::Yara),
+                                matches.len(),
+                                self.t(Text::YaraMatches)
+                            ),
+                        );
+                        self.yara.matches = matches;
+                    }
+                    Err(error) => {
+                        self.note(
+                            crate::journal::Level::Failure,
+                            format!("{} : {error}", self.t(Text::Yara)),
+                        );
+                        self.yara.error = Some(error);
+                    }
                 }
             }
             Some(Err(TryRecvError::Disconnected)) => {
@@ -872,15 +1299,27 @@ impl DesdecApp {
             }
             Some(Err(TryRecvError::Empty)) | None => {}
         }
+    }
 
+    /// The model's answer, when it arrives.
+    fn poll_assistance(&mut self) {
         let assistance = self.jobs.assistance.as_ref().map(Receiver::try_recv);
         match assistance {
             Some(Ok(result)) => {
                 self.jobs.assistance = None;
                 self.assistance.running = false;
                 match result {
-                    Ok(answer) => self.assistance.answer = Some(answer),
-                    Err(error) => self.assistance.error = Some(error),
+                    Ok(answer) => {
+                        self.note(crate::journal::Level::Note, self.t(Text::JournalAnswered));
+                        self.assistance.answer = Some(answer);
+                    }
+                    Err(error) => {
+                        self.note(
+                            crate::journal::Level::Failure,
+                            format!("{} : {error}", self.t(Text::JournalAskFailed)),
+                        );
+                        self.assistance.error = Some(error);
+                    }
                 }
             }
             Some(Err(TryRecvError::Disconnected)) => {
@@ -890,16 +1329,6 @@ impl DesdecApp {
                     "the worker returned no answer".to_owned(),
                 ));
             }
-            Some(Err(TryRecvError::Empty)) | None => {}
-        }
-
-        let export = self.jobs.export_picker.as_ref().map(Receiver::try_recv);
-        match export {
-            Some(Ok(Some(destination))) => {
-                self.jobs.export_picker = None;
-                self.write_export(&destination);
-            }
-            Some(Ok(None) | Err(TryRecvError::Disconnected)) => self.jobs.export_picker = None,
             Some(Err(TryRecvError::Empty)) | None => {}
         }
     }
@@ -918,6 +1347,10 @@ impl DesdecApp {
     pub fn cancel_analysis(&mut self) {
         if let Some(job) = self.jobs.inspection.take() {
             job.cancelled.store(true, Ordering::Relaxed);
+            self.note(
+                crate::journal::Level::Warning,
+                self.t(Text::JournalCancelled),
+            );
         }
         // The dialog is part of the same opening. A desktop that never answers
         // one — a portal that does not come back, a window lost behind another
@@ -980,6 +1413,7 @@ impl DesdecApp {
     pub fn copy_to_clipboard(&mut self, ctx: &egui::Context, value: &str, said: Text) {
         ctx.copy_text(value.to_owned());
         let message = format!("{} — {value}", self.t(said));
+        self.note(crate::journal::Level::Note, message.clone());
         self.notify(ctx, message);
     }
 
@@ -1112,21 +1546,35 @@ impl DesdecApp {
         let configured = (!self.preferences.yara_path.trim().is_empty())
             .then(|| PathBuf::from(self.preferences.yara_path.trim()));
         let Some(program) = yara::locate(configured.as_deref()) else {
+            let failure = "YARA executable was not found";
+            self.note(
+                crate::journal::Level::Failure,
+                format!("{} : {failure}", self.t(Text::Yara)),
+            );
             self.yara = YaraScan {
-                error: Some("YARA executable was not found".to_owned()),
+                error: Some(failure.to_owned()),
                 ..YaraScan::default()
             };
             return;
         };
         let rules = PathBuf::from(self.preferences.yara_rules_path.trim());
         if self.preferences.yara_rules_path.trim().is_empty() || !rules.is_file() {
+            let failure = "YARA rules file was not found";
+            self.note(
+                crate::journal::Level::Failure,
+                format!("{} : {failure}", self.t(Text::Yara)),
+            );
             self.yara = YaraScan {
-                error: Some("YARA rules file was not found".to_owned()),
+                error: Some(failure.to_owned()),
                 ..YaraScan::default()
             };
             return;
         }
 
+        self.note(
+            crate::journal::Level::Note,
+            format!("{} : {}", self.t(Text::Yara), self.t(Text::JournalScanning)),
+        );
         self.yara = YaraScan {
             running: true,
             ..YaraScan::default()
@@ -1179,6 +1627,16 @@ impl DesdecApp {
             ..Assistance::default()
         };
 
+        // What left the machine, and where it went: the one event in this
+        // application a reader must always be able to look back on.
+        self.note(
+            crate::journal::Level::Note,
+            format!(
+                "{} {}",
+                self.t(Text::JournalAsked),
+                self.preferences.assistant.provider().label()
+            ),
+        );
         let repaint = ctx.clone();
         let (sender, receiver) = mpsc::channel();
         self.jobs.assistance = Some(receiver);
@@ -1257,18 +1715,37 @@ impl DesdecApp {
         else {
             return;
         };
-        self.export_report = match desdec_core::patch::write_patched_copy(
-            source,
-            destination,
-            self.patches.entries(),
-        ) {
-            Ok(_) => Some(Ok(destination.to_path_buf())),
-            Err(error) => Some(Err(error.to_string())),
+        let written =
+            desdec_core::patch::write_patched_copy(source, destination, self.patches.entries());
+        self.export_report = match written {
+            Ok(_) => {
+                self.note(
+                    crate::journal::Level::Note,
+                    format!(
+                        "{} {}",
+                        self.t(Text::JournalExported),
+                        destination.display()
+                    ),
+                );
+                Some(Ok(destination.to_path_buf()))
+            }
+            Err(error) => {
+                let failure = format!(
+                    "{} {} : {error}",
+                    self.t(Text::JournalExportFailed),
+                    destination.display()
+                );
+                self.note(crate::journal::Level::Failure, failure);
+                Some(Err(error.to_string()))
+            }
         };
     }
 
     pub fn close_binary(&mut self) {
         self.cancel_analysis();
+        if self.analysis.is_some() {
+            self.note(crate::journal::Level::Note, self.t(Text::JournalClosed));
+        }
         self.analysis = None;
         self.error = None;
         self.reset_file_state();
@@ -1280,10 +1757,22 @@ impl DesdecApp {
     /// over to the next binary would offer to write bytes at offsets that mean
     /// something else entirely.
     fn reset_file_state(&mut self) {
+        // The notes belong to the binary being put away, so they are written
+        // while its digest is still the one this application knows.
+        self.write_annotations();
+        self.annotations.clear();
+        self.annotations_saved.clear();
+        self.annotations_last_seen.clear();
+        self.annotations_changed_at = None;
         self.active_view = WorkspaceView::Overview;
         self.functions.clear();
         self.stack = desdec_core::Trace::default();
         self.string_references = crate::ui::strings::CodeReferences::default();
+        self.section_starts.clear();
+        self.xrefs = crate::xrefs::Index::default();
+        self.references_address = None;
+        self.search = crate::ui::search::State::default();
+        self.dump = crate::ui::dump::State::default();
         self.strings_filter.clear();
         self.strings_hide_unmapped = false;
         self.strings_hide_unreferenced = false;
@@ -1291,6 +1780,7 @@ impl DesdecApp {
         self.selected_instruction = None;
         self.pending_instruction_scroll = None;
         self.instruction_attention = None;
+        self.walk.clear();
         self.pseudocode_assembly = None;
         self.dialogs.close(Dialog::Assembly);
         self.selected_string = None;
@@ -1454,6 +1944,16 @@ impl DesdecApp {
                 .as_ref()
                 .map(crate::ui::strings::CodeReferences::of)
                 .unwrap_or_default(),
+            section_starts: analysis
+                .as_ref()
+                .map(crate::ui::disassembly::section_starts)
+                .unwrap_or_default(),
+            // The file's bytes are installed by the test fixture afterwards,
+            // so the pointer half of the index is filled in there.
+            xrefs: analysis
+                .as_ref()
+                .map(|analysis| crate::xrefs::Index::of(analysis, &[]))
+                .unwrap_or_default(),
             analysis,
             active_view,
             ..Self::default()
@@ -1484,6 +1984,8 @@ impl eframe::App for DesdecApp {
 
     fn save(&mut self, storage: &mut dyn Storage) {
         self.persist_preferences(storage);
+        // The window is closing on notes that may not have settled yet.
+        self.write_annotations();
     }
 
     fn auto_save_interval(&self) -> Duration {
@@ -1519,6 +2021,11 @@ impl DesdecApp {
         ui::about::show(self, ctx);
         ui::library_note::show(self, ctx);
         ui::operand_note::show(self, ctx);
+        ui::annotation::show(self, ctx);
+        ui::references::show(self, ctx);
+        ui::search::show(self, ctx);
+        ui::output::show(self, ctx);
+        self.persist_settled_annotations(ctx);
         ui::notice::show(self, ctx);
 
         self.schedule_pending_save(ctx);
@@ -2137,6 +2644,7 @@ mod tests {
             WorkspaceView::Functions,
             WorkspaceView::Disassembly,
             WorkspaceView::Decompile,
+            WorkspaceView::Dump,
             WorkspaceView::Strings,
             WorkspaceView::Assistant,
             WorkspaceView::Patches,
