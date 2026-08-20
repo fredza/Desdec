@@ -85,7 +85,7 @@ pub fn samples() -> Vec<Sample> {
 /// The first sample whose architecture the emulator has an interpreter for.
 ///
 /// A test that runs anything must not use the host's own binary: on an Apple
-/// Silicon runner that binary is AArch64, which is decoded and read like any
+/// Silicon runner that binary is `AArch64`, which is decoded and read like any
 /// other but has no processor here, so every such test failed there and only
 /// there. The fixtures carry a real `x86-64` one whatever the host is.
 #[must_use]
@@ -254,6 +254,41 @@ mod window_sheet {
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins"),
         );
         app.dialogs.open(Dialog::Plugins);
+        // The update windows, on demand: they are the two a reader meets
+        // without having gone looking for them, so they are the two most worth
+        // looking at. `DESDEC_UPDATE=consent` or `=offer`.
+        match std::env::var("DESDEC_UPDATE").as_deref() {
+            Ok("consent") => {
+                app.dialogs.close(Dialog::Plugins);
+                app.dialogs.close(Dialog::Console);
+                app.preferences.check_for_updates = None;
+                app.dialogs.open(Dialog::UpdateConsent);
+            }
+            Ok("offer") => {
+                app.dialogs.close(Dialog::Plugins);
+                app.dialogs.close(Dialog::Console);
+                app.preferences.check_for_updates = Some(true);
+                app.update = crate::app::UpdateState::Offered(Box::new(
+                    desdec_core::update::Release {
+                        version: desdec_core::update::Version::parse("0.4.0").expect("a version"),
+                        tag: String::from("v0.4.0"),
+                        notes: String::from(
+                            "## Ce qui change\n\n* Une machine émulée : registres, mémoire, pile, points d'arrêt.\n* Les colonnes du listing ne bougent plus au défilement.\n* Trois traductions à jour.",
+                        ),
+                        page: String::from("https://github.com/fredza/Desdec/releases/tag/v0.4.0"),
+                        published: String::from("2026-08-20T00:00:00Z"),
+                        archive: desdec_core::update::Asset {
+                            name: String::from("desdec-linux-x86_64-release.tar.gz"),
+                            url: String::new(),
+                            size: 9_199_178,
+                        },
+                        checksum: None,
+                    },
+                ));
+                app.dialogs.open(Dialog::Update);
+            }
+            _ => {}
+        }
 
         let _ = ctx.run(window_input(), |ctx| app.run_frame(ctx));
         let output = ctx.run(window_input(), |ctx| app.run_frame(ctx));
@@ -377,23 +412,33 @@ mod frame_sheet {
                 colour(behind)
             );
         }
-        let content = text
-            .galley
-            .text()
-            .replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;");
-        let _ = writeln!(
-            out,
-            "<text x=\"{}\" y=\"{}\" fill=\"{}\" font-size=\"12\" font-family=\"sans-serif\">{content}</text>",
-            text.pos.x,
-            text.pos.y + 11.0,
-            colour(if text.fallback_color == egui::Color32::PLACEHOLDER {
-                egui::Color32::WHITE
-            } else {
-                text.fallback_color
-            })
-        );
+        // Row by row rather than as one string: a galley that wrapped, or one
+        // carrying newlines, is several lines on screen. Writing them as one
+        // made a paragraph look like a single line running off the right edge
+        // — a rendering fault that was not there, which hides the ones that
+        // are.
+        let shade = colour(if text.fallback_color == egui::Color32::PLACEHOLDER {
+            egui::Color32::WHITE
+        } else {
+            text.fallback_color
+        });
+        for row in &text.galley.rows {
+            let content = row
+                .text()
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            if content.trim().is_empty() {
+                continue;
+            }
+            let at = text.pos + row.rect.min.to_vec2();
+            let _ = writeln!(
+                out,
+                "<text x=\"{}\" y=\"{}\" fill=\"{shade}\" font-size=\"12\" font-family=\"sans-serif\">{content}</text>",
+                at.x,
+                at.y + 11.0,
+            );
+        }
     }
 
     pub fn emit(shape: &egui::Shape, out: &mut String) {

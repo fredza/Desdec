@@ -159,6 +159,19 @@ pub struct Preferences {
     /// reinstalling it does not silently inherit the old consent unless it
     /// asks for the same things.
     pub plugins: std::collections::BTreeMap<String, crate::plugins::Consent>,
+    /// Whether Desdec may ask GitHub if there is a newer release.
+    ///
+    /// `None` until the reader has been asked, which is the only state in
+    /// which nothing has left this machine and nothing will: a check tells a
+    /// server that this copy was started, which is a thing to be agreed to
+    /// rather than assumed. `Some(false)` is a decision and is respected for
+    /// good; `Some(true)` is what the reader turned on.
+    pub check_for_updates: Option<bool>,
+    /// A version the reader said they did not want. Offered again only when
+    /// something newer than it is published.
+    pub skipped_release: Option<String>,
+    /// Where a downloaded archive is written, or empty for the usual place.
+    pub download_directory: String,
     pub shortcuts: ShortcutBindings,
 }
 
@@ -186,6 +199,9 @@ impl Default for Preferences {
             save_annotations: true,
             navigation_width: crate::ui::navigation::DEFAULT_WIDTH,
             plugins: std::collections::BTreeMap::new(),
+            check_for_updates: None,
+            skipped_release: None,
+            download_directory: String::new(),
             shortcuts: ShortcutBindings::default(),
         }
     }

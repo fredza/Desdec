@@ -30,6 +30,7 @@ pub mod segments;
 pub mod status_bar;
 pub mod strings;
 pub mod syntax;
+pub mod update_window;
 pub mod views;
 pub mod yara;
 

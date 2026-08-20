@@ -33,6 +33,9 @@ what keeps it usable as a library and testable without a window.
 - **Emulation** (`emulate`) — a processor Desdec builds: a register file, an
   address space laid out from the file's own segment table, and an interpreter
   over the instructions iced-x86 already decoded. See below.
+- **Updates** (`update`) — asking GitHub whether a newer release exists, and
+  fetching one intact. Off until the reader agrees to it; it never replaces
+  the running program.
 - **Optional external tools** — decompilers (`rizin` + `rz-ghidra`, RetDec),
   YARA, and the AI assistant. None is required, none is started unless it is
   selected, and none of them executes the analysed file.
@@ -74,6 +77,28 @@ writing to `.text` faults, and so does fetching from `.data`.
 
 Only x86 and x86-64 have an interpreter. AArch64 is decoded and read like
 everything else, and says plainly that it has no processor here.
+
+## Updates
+
+The one part of Desdec that reaches the network without being asked a question
+about a file, and so the one with a consent of its own. Asking tells GitHub
+that this copy was started, which is a thing to agree to rather than discover:
+the question is put once, in the reader's language, with what it costs written
+down. Its two answers are "yes" and "not this time" — a refusal for good lives
+in the preferences, because a pop-up is a bad place to be asked to decide for
+ever, and "never" offered beside "yes" punishes hesitation.
+
+What a check does is compare three numbers and stop. What a download does is
+finish the job: a release publishes a `.sha256` beside each archive, so the
+archive is hashed on arrival and refused if it does not match — deleted rather
+than left on disk under a name that looks right. That answers whether the bytes
+are intact and nothing more; **who** made them is the detached `.asc` signature's
+answer, and checking it stays a deliberate act with `gpg`.
+
+Desdec never replaces itself. The archive lands in a folder and opening it is
+the reader's own move — which also means there is no code here that writes to a
+running executable, no restart, and none of the per-platform trouble that comes
+with both.
 
 ## What the diagram above is not yet
 

@@ -10,7 +10,7 @@ use std::{
 };
 
 use desdec_core::{
-    Analysis, analyse_path_cancellable, assistant, decompiler, emulate::Machine, yara,
+    Analysis, analyse_path_cancellable, assistant, decompiler, emulate::Machine, update, yara,
 };
 use eframe::{Storage, egui};
 
@@ -173,10 +173,14 @@ pub enum Dialog {
     Console,
     /// What is installed, what it asks for, and what was granted.
     Plugins,
+    /// Whether Desdec may ask GitHub about newer releases, asked once.
+    UpdateConsent,
+    /// A newer release, what it changes, and the download of it.
+    Update,
 }
 
 impl Dialog {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 14] = [
         Self::CommandPalette,
         Self::Preferences,
         Self::About,
@@ -189,6 +193,8 @@ impl Dialog {
         Self::Search,
         Self::Console,
         Self::Plugins,
+        Self::UpdateConsent,
+        Self::Update,
     ];
 
     const fn index(self) -> usize {
@@ -206,9 +212,16 @@ impl Dialog {
         // A script is written over several minutes, in a window the reader
         // keeps beside the listing they are writing it about; closing it on a
         // press would throw away what they had typed.
+        // The update window is not one either: a download runs in it, and a
+        // press on the listing behind would abandon it half-way.
         !matches!(
             self,
-            Self::Output | Self::References | Self::Search | Self::Console | Self::Plugins
+            Self::Output
+                | Self::References
+                | Self::Search
+                | Self::Console
+                | Self::Plugins
+                | Self::Update
         )
     }
 }
@@ -335,12 +348,84 @@ struct BackgroundJobs {
     yara: Option<Receiver<Result<Vec<yara::Match>, String>>>,
     /// A model reading the listing, local or remote; both take seconds.
     assistance: Option<Receiver<Result<assistant::Answer, assistant::Error>>>,
+    /// Asking GitHub whether there is a newer release.
+    update_check: Option<Receiver<Result<update::Release, update::Error>>>,
+    /// Fetching one, which is several megabytes.
+    update_download: Option<Receiver<Result<PathBuf, update::Error>>>,
 }
 
 /// One in-flight analysis, and the flag the interface uses to abandon it.
 struct InspectionJob {
     receiver: Receiver<(PathBuf, std::io::Result<Analysis>)>,
     cancelled: Arc<AtomicBool>,
+}
+
+/// The usual place for downloads, where a platform has one.
+///
+/// Worked out from the home directory rather than by taking a dependency for
+/// it: the answer is one join on every platform Desdec runs on, and a reader
+/// who wants it elsewhere says so in the preferences.
+fn dirs_download() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)?;
+    let downloads = home.join("Downloads");
+    if downloads.is_dir() {
+        return Some(downloads);
+    }
+    // What a French or Spanish desktop calls it, when the English name is not
+    // there. Checked rather than guessed: a path that does not exist would
+    // fail the write with a message about a directory the reader never chose.
+    for name in ["Téléchargements", "Descargas"] {
+        let candidate = home.join(name);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    home.is_dir().then_some(home)
+}
+
+/// Where the update stands: what was asked, what came back, what is on disk.
+///
+/// One value rather than a handful of flags, because the states exclude one
+/// another — a check is not running while a download is — and a reader must
+/// never be shown a window saying two things at once.
+#[derive(Default)]
+pub enum UpdateState {
+    /// Nothing has been asked. Also where a refusal leaves it.
+    #[default]
+    Idle,
+    /// GitHub has been asked and has not answered yet.
+    Checking,
+    /// It answered, and this build is the newest there is.
+    UpToDate,
+    /// There is a newer release.
+    Offered(Box<update::Release>),
+    /// Its archive is on its way, with what has arrived so far.
+    Downloading {
+        release: Box<update::Release>,
+        received: update::Progress,
+    },
+    /// It arrived, and its hash is the one the release published.
+    Downloaded {
+        release: Box<update::Release>,
+        file: PathBuf,
+    },
+    /// Something did not work, said in the reader's own language by the view.
+    Failed(update::Error),
+}
+
+impl UpdateState {
+    /// The release this state is about, when it is about one.
+    #[must_use]
+    pub const fn release(&self) -> Option<&update::Release> {
+        match self {
+            Self::Offered(release)
+            | Self::Downloading { release, .. }
+            | Self::Downloaded { release, .. } => Some(release),
+            _ => None,
+        }
+    }
 }
 
 /// Result of the optional local YARA scan.
@@ -440,6 +525,16 @@ pub struct DesdecApp {
     pub instruction_attention: Option<(u64, f64)>,
     /// The static walk through the code, and the trail it has left.
     pub walk: crate::walk::Walk,
+    /// Where the search for a newer release stands.
+    pub update: UpdateState,
+    /// Whether this session has already looked, so it looks once and not on
+    /// every frame that notices the preference is on.
+    update_checked_this_session: bool,
+    /// How far the download has got, as the thread doing it reports.
+    update_progress: Option<Receiver<update::Progress>>,
+    /// Whether the question about updates has already been put this session,
+    /// so putting it off puts it off rather than asking again next frame.
+    update_consent_asked_this_session: bool,
     /// The emulated processor, once a run has been asked for.
     ///
     /// `None` until then, and built from the file's own section table on the
@@ -523,7 +618,6 @@ pub struct DesdecApp {
     pub file_bytes: Vec<u8>,
     /// Text produced by the selected external decompiler.
     pub external: ExternalDecompilation,
-    /// Result of the optional local YARA scan.
     pub yara: YaraScan,
     /// The assistant's last reading, and the request behind it.
     pub assistance: Assistance,
@@ -1117,6 +1211,16 @@ impl DesdecApp {
             Command::TogglePersistence => {
                 self.preferences.persistence_enabled = !self.preferences.persistence_enabled;
             }
+            Command::CheckForUpdates => {
+                // Deliberate: the window opens and says what came back, even
+                // when the answer is that there is nothing new.
+                if self.preferences.check_for_updates == Some(true) {
+                    self.start_update_check(ctx, true);
+                } else {
+                    self.update = UpdateState::Idle;
+                    self.dialogs.open(Dialog::Update);
+                }
+            }
             Command::RunYara => self.request_yara_scan(ctx),
             Command::ToggleYaraModule => {
                 self.preferences.yara_enabled = !self.preferences.yara_enabled;
@@ -1377,6 +1481,7 @@ impl DesdecApp {
         self.poll_decompilation();
         self.poll_yara();
         self.poll_assistance();
+        self.poll_update();
 
         let export = self.jobs.export_picker.as_ref().map(Receiver::try_recv);
         match export {
@@ -1743,6 +1848,264 @@ impl DesdecApp {
             let _ = sender.send(result);
             repaint.request_repaint();
         });
+    }
+
+    // ----- updates ----------------------------------------------------------
+
+    /// Looks once per session, if the reader has said Desdec may look.
+    ///
+    /// Called from the frame loop rather than from `main`, because the answer
+    /// to "may we ask?" can arrive during the session — the reader saying yes
+    /// in the window below is what starts the first check.
+    pub fn check_for_updates_if_allowed(&mut self, ctx: &egui::Context) {
+        if self.update_checked_this_session || self.preferences.check_for_updates != Some(true) {
+            return;
+        }
+        // Not over an answer already on screen. The once-a-session look is a
+        // background courtesy; a reader reading what the last one said, or
+        // watching a download, must not have it replaced under them.
+        if !matches!(self.update, UpdateState::Idle) {
+            return;
+        }
+        self.update_checked_this_session = true;
+        self.start_update_check(ctx, false);
+    }
+
+    /// Asks whether the reader has been asked at all, and asks them if not.
+    ///
+    /// Opened once and never again: a refusal is remembered, and a question a
+    /// program asks twice is a question it does not accept the answer to.
+    pub fn ask_about_updates_if_never_asked(&mut self) {
+        // Never over something else. It is a question about the application
+        // rather than about the file, so it waits until the reader is not in
+        // the middle of anything — a window that steals the press meant for
+        // the one underneath is worse than a question asked a minute later.
+        if self.preferences.check_for_updates.is_none()
+            && !self.update_consent_asked_this_session
+            && !self.dialogs.any_open()
+        {
+            self.dialogs.open(Dialog::UpdateConsent);
+        }
+    }
+
+    /// Records that the reader agreed, and looks straight away.
+    pub fn allow_update_checks(&mut self, ctx: &egui::Context) {
+        self.preferences.check_for_updates = Some(true);
+        self.dialogs.close(Dialog::UpdateConsent);
+        self.update_consent_asked_this_session = true;
+        self.note(
+            crate::journal::Level::Note,
+            format!(
+                "{} : {}",
+                self.t(Text::Updates),
+                self.t(Text::UpdateConsentYes)
+            ),
+        );
+        self.update_checked_this_session = true;
+        self.start_update_check(ctx, true);
+    }
+
+    /// Puts the question off. It settles nothing, so nothing is written down:
+    /// the preference stays unanswered and the question comes back next time
+    /// the application starts — but not again in this session, which would be
+    /// asking twice in one sitting.
+    ///
+    /// Turning the checks off for good is a thing the preferences do, where a
+    /// decision belongs. A pop-up is a bad place to be asked to decide for
+    /// ever, and "never" offered next to "yes" is a question that punishes
+    /// hesitation.
+    pub fn postpone_update_consent(&mut self) {
+        self.dialogs.close(Dialog::UpdateConsent);
+        self.update_consent_asked_this_session = true;
+    }
+
+    /// Asks GitHub, on a thread, whether there is a newer release.
+    ///
+    /// `deliberate` is the difference between the reader pressing "check" and
+    /// the once-a-session look: the first shows its answer whatever it is, and
+    /// the second stays quiet unless there is something to say.
+    pub fn start_update_check(&mut self, ctx: &egui::Context, deliberate: bool) {
+        if self.preferences.check_for_updates != Some(true) || self.jobs.update_check.is_some() {
+            return;
+        }
+        if deliberate {
+            self.dialogs.open(Dialog::Update);
+        }
+        self.update = UpdateState::Checking;
+        let repaint = ctx.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.jobs.update_check = Some(receiver);
+        std::thread::spawn(move || {
+            let _ = sender.send(update::latest());
+            repaint.request_repaint();
+        });
+    }
+
+    /// Fetches the offered release's archive and checks what arrives.
+    pub fn start_update_download(&mut self, ctx: &egui::Context) {
+        let Some(release) = self.update.release().cloned() else {
+            return;
+        };
+        if self.jobs.update_download.is_some() {
+            return;
+        }
+        let directory = self.download_directory();
+        self.update = UpdateState::Downloading {
+            release: Box::new(release.clone()),
+            received: update::Progress {
+                received: 0,
+                total: release.archive.size,
+            },
+        };
+        let repaint = ctx.clone();
+        let (sender, receiver) = mpsc::channel();
+        let (reports, seen) = mpsc::channel();
+        self.jobs.update_download = Some(receiver);
+        self.update_progress = Some(seen);
+        std::thread::spawn(move || {
+            let result = update::download(&release, &directory, |progress| {
+                // The channel is read by the frame loop; a receiver that has
+                // gone away means the window closed, and the download carries
+                // on to its end rather than leaving a half file behind.
+                let _ = reports.send(progress);
+                repaint.request_repaint();
+            });
+            let _ = sender.send(result);
+            repaint.request_repaint();
+        });
+    }
+
+    /// Where a downloaded archive is written: what the reader chose, or the
+    /// usual place for downloads on this machine.
+    fn download_directory(&self) -> PathBuf {
+        let chosen = self.preferences.download_directory.trim();
+        if !chosen.is_empty() {
+            return PathBuf::from(chosen);
+        }
+        std::env::var_os("XDG_DOWNLOAD_DIR")
+            .map(PathBuf::from)
+            .or_else(dirs_download)
+            .unwrap_or_else(std::env::temp_dir)
+    }
+
+    /// The reader says they do not want this one. Offered again only when
+    /// something newer than it appears.
+    pub fn skip_offered_update(&mut self) {
+        if let Some(release) = self.update.release() {
+            self.preferences.skipped_release = Some(release.version.to_string());
+        }
+        self.update = UpdateState::Idle;
+        self.dialogs.close(Dialog::Update);
+    }
+
+    /// Whether a release is one to put in front of the reader.
+    #[must_use]
+    pub fn would_offer(&self, release: &update::Release) -> bool {
+        let Some(running) = update::Version::running() else {
+            return false;
+        };
+        if !release.is_newer_than(running) {
+            return false;
+        }
+        // A version the reader turned down stays turned down until something
+        // newer than it is published.
+        match self
+            .preferences
+            .skipped_release
+            .as_deref()
+            .and_then(update::Version::parse)
+        {
+            Some(skipped) => release.version > skipped,
+            None => true,
+        }
+    }
+
+    /// Takes in whatever the update threads have said since the last frame.
+    fn poll_update(&mut self) {
+        // The progress reports first, so a download that finished this frame
+        // is not drawn as still running.
+        if let Some(reports) = self.update_progress.as_ref() {
+            let mut latest = None;
+            while let Ok(progress) = reports.try_recv() {
+                latest = Some(progress);
+            }
+            if let (Some(progress), UpdateState::Downloading { received, .. }) =
+                (latest, &mut self.update)
+            {
+                *received = progress;
+            }
+        }
+
+        let checked = self.jobs.update_check.as_ref().map(Receiver::try_recv);
+        match checked {
+            Some(Ok(answer)) => {
+                self.jobs.update_check = None;
+                self.apply_update_check(answer);
+            }
+            Some(Err(TryRecvError::Disconnected)) => self.jobs.update_check = None,
+            Some(Err(TryRecvError::Empty)) | None => {}
+        }
+
+        let downloaded = self.jobs.update_download.as_ref().map(Receiver::try_recv);
+        match downloaded {
+            Some(Ok(answer)) => {
+                self.jobs.update_download = None;
+                self.update_progress = None;
+                self.apply_update_download(answer);
+            }
+            Some(Err(TryRecvError::Disconnected)) => {
+                self.jobs.update_download = None;
+                self.update_progress = None;
+            }
+            Some(Err(TryRecvError::Empty)) | None => {}
+        }
+    }
+
+    /// What the check came back with.
+    fn apply_update_check(&mut self, answer: Result<update::Release, update::Error>) {
+        match answer {
+            Ok(release) if self.would_offer(&release) => {
+                self.note(
+                    crate::journal::Level::Note,
+                    format!("{} : {}", self.t(Text::Updates), release.version),
+                );
+                self.update = UpdateState::Offered(Box::new(release));
+                self.dialogs.open(Dialog::Update);
+            }
+            Ok(_) => self.update = UpdateState::UpToDate,
+            Err(error) => {
+                self.note(
+                    crate::journal::Level::Failure,
+                    format!("{} : {error}", self.t(Text::Updates)),
+                );
+                self.update = UpdateState::Failed(error);
+            }
+        }
+    }
+
+    /// What the download came back with.
+    fn apply_update_download(&mut self, answer: Result<PathBuf, update::Error>) {
+        let release = self.update.release().cloned();
+        match (answer, release) {
+            (Ok(file), Some(release)) => {
+                self.note(
+                    crate::journal::Level::Note,
+                    format!("{} : {}", self.t(Text::UpdateVerified), file.display()),
+                );
+                self.update = UpdateState::Downloaded {
+                    release: Box::new(release),
+                    file,
+                };
+            }
+            (Ok(_), None) => self.update = UpdateState::Idle,
+            (Err(error), _) => {
+                self.note(
+                    crate::journal::Level::Failure,
+                    format!("{} : {error}", self.t(Text::Updates)),
+                );
+                self.update = UpdateState::Failed(error);
+            }
+        }
     }
 
     /// The provider and its settings, as the preferences describe them.
@@ -2287,6 +2650,14 @@ impl DesdecApp {
                 .unwrap_or_default(),
             analysis,
             active_view,
+            // The question about updates is answered, so no test meets the
+            // window asking it unless it opens the window itself. A test that
+            // met it by accident would be a test of that window, drawn over
+            // whatever it was really about.
+            preferences: Preferences {
+                check_for_updates: Some(false),
+                ..Preferences::default()
+            },
             ..Self::default()
         }
     }
@@ -2338,6 +2709,10 @@ impl DesdecApp {
         self.dismiss_dialog_with_escape(ctx);
         self.dismiss_dialog_clicked_outside(ctx);
         self.poll_background_jobs(ctx);
+        // Asked once, ever, and only when nothing else is in front of the
+        // reader; then looked for once a session, if they said yes.
+        self.ask_about_updates_if_never_asked();
+        self.check_for_updates_if_allowed(ctx);
         let dropped_files = ctx.input(|input| input.raw.dropped_files.clone());
         if let Some(path) = dropped_files.into_iter().find_map(|file| file.path) {
             self.inspect_binary(ctx, path);
@@ -2357,6 +2732,8 @@ impl DesdecApp {
         ui::search::show(self, ctx);
         ui::script::show(self, ctx);
         ui::plugins::show(self, ctx);
+        ui::update_window::consent(self, ctx);
+        ui::update_window::show(self, ctx);
         ui::output::show(self, ctx);
         self.persist_settled_annotations(ctx);
         ui::notice::show(self, ctx);

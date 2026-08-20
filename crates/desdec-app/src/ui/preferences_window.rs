@@ -410,6 +410,40 @@ fn behaviour(app: &mut DesdecApp, ui: &mut egui::Ui) {
     ui.separator();
     ui.add_space(6.0);
     library_explanations(app, ui);
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(6.0);
+    updates(app, ui);
+}
+
+/// Whether Desdec may ask GitHub about newer releases, and where an archive
+/// goes when it does.
+///
+/// A tri-state preference drawn as a two-state checkbox: never having been
+/// asked and having said no are different — the first means the question is
+/// still coming — but from here they are the same "off", and ticking the box
+/// is an answer either way.
+fn updates(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    let language = app.preferences.language;
+    ui.heading(text(language, Text::Updates));
+    ui.add_space(4.0);
+    let mut allowed = app.preferences.check_for_updates == Some(true);
+    if ui
+        .checkbox(&mut allowed, text(language, Text::CheckForUpdates))
+        .changed()
+    {
+        app.preferences.check_for_updates = Some(allowed);
+    }
+    ui.small(text(language, Text::UpdateConsentExplained));
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label(text(language, Text::UpdateDownloadDirectory));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.preferences.download_directory)
+                .hint_text(text(language, Text::UpdateDownloadDefault))
+                .desired_width(240.0),
+        );
+    });
 }
 
 /// Which model the assistant asks, and what it needs to reach it.

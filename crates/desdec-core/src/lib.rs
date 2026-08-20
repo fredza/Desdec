@@ -17,6 +17,9 @@ pub mod emulate;
 pub mod fixtures;
 pub mod parallel;
 pub mod patch;
+/// Asking GitHub whether there is a newer release; see the module's own
+/// documentation.
+pub mod update;
 pub mod yara;
 
 pub use analysis::{

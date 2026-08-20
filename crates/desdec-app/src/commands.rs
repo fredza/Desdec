@@ -129,6 +129,9 @@ commands! {
     MachineRunToCursor => [Machine, RunToCursor], Some(Shortcut::ctrl(KeyName::F10)),
     MachineRestart => [Machine, Restart], Some(Shortcut::ctrl(KeyName::F9)),
     MachineToggleBreakpoint => [Machine, ToggleBreakpoint], Some(Shortcut::ctrl(KeyName::F2)),
+    // Looking for a newer release. Never on a shortcut by default: it reaches
+    // the network, and a key that does that should be one the reader chose.
+    CheckForUpdates => [Updates, CheckForUpdates], None,
     Yara => [Yara], None,
     RunYara => [Yara, RunYara], None,
     ToggleYaraModule => [Yara, ToggleYaraModule], None,
