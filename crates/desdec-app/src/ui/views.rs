@@ -7,7 +7,7 @@ use crate::{
     preferences::accent,
     ui::{
         ERROR, MUTED, assistant, card, columns, decompile, disassembly, dump, expert, format_size,
-        functions, patches_view, segments, strings, yara,
+        functions, machine, patches_view, segments, strings, yara,
     },
 };
 
@@ -24,6 +24,57 @@ pub fn show_central_panel(app: &mut DesdecApp, ctx: &egui::Context) {
             ui.colored_label(ERROR, error);
         }
     });
+}
+
+/// The views that act on the whole application rather than read the analysis,
+/// drawn here because each takes `&mut DesdecApp` and returns nothing to the
+/// caller. Answers whether it drew one.
+fn whole_application_view(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
+    let view = app.active_view;
+    // These views hold the whole application, since they act on it: patches
+    // are exported, and the decompiler is started from the view showing it.
+    match view {
+        WorkspaceView::Patches => {
+            patches_view::show(app, ui);
+            true
+        }
+        WorkspaceView::Decompile => {
+            decompile::show(app, ui);
+            true
+        }
+        WorkspaceView::Yara => {
+            yara::show(app, ui);
+            true
+        }
+        WorkspaceView::Dump => {
+            dump::show(app, ui);
+            true
+        }
+        WorkspaceView::Assistant => {
+            assistant::show(app, ui);
+            true
+        }
+        WorkspaceView::Machine => {
+            machine::show(app, ui);
+            true
+        }
+        WorkspaceView::Disassembly => {
+            let action = disassembly::show(app, ui);
+            if let Some(address) = action.inspect {
+                app.inspecting_operand = Some(address);
+                app.dialogs.open(Dialog::Operand);
+            }
+            if let Some(address) = action.edit {
+                // Editing happens where the patches live, so the pending list
+                // and the export are in front of the user straight away.
+                if patches_view::open_editor(app, address) {
+                    app.active_view = WorkspaceView::Patches;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
 }
 
 fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
@@ -45,45 +96,8 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
         return;
     }
 
-    // These views hold the whole application, since they act on it: patches
-    // are exported, and the decompiler is started from the view showing it.
-    match view {
-        WorkspaceView::Patches => {
-            patches_view::show(app, ui);
-            return;
-        }
-        WorkspaceView::Decompile => {
-            decompile::show(app, ui);
-            return;
-        }
-        WorkspaceView::Yara => {
-            yara::show(app, ui);
-            return;
-        }
-        WorkspaceView::Dump => {
-            dump::show(app, ui);
-            return;
-        }
-        WorkspaceView::Assistant => {
-            assistant::show(app, ui);
-            return;
-        }
-        WorkspaceView::Disassembly => {
-            let action = disassembly::show(app, ui);
-            if let Some(address) = action.inspect {
-                app.inspecting_operand = Some(address);
-                app.dialogs.open(Dialog::Operand);
-            }
-            if let Some(address) = action.edit {
-                // Editing happens where the patches live, so the pending list
-                // and the export are in front of the user straight away.
-                if patches_view::open_editor(app, address) {
-                    app.active_view = WorkspaceView::Patches;
-                }
-            }
-            return;
-        }
-        _ => {}
+    if whole_application_view(app, ui) {
+        return;
     }
 
     // Borrowing the analysis and the filter separately keeps both available.

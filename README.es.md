@@ -7,7 +7,11 @@ La clave pública se distribuye de forma gratuita junto con el binario.
 
 Desdec es un explorador de binarios local y de código abierto, hecho para leer
 los ejecutables que uno tiene derecho a leer. Abre un archivo ELF, PE o Mach-O,
-dice qué contiene, y nunca lo ejecuta.
+dice qué contiene, y nunca lo ejecuta en su máquina.
+
+Donde sí ejecuta un binario, lo hace en un procesador que él mismo construye:
+un emulador sin sistema operativo detrás, descrito más abajo en **Máquina**.
+Ningún byte del archivo llega jamás a su propio procesador.
 
 Su regla de conducta es no inventar nada. Cuando una respuesta es exacta —la
 dirección que designa un operando, los bytes que escribiría un parche— se da
@@ -29,6 +33,7 @@ dice. Cuando no lo sabe, también lo dice, en lugar de adivinar.
 | **Cadenas** | Las cadenas imprimibles con su desplazamiento y su codificación, filtrables, y las instrucciones que las referencian. |
 | **Desensamblado** | Listados x86, x86-64 (iced-x86) y AArch64 (Capstone), con edición de los bytes de una instrucción. Con el botón derecho se explica qué designa el operando y qué escribió por última vez en cada registro nombrado. La barra lleva las banderas de condición de la fila seleccionada —las que establece, las que consulta, y aquellas cuyo valor fijan los bytes pasara lo que pasara antes— y una fila sobre la que usted ha escrito se marca al margen. |
 | **Pseudocódigo** | Una traducción prudente del flujo decodificado, integrada en la herramienta —o la salida de Rizin/rz-ghidra o de RetDec si alguno está instalado y elegido. |
+| **Máquina** | Un procesador emulado, apagado hasta que pida uno. Registros, memoria, pila, puntos de interrupción, vigilancias, paso a paso detallado/por procedimientos/para salir, ejecución hasta el cursor y pila de llamadas: todo ello mediciones, porque algo se ejecutó de verdad. Corre en un procesador que Desdec construye, nunca en el suyo: ningún byte del archivo llega al procesador de su máquina, y una llamada al sistema, una biblioteca ausente o una instrucción no emulada detienen la ejecución y se nombran en lugar de adivinarse. x86 y x86-64. |
 | **Parches** | Las modificaciones de bytes pendientes, y la exportación que las escribe en una **copia**. El archivo analizado nunca se modifica. |
 | **YARA** | Opcional. Ejecuta un `yara` o `yr` instalado localmente sobre el archivo abierto, con sus propias reglas. Desactivado por defecto. |
 | **Asistencia de IA** | Opcional, desactivada por defecto. Un modelo relee lo decodificado —un binario entero, una función, una instrucción— y su respuesta se etiqueta como lectura propuesta, nunca como hallazgo. Un modelo local (Ollama) o la API de Anthropic, según lo que configure. |

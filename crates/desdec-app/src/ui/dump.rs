@@ -145,6 +145,9 @@ fn rows(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let area =
         decompile::listing_area_at_row(egui::ScrollArea::both().id_salt("dump"), ui, scroll_to);
     let marked = app.dump.offset;
+    // What a row asked for, gathered as the rows are drawn: the machine is the
+    // application's, and cannot be reached while the file's bytes are borrowed.
+    let mut watch = None;
     area.auto_shrink([false, false])
         .show_rows(ui, ROW_HEIGHT, total, |ui, visible| {
             egui::Grid::new("dump")
@@ -155,7 +158,7 @@ fn rows(app: &mut DesdecApp, ui: &mut egui::Ui) {
                     for row in visible {
                         let offset = (row * WIDTH) as u64;
                         let end = ((row + 1) * WIDTH).min(file.len());
-                        line(
+                        watch = watch.or(line(
                             ui,
                             analysis,
                             &app.patches,
@@ -163,13 +166,27 @@ fn rows(app: &mut DesdecApp, ui: &mut egui::Ui) {
                             offset,
                             marked,
                             language,
-                        );
+                        ));
                     }
                 });
         });
+    if let Some(address) = watch
+        && let Some(machine) = app.machine()
+    {
+        machine.watch(desdec_core::emulate::Watchpoint {
+            address,
+            // One byte, which is enough: a watch is touched by any access that
+            // overlaps it, and a wider read of the same word overlaps this one.
+            size: 1,
+            on_read: true,
+            on_write: true,
+        });
+    }
 }
 
 /// One row: where it is in the file, where it is loaded, its bytes, its text.
+///
+/// Returns an address the reader asked to watch, if they asked.
 fn line(
     ui: &mut egui::Ui,
     analysis: &desdec_core::Analysis,
@@ -178,19 +195,31 @@ fn line(
     offset: u64,
     marked: Option<u64>,
     language: Language,
-) {
+) -> Option<u64> {
     ui.label(syntax::dim(
         ui,
         &format!("{offset:#010x}"),
         egui::Color32::TRANSPARENT,
     ));
+    // Only a mapped row can be watched: a watchpoint is about an address the
+    // run sees, and an unmapped part of the file has none.
+    let mut watch = None;
     match analysis.address_at(offset) {
         Some((address, _)) => {
-            ui.label(syntax::dim(
-                ui,
-                &format!("{address:#018x}"),
-                egui::Color32::TRANSPARENT,
-            ));
+            ui.add(
+                egui::Label::new(syntax::dim(
+                    ui,
+                    &format!("{address:#018x}"),
+                    egui::Color32::TRANSPARENT,
+                ))
+                .sense(egui::Sense::click()),
+            )
+            .context_menu(|ui| {
+                if ui.button(text(language, Text::WatchThisAddress)).clicked() {
+                    watch = Some(address);
+                    ui.close_menu();
+                }
+            });
         }
         None => {
             ui.label(
@@ -238,6 +267,7 @@ fn line(
     ui.label(hex);
     ui.label(egui::RichText::new(ascii).monospace().color(MUTED));
     ui.end_row();
+    watch
 }
 
 #[cfg(test)]

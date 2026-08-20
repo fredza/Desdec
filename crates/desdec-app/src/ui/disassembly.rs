@@ -79,6 +79,12 @@ struct Listing<'a> {
     notes: &'a crate::annotations::Annotations,
     /// Whether hovering a row says what its operand designates.
     hints: bool,
+    /// The emulated run, when one has been started: where it stands now, and
+    /// which rows the reader has put a breakpoint on.
+    ///
+    /// `None` until the reader asks for a run, so a listing read without ever
+    /// opening the Machine view is drawn exactly as it was before.
+    machine: Option<&'a desdec_core::emulate::Machine>,
     language: Language,
 }
 
@@ -103,6 +109,7 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
         // The general switch still governs: a reader who turned the tooltips
         // off asked for a listing and nothing else.
         hints: app.preferences.show_tooltips && app.preferences.show_operand_hints,
+        machine: app.machine.as_ref(),
         language,
     };
     let Some(analysis) = &app.analysis else {
@@ -174,6 +181,17 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
         *pending_scroll = None;
     }
     action.inspect = asked.inspect;
+    apply(app, &asked);
+    action
+}
+
+/// Acts on what the rows asked for, once the borrows they were drawn under
+/// have ended.
+///
+/// The notes, the machine and the dump are the application's, not the
+/// listing's: a row cannot reach any of them while it is being drawn from a
+/// borrow of them, which is why nothing here happens where it was asked for.
+fn apply(app: &mut DesdecApp, asked: &Asked) {
     // The notes are the application's, not the listing's, so they are written
     // here — where the borrow the listing held on them has ended.
     if let Some(address) = asked.bookmark {
@@ -190,7 +208,20 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
     if let Some(address) = asked.follow {
         app.follow_in_dump(address);
     }
-    action
+    // Both of these build the machine if there is not one yet, which is the
+    // only place in the listing that does: asking to stop somewhere is asking
+    // for a run.
+    if let Some(address) = asked.breakpoint
+        && let Some(machine) = app.machine()
+    {
+        machine.toggle_breakpoint(address);
+    }
+    if let Some(address) = asked.run_to {
+        if let Some(machine) = app.machine() {
+            machine.run_to(address);
+        }
+        app.follow_the_run();
+    }
 }
 
 /// What a click in the listing asked for, gathered as the rows are drawn.
@@ -206,6 +237,10 @@ struct Asked {
     references: Option<u64>,
     /// An address to look at byte by byte.
     follow: Option<u64>,
+    /// An address to put a breakpoint on, or to take one off.
+    breakpoint: Option<u64>,
+    /// An address to run the emulation up to.
+    run_to: Option<u64>,
 }
 
 impl Asked {
@@ -218,6 +253,8 @@ impl Asked {
         self.bookmark = self.bookmark.or(row.bookmark);
         self.references = self.references.or(row.references);
         self.follow = self.follow.or(row.follow);
+        self.breakpoint = self.breakpoint.or(row.breakpoint);
+        self.run_to = self.run_to.or(row.run_to);
     }
 }
 
@@ -602,16 +639,26 @@ fn instruction_row(
     let selected_fill =
         decompile::instruction_fill(ui, instruction.address, *selected_instruction, attention);
     let patch = listing.patches.patch_at(instruction.address);
+    // The run's two marks ride on the address itself, in the way a debugger
+    // has always drawn them: red for a row the run will stop on, green for the
+    // row it is standing on. They win over the selection's own fill, because
+    // where the processor is matters more than where the pointer last clicked.
+    let running = run_marks(listing, instruction.address);
+    let address_fill = running.map_or(selected_fill, |(colour, _)| colour);
     let address = ui
         .add(
             egui::Label::new(syntax::dim(
                 ui,
                 &format!("{:#018x}", instruction.address),
-                selected_fill,
+                address_fill,
             ))
             .sense(egui::Sense::click()),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let address = match running {
+        Some((_, what)) => address.on_hover_text(text(language, what)),
+        None => address,
+    };
     // A patched row shows the bytes that would be written, marked, rather than
     // the ones still in the file: the listing must describe the binary being
     // built.
@@ -669,33 +716,9 @@ fn instruction_row(
         assembly
     };
     // The right button carries what is asked *of* a row: what its operand
-    // designates, and what the reader wants to say about it.
-    assembly.context_menu(|ui| {
-        if ui.button(text(language, Text::InspectOperand)).clicked() {
-            asked.inspect = Some(instruction.address);
-            ui.close_menu();
-        }
-        if ui.button(text(language, Text::EditNote)).clicked() {
-            asked.annotate = Some(instruction.address);
-            ui.close_menu();
-        }
-        if ui.button(text(language, Text::Bookmark)).clicked() {
-            asked.bookmark = Some(instruction.address);
-            ui.close_menu();
-        }
-        if ui.button(text(language, Text::ReferencesTo)).clicked() {
-            asked.references = Some(instruction.address);
-            ui.close_menu();
-        }
-        // Where the operand points if it points anywhere, and otherwise the
-        // instruction's own bytes — both are answers to "show me what is
-        // actually there".
-        if ui.button(text(language, Text::FollowInDump)).clicked() {
-            asked.follow =
-                Some(operand::target_address(instruction).unwrap_or(instruction.address));
-            ui.close_menu();
-        }
-    });
+    // designates, what the reader wants to say about it, and where a run
+    // should stop.
+    assembly.context_menu(|ui| row_menu(ui, instruction, language, &mut asked));
     if address.clicked() || assembly.clicked() {
         *selected_instruction = Some(instruction.address);
         *pending_scroll = Some(instruction.address);
@@ -704,6 +727,71 @@ fn instruction_row(
     ui.end_row();
     (gutter, asked)
 }
+
+/// Everything the right button offers on one row.
+///
+/// Its own function because a menu grows: it started at two entries and now
+/// carries six, and every one of them is a sentence rather than a word.
+fn row_menu(ui: &mut egui::Ui, instruction: &Instruction, language: Language, asked: &mut Asked) {
+    let address = instruction.address;
+
+    if ui.button(text(language, Text::InspectOperand)).clicked() {
+        asked.inspect = Some(address);
+        ui.close_menu();
+    }
+    if ui.button(text(language, Text::EditNote)).clicked() {
+        asked.annotate = Some(address);
+        ui.close_menu();
+    }
+    if ui.button(text(language, Text::Bookmark)).clicked() {
+        asked.bookmark = Some(address);
+        ui.close_menu();
+    }
+    if ui.button(text(language, Text::ReferencesTo)).clicked() {
+        asked.references = Some(address);
+        ui.close_menu();
+    }
+    // Running is offered from the listing because that is where a reader
+    // decides they want to stop somewhere: the alternative is selecting a
+    // row here and pressing a key in another view.
+    if ui.button(text(language, Text::ToggleBreakpoint)).clicked() {
+        asked.breakpoint = Some(address);
+        ui.close_menu();
+    }
+    if ui.button(text(language, Text::RunToCursor)).clicked() {
+        asked.run_to = Some(address);
+        ui.close_menu();
+    }
+    // Where the operand points if it points anywhere, and otherwise the
+    // instruction's own bytes — both are answers to "show me what is
+    // actually there".
+    if ui.button(text(language, Text::FollowInDump)).clicked() {
+        asked.follow = Some(operand::target_address(instruction).unwrap_or(address));
+        ui.close_menu();
+    }
+}
+
+/// The fill the run's marks put behind an address, and what hovering it says.
+///
+/// Nothing when there is no run: the marks belong to a machine that exists,
+/// and a listing opened without one carries neither.
+fn run_marks(listing: &Listing, address: u64) -> Option<(egui::Color32, Text)> {
+    let machine = listing.machine?;
+    if machine.instruction_pointer() == address {
+        return Some((
+            crate::ui::machine::CURRENT.gamma_multiply(RUN_MARK_FILL),
+            Text::NextInstruction,
+        ));
+    }
+    machine.has_breakpoint(address).then_some((
+        crate::ui::machine::BREAKPOINT.gamma_multiply(RUN_MARK_FILL),
+        Text::ToggleBreakpoint,
+    ))
+}
+
+/// How much of the mark's colour is laid behind the address. Enough to be
+/// unmissable running down the listing, faint enough to read the digits over.
+const RUN_MARK_FILL: f32 = 0.42;
 
 /// The mark a bookmarked row carries. Drawn from the font rather than painted,
 /// so it sits on the same baseline as the rest of the row.
@@ -1093,7 +1181,9 @@ fn stack_cell(
 
 #[cfg(test)]
 mod tests {
-    use super::{JUMP, is_jump, jump_target, lanes, row_of, section_starts};
+    use eframe::egui;
+
+    use super::{JUMP, is_jump, jump_target, lanes, row_of, run_marks, section_starts};
     use crate::{
         app::{Dialog, WorkspaceView},
         commands::Command,
@@ -1101,7 +1191,82 @@ mod tests {
         testing::{drawn, drawn_text, opened_app, reference_analysis, window_input},
         ui::views,
     };
-    use eframe::egui;
+
+    /// The two marks a run puts on the listing.
+    ///
+    /// Checked through [`run_marks`], which is what decides them: the marks
+    /// themselves are a colour laid behind the address by the text layout, and
+    /// a test that went looking for a rectangle would be testing egui rather
+    /// than this. What matters here is that a listing with no run carries
+    /// neither mark, that the row the run stands on carries the one, and the
+    /// row it would stop on the other.
+    #[test]
+    fn the_listing_marks_where_the_run_stands_and_where_it_will_stop() {
+        use crate::ui::machine::{BREAKPOINT, CURRENT};
+
+        // A fresh borrow each time, so the application stays free to be told
+        // about the next breakpoint between two questions.
+        fn marks(app: &crate::app::DesdecApp, address: u64) -> Option<(egui::Color32, Text)> {
+            run_marks(
+                &super::Listing {
+                    patches: &app.patches,
+                    stack: &app.stack,
+                    file: &app.file_bytes,
+                    sections: &app.section_starts,
+                    accent: egui::Color32::WHITE,
+                    notes: &app.annotations,
+                    hints: false,
+                    machine: app.machine.as_ref(),
+                    language: Language::English,
+                },
+                address,
+            )
+        }
+
+        let ctx = egui::Context::default();
+        let mut app = opened_app(WorkspaceView::Disassembly);
+        let entry = app
+            .analysis
+            .as_ref()
+            .and_then(|analysis| analysis.entry_point)
+            .expect("the reference binary has an entry point");
+        app.selected_instruction = Some(entry);
+
+        assert!(
+            app.machine.is_none(),
+            "opening a binary starts nothing at all"
+        );
+        app.run_command(&ctx, Command::MachineToggleBreakpoint);
+        let machine = app.machine.as_ref().expect("asking for one builds it");
+        assert!(machine.has_breakpoint(entry));
+        assert_eq!(machine.instruction_pointer(), entry);
+
+        // The run stands on the entry point *and* has a breakpoint on it, and
+        // where it stands is what a reader needs to see first.
+        assert_eq!(
+            marks(&app, entry).map(|(colour, _)| colour),
+            Some(fill(CURRENT))
+        );
+        let elsewhere = entry.wrapping_add(1);
+        assert_eq!(
+            marks(&app, elsewhere),
+            None,
+            "a row with neither carries neither"
+        );
+
+        app.selected_instruction = Some(elsewhere);
+        app.run_command(&ctx, Command::MachineToggleBreakpoint);
+        assert_eq!(
+            marks(&app, elsewhere).map(|(colour, _)| colour),
+            Some(fill(BREAKPOINT)),
+            "a row the run would stop on is marked"
+        );
+    }
+
+    /// The colour a mark is painted in, once faded behind the text.
+    fn fill(colour: egui::Color32) -> egui::Color32 {
+        colour.gamma_multiply(super::RUN_MARK_FILL)
+    }
 
     /// One frame of the usual window carrying a single key press.
     fn press(key: egui::Key) -> egui::RawInput {

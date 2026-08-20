@@ -9,7 +9,9 @@ use std::{
     time::Duration,
 };
 
-use desdec_core::{Analysis, analyse_path_cancellable, assistant, decompiler, yara};
+use desdec_core::{
+    Analysis, analyse_path_cancellable, assistant, decompiler, emulate::Machine, yara,
+};
 use eframe::{Storage, egui};
 
 use crate::{
@@ -57,6 +59,9 @@ pub enum WorkspaceView {
     Dump,
     /// A model's reading of what has been decoded; see [`crate::ui::assistant`].
     Assistant,
+    /// The emulated processor: registers, memory, breakpoints and a run; see
+    /// [`desdec_core::emulate`].
+    Machine,
     Patches,
     Yara,
 }
@@ -71,6 +76,7 @@ impl WorkspaceView {
         Self::Decompile,
         Self::Dump,
         Self::Assistant,
+        Self::Machine,
         Self::Patches,
         Self::Yara,
     ];
@@ -85,6 +91,7 @@ impl WorkspaceView {
             Self::Decompile => Text::Decompile,
             Self::Dump => Text::Dump,
             Self::Assistant => Text::AiAssistance,
+            Self::Machine => Text::Machine,
             Self::Patches => Text::Patches,
             Self::Yara => Text::Yara,
         }
@@ -102,6 +109,7 @@ impl WorkspaceView {
             Self::Decompile => Icon::Decompile,
             Self::Dump => Icon::Dump,
             Self::Assistant => Icon::Assistant,
+            Self::Machine => Icon::Machine,
             Self::Patches => Icon::Patches,
             Self::Yara => Icon::Yara,
         }
@@ -119,6 +127,7 @@ impl WorkspaceView {
             Self::Decompile => Command::Decompile,
             Self::Dump => Command::Dump,
             Self::Assistant => Command::AiAssistance,
+            Self::Machine => Command::Machine,
             Self::Patches => Command::Patches,
             Self::Yara => Command::Yara,
         }
@@ -130,7 +139,7 @@ impl WorkspaceView {
         match self {
             Self::Overview | Self::Segments | Self::Functions | Self::Strings => None,
             Self::Disassembly | Self::Decompile | Self::Dump | Self::Assistant => None,
-            Self::Patches | Self::Yara => None,
+            Self::Machine | Self::Patches | Self::Yara => None,
         }
     }
 }
@@ -431,6 +440,17 @@ pub struct DesdecApp {
     pub instruction_attention: Option<(u64, f64)>,
     /// The static walk through the code, and the trail it has left.
     pub walk: crate::walk::Walk,
+    /// The emulated processor, once a run has been asked for.
+    ///
+    /// `None` until then, and built from the file's own section table on the
+    /// first press: opening a binary must not start anything, and a reader who
+    /// never opens the Machine view has never had one built.
+    pub machine: Option<desdec_core::emulate::Machine>,
+    /// The address the machine view's memory pane is looking at.
+    pub machine_memory_at: Option<u64>,
+    /// Which platform's rule says where a function's arguments are, for a run
+    /// started at a function rather than at the entry point.
+    pub machine_convention: desdec_core::emulate::Convention,
     /// Where each section begins in the listing, indexed once per binary.
     ///
     /// Derived from the analysis, like the stack and the function index, and
@@ -783,6 +803,81 @@ impl DesdecApp {
         }
     }
 
+    /// The emulated processor, built on the first press and kept afterwards.
+    ///
+    /// Returns `None` when there is nothing to build one over. Building it is
+    /// the moment the file's bytes are laid out as an address space, which is
+    /// why it does not happen when a binary is merely opened: only asking for
+    /// a run, or opening the view a run lives in, does it.
+    pub fn machine(&mut self) -> Option<&mut desdec_core::emulate::Machine> {
+        if self.machine.is_none() {
+            let analysis = self.analysis.as_ref()?;
+            // The one copy the emulator costs: the address space borrows these
+            // bytes for as long as it lives, and every other view keeps
+            // reading the application's own.
+            let image: std::sync::Arc<[u8]> = self.file_bytes.as_slice().into();
+            self.machine = Some(desdec_core::emulate::Machine::new(analysis, image));
+        }
+        self.machine.as_mut()
+    }
+
+    /// Puts the reader where the run now stands, when the listing has a row
+    /// for it. A run that stopped in a library has no row, and the selection
+    /// is left where it was rather than cleared.
+    pub fn follow_the_run(&mut self) {
+        let Some(address) = self.machine.as_ref().map(Machine::instruction_pointer) else {
+            return;
+        };
+        if self.is_decoded(address) {
+            self.go_to_instruction(address);
+        }
+    }
+
+    /// The transport of the emulated run: the same six buttons a debugger has,
+    /// each ending by putting the reader on the instruction about to run.
+    fn run_machine_command(&mut self, command: Command) {
+        use desdec_core::emulate::Step;
+
+        // The view first, whatever happens next: a reader who pressed F9 with
+        // no binary open must still be shown where a run would appear, rather
+        // than have the key answer nothing.
+        self.open_view(command);
+        let cursor = self.selected_instruction;
+        let Some(machine) = self.machine() else {
+            return;
+        };
+        match command {
+            Command::MachineRun => {
+                machine.run();
+            }
+            Command::MachineStepInto => {
+                machine.step(Step::Into);
+            }
+            Command::MachineStepOver => {
+                machine.step(Step::Over);
+            }
+            Command::MachineStepOut => {
+                machine.step(Step::Out);
+            }
+            Command::MachineRunToCursor => {
+                let Some(address) = cursor else { return };
+                machine.run_to(address);
+            }
+            Command::MachineRestart => machine.restart(),
+            Command::MachineToggleBreakpoint => {
+                // The listing draws the mark, so nothing else has to be said:
+                // the reader who pressed the key is looking at the row.
+                let Some(address) = cursor else { return };
+                machine.toggle_breakpoint(address);
+                return;
+            }
+            _ => return,
+        }
+        // Wherever the run stopped is where the reader should be looking, in
+        // the listing as well as in the machine view.
+        self.follow_the_run();
+    }
+
     /// The transport of the static walk: six commands that all end by moving
     /// the selection through the listing they open.
     fn run_walk_command(&mut self, command: Command) {
@@ -930,7 +1025,16 @@ impl DesdecApp {
             Command::Preferences => self.dialogs.open(Dialog::Preferences),
             Command::Output => self.dialogs.toggle(Dialog::Output),
             Command::About => self.dialogs.open(Dialog::About),
-            Command::Overview | Command::Segments => self.open_view(command),
+            Command::Overview
+            | Command::Segments
+            | Command::Patches
+            | Command::Yara
+            | Command::Decompile
+            | Command::AiAssistance
+            | Command::Disassembly
+            | Command::Functions
+            | Command::Strings
+            | Command::Dump => self.open_view(command),
             Command::ExportPatched => {
                 self.open_view(command);
                 self.export_patched_copy(ctx);
@@ -943,7 +1047,6 @@ impl DesdecApp {
                 self.preferences.cache_decompilations = !self.preferences.cache_decompilations;
             }
             Command::ClearDecompilationCache => self.clear_decompilation_cache(),
-            Command::Disassembly | Command::Dump => self.open_view(command),
             Command::References
             | Command::Search
             | Command::EditAnnotation
@@ -958,8 +1061,16 @@ impl DesdecApp {
             | Command::WalkBack
             | Command::WalkToEntry
             | Command::WalkClear => self.run_walk_command(command),
-            Command::Decompile => self.open_view(command),
-            Command::AiAssistance => self.open_view(command),
+            Command::MachineRun
+            | Command::MachineStepInto
+            | Command::MachineStepOver
+            | Command::MachineStepOut
+            | Command::MachineRunToCursor
+            | Command::MachineRestart
+            | Command::MachineToggleBreakpoint
+            // Opening the view is the same act as asking for a run: it is what
+            // builds the machine, and it goes through the one path that does.
+            | Command::Machine => self.run_machine_command(command),
             Command::AskAboutBinary => {
                 self.open_view(command);
                 self.request_assistance(ctx, assistant::Question::Binary);
@@ -976,8 +1087,6 @@ impl DesdecApp {
                     self.request_assistance(ctx, assistant::Question::Instruction { address });
                 }
             }
-            Command::Functions => self.open_view(command),
-            Command::Strings => self.open_view(command),
             Command::StringsHideUnmapped => {
                 self.open_view(command);
                 self.strings_hide_unmapped = !self.strings_hide_unmapped;
@@ -992,7 +1101,6 @@ impl DesdecApp {
                 self.strings_hide_unmapped = false;
                 self.strings_hide_unreferenced = false;
             }
-            Command::Patches => self.open_view(command),
             Command::ThemeSystem => self.set_theme(ctx, ThemePreference::System),
             Command::ThemeDark => self.set_theme(ctx, ThemePreference::Dark),
             Command::ThemeLight => self.set_theme(ctx, ThemePreference::Light),
@@ -1003,7 +1111,6 @@ impl DesdecApp {
             Command::TogglePersistence => {
                 self.preferences.persistence_enabled = !self.preferences.persistence_enabled;
             }
-            Command::Yara => self.open_view(command),
             Command::RunYara => self.request_yara_scan(ctx),
             Command::ToggleYaraModule => {
                 self.preferences.yara_enabled = !self.preferences.yara_enabled;
@@ -1984,6 +2091,11 @@ impl DesdecApp {
         self.pending_instruction_scroll = None;
         self.instruction_attention = None;
         self.walk.clear();
+        // The machine is built over one file's address space. Carrying it over
+        // to the next binary would offer a run through bytes that are no
+        // longer there, breakpoints included.
+        self.machine = None;
+        self.machine_memory_at = None;
         self.pseudocode_assembly = None;
         self.dialogs.close(Dialog::Assembly);
         self.selected_string = None;
@@ -2871,6 +2983,7 @@ mod tests {
             WorkspaceView::Dump,
             WorkspaceView::Strings,
             WorkspaceView::Assistant,
+            WorkspaceView::Machine,
             WorkspaceView::Patches,
             WorkspaceView::Yara,
         ];
