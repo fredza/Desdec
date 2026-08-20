@@ -179,8 +179,8 @@ pub fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::
         Icon::CollapseLeft => chevron(&pen, -1.0),
         Icon::ExpandRight => chevron(&pen, 1.0),
         Icon::WalkToEntry => walk_to_entry(&pen),
-        Icon::WalkBack => triangle(&pen, -1.0),
-        Icon::WalkInto => triangle(&pen, 1.0),
+        Icon::WalkBack => walk_back(&pen),
+        Icon::WalkInto => walk_into(&pen),
         Icon::WalkOver => walk_over(&pen),
         Icon::WalkOut => walk_out(&pen),
         Icon::WalkClear => walk_clear(&pen),
@@ -471,23 +471,36 @@ fn close(pen: &Pen) {
     pen.line((0.92, 0.08), (0.08, 0.92));
 }
 
-/// The transport of the walk, drawn as a tape deck's: a reader knows what a
-/// triangle on a button does before reading a word of the interface.
-///
-/// A triangle pointing right (`1.0`) or left (`-1.0`).
-fn triangle(pen: &Pen, direction: f32) {
-    let (back, tip) = if direction < 0.0 {
-        (0.86, 0.14)
-    } else {
-        (0.14, 0.86)
-    };
-    pen.path(&[(back, 0.1), (tip, 0.5), (back, 0.9), (back, 0.1)]);
+/// The first instruction of the static walk: an address in the code, not the
+/// beginning of a recording.
+fn walk_to_entry(pen: &Pen) {
+    pen.circle((0.5, 0.5), 0.34);
+    pen.line((0.5, 0.04), (0.5, 0.24));
+    pen.line((0.5, 0.76), (0.5, 0.96));
+    pen.line((0.04, 0.5), (0.24, 0.5));
+    pen.line((0.76, 0.5), (0.96, 0.5));
+    pen.dot((0.5, 0.5));
 }
 
-/// Rewind to the beginning: a triangle brought up against a wall.
-fn walk_to_entry(pen: &Pen) {
-    pen.line((0.1, 0.12), (0.1, 0.88));
-    pen.path(&[(1.0, 0.1), (0.26, 0.5), (1.0, 0.9), (1.0, 0.1)]);
+/// Reverse along the path already read. The bent arrow says "go back through
+/// code", instead of borrowing the rewind glyph from a media player.
+fn walk_back(pen: &Pen) {
+    pen.path(&[
+        (0.86, 0.22),
+        (0.36, 0.22),
+        (0.2, 0.38),
+        (0.2, 0.74),
+        (0.82, 0.74),
+    ]);
+    pen.path(&[(0.5, 0.56), (0.2, 0.74), (0.5, 0.92)]);
+}
+
+/// Follow the line into the called code, marked by a downward arrow landing
+/// on its first instruction.
+fn walk_into(pen: &Pen) {
+    pen.line((0.08, 0.82), (0.92, 0.82));
+    pen.line((0.5, 0.1), (0.5, 0.62));
+    pen.path(&[(0.25, 0.4), (0.5, 0.66), (0.75, 0.4)]);
 }
 
 /// An arc jumping over a point on the line: the call that is passed rather
@@ -502,6 +515,7 @@ fn walk_over(pen: &Pen) {
         (1.0, 0.76),
     ]);
     pen.dot((0.5, 0.76));
+    pen.path(&[(0.72, 0.54), (1.0, 0.76), (0.72, 0.98)]);
 }
 
 /// An arrow leaving the line it stands on: back out of the call.
@@ -511,9 +525,14 @@ fn walk_out(pen: &Pen) {
     pen.path(&[(0.24, 0.38), (0.5, 0.1), (0.76, 0.38)]);
 }
 
-/// The tape deck's stop: the walk put down where it stands.
+/// Forget the path, shown as a route struck through rather than a media-player
+/// stop button.
 fn walk_clear(pen: &Pen) {
-    pen.boxed((0.14, 0.14), (0.86, 0.86), 1.0);
+    pen.path(&[(0.12, 0.74), (0.36, 0.5), (0.58, 0.68), (0.86, 0.3)]);
+    pen.dot((0.12, 0.74));
+    pen.dot((0.36, 0.5));
+    pen.dot((0.58, 0.68));
+    pen.line((0.16, 0.16), (0.84, 0.84));
 }
 
 /// A processor: a square die with legs on all four sides. Deliberately not a

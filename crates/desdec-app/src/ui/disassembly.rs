@@ -271,7 +271,7 @@ pub struct Action {
     pub inspect: Option<u64>,
 }
 
-/// The transport of the static walk: the buttons a tape deck would have.
+/// The controls of the static walk: a compact map of the code path.
 ///
 /// Nothing here runs the program — Desdec never does — and the wording says
 /// so: the walk *follows* the flow, one instruction at a time, through what
@@ -279,7 +279,7 @@ pub struct Action {
 /// a flag, the walk stops and reports that, and the two step buttons are what
 /// let the reader choose the path a condition would otherwise decide.
 fn transport(app: &mut DesdecApp, ui: &mut egui::Ui) {
-    /// In the order the buttons sit, left to right, as on a tape deck.
+    /// In the order a reader follows the code path, left to right.
     const BUTTONS: &[(Icon, Command)] = &[
         (Icon::WalkToEntry, Command::WalkToEntry),
         (Icon::WalkBack, Command::WalkBack),
