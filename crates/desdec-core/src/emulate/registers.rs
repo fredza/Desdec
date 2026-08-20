@@ -1,10 +1,10 @@
 //! The registers of the emulated processor.
 //!
-//! Sixteen general-purpose registers, the instruction pointer, and the flags.
-//! They are held as sixty-four bit values and read at the width the operand
-//! asks for, because that is what the architecture does: `eax` is not a
-//! register, it is the low half of one, and `al` and `ah` are two different
-//! halves of that half.
+//! Sixteen general-purpose registers, sixteen XMM registers, the instruction
+//! pointer, and the flags. The general-purpose registers are held as
+//! sixty-four bit values and read at the width the operand asks for, because
+//! that is what the architecture does: `eax` is not a register, it is the low
+//! half of one, and `al` and `ah` are two different halves of that half.
 //!
 //! One rule of x86-64 is easy to get wrong and is therefore enforced in one
 //! place here: **writing a thirty-two bit register clears the top half of the
@@ -15,6 +15,8 @@ use iced_x86::Register;
 
 /// How many general-purpose registers the emulator holds.
 const COUNT: usize = 16;
+/// How many 128-bit vector registers x86-64 exposes.
+const VECTOR_COUNT: usize = 16;
 
 /// One bit of the flags register, by the name the manuals give it.
 ///
@@ -82,6 +84,10 @@ impl Flag {
 #[derive(Clone, Debug)]
 pub struct Registers {
     general: [u64; COUNT],
+    /// The low 128 bits of the vector register file. AVX's upper halves are
+    /// deliberately not represented: an instruction that needs them must
+    /// stop rather than make those bytes up.
+    vector: [u128; VECTOR_COUNT],
     /// The address of the instruction about to run.
     pub instruction_pointer: u64,
     flags: [bool; 7],
@@ -103,6 +109,7 @@ impl Registers {
     pub const fn new() -> Self {
         Self {
             general: [0; COUNT],
+            vector: [0; VECTOR_COUNT],
             instruction_pointer: 0,
             flags: [false; 7],
         }
@@ -117,12 +124,43 @@ impl Registers {
             .map(|(name, value)| (*name, *value))
     }
 
-    /// Reads a register at the width its name implies.
+    /// Every 128-bit vector register, in the order debuggers conventionally
+    /// show them. Values are integers only for storage and display: SIMD
+    /// moves and bitwise operations preserve their bits exactly.
+    pub fn vector(&self) -> impl Iterator<Item = (&'static str, u128)> + '_ {
+        VECTOR_NAMES
+            .iter()
+            .zip(self.vector.iter())
+            .map(|(name, value)| (*name, *value))
+    }
+
+    /// Reads a 128-bit XMM register. Returns `None` for a register this
+    /// x86/x86-64 emulator does not model, including AVX's wider YMM/ZMM
+    /// views.
+    #[must_use]
+    pub fn xmm(&self, register: Register) -> Option<u128> {
+        vector_index(register).map(|index| self.vector[index])
+    }
+
+    /// Replaces all 128 bits of one XMM register.
     ///
-    /// A register the emulator does not hold — a segment, a vector register —
-    /// reads as zero rather than stopping the run: the instructions that use
-    /// them are refused by the interpreter itself, with a better message than
-    /// a register file could give.
+    /// Returns `false` for a register this emulator does not model, so the
+    /// instruction executor can stop by name instead of silently discarding a
+    /// value.
+    pub fn set_xmm(&mut self, register: Register, value: u128) -> bool {
+        let Some(index) = vector_index(register) else {
+            return false;
+        };
+        self.vector[index] = value;
+        true
+    }
+
+    /// Reads a general-purpose register at the width its name implies.
+    ///
+    /// A register this scalar accessor does not hold — a segment or a vector
+    /// register — reads as zero rather than stopping the run. Vector
+    /// instructions use [`Self::xmm`] instead, which lets them refuse an
+    /// unsupported wider register precisely.
     #[must_use]
     pub fn get(&self, register: Register) -> u64 {
         if register == Register::RIP || register == Register::EIP {
@@ -210,6 +248,12 @@ const NAMES: [&str; COUNT] = [
     "r14", "r15",
 ];
 
+/// The conventional names of the XMM registers held by this emulator.
+const VECTOR_NAMES: [&str; VECTOR_COUNT] = [
+    "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10",
+    "xmm11", "xmm12", "xmm13", "xmm14", "xmm15",
+];
+
 /// Which of the sixteen registers a name refers to, whatever its width.
 fn index_of(register: Register) -> Option<usize> {
     if !register.is_gpr() {
@@ -218,6 +262,12 @@ fn index_of(register: Register) -> Option<usize> {
     let whole = register.full_register();
     let number = whole.number();
     (number < COUNT).then_some(number)
+}
+
+/// Which of the sixteen architectural XMM registers a name designates.
+fn vector_index(register: Register) -> Option<usize> {
+    let index = usize::try_from(register.number()).ok()?;
+    (register.is_xmm() && index < VECTOR_COUNT).then_some(index)
 }
 
 /// Whether the name refers to the second byte rather than the first.

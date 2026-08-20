@@ -1323,6 +1323,11 @@ translations! {
     Watchpoints => ["Surveillances", "Watchpoints", "Vigilancias"],
     WatchThisAddress => ["Surveiller cette adresse", "Watch this address", "Vigilar esta dirección"],
     Registers => ["Registres", "Registers", "Registros"],
+    VectorRegisters => [
+        "Registres vectoriels XMM (SIMD 128 bits)",
+        "XMM vector registers (128-bit SIMD)",
+        "Registros vectoriales XMM (SIMD de 128 bits)",
+    ],
     CallStack => ["Pile des appels", "Call stack", "Pila de llamadas"],
     ExecutionTrace => ["Ce qui s’est exécuté", "What has run", "Lo que se ha ejecutado"],
     MappedRegions => ["Régions mappées", "Mapped regions", "Regiones mapeadas"],

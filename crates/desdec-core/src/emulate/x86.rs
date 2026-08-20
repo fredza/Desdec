@@ -117,6 +117,18 @@ impl Cpu<'_> {
                 Ok(Outcome::Continued)
             }
             Mnemonic::Mov => self.mov(instruction),
+            // The compiler's ordinary 128-bit copy sequence. The aligned and
+            // unaligned spellings have the same state effect; alignment is a
+            // performance concern on current x86, not a value to invent here.
+            Mnemonic::Movaps | Mnemonic::Movups | Mnemonic::Movdqa | Mnemonic::Movdqu => {
+                self.vector_move(instruction)
+            }
+            // These are integer/float names for exactly the same bitwise XOR
+            // on an XMM register. Neither changes rflags.
+            Mnemonic::Pxor | Mnemonic::Xorps => self.vector_xor(instruction),
+            // The emulator holds only XMM's low 128 bits, so their values are
+            // already what this AVX housekeeping instruction leaves behind.
+            Mnemonic::Vzeroupper => Ok(Outcome::Continued),
             Mnemonic::Movzx => self.extend(instruction, false),
             Mnemonic::Movsx | Mnemonic::Movsxd => self.extend(instruction, true),
             Mnemonic::Lea => self.lea(instruction),
@@ -377,6 +389,85 @@ impl Cpu<'_> {
         let size = Self::operand_size(instruction, 0);
         let value = self.read_operand(instruction, 1, size)?;
         self.write_operand(instruction, 0, size, value)?;
+        Ok(Outcome::Continued)
+    }
+
+    /// Reads an XMM register or sixteen bytes of ordinary memory.
+    fn read_vector_operand(
+        &self,
+        instruction: &Instruction,
+        operand: u32,
+    ) -> Result<u128, Refusal> {
+        match instruction.op_kind(operand) {
+            OpKind::Register => self
+                .registers
+                .xmm(instruction.op_register(operand))
+                .ok_or_else(|| Refusal::Unsupported {
+                    text: String::from("vector register"),
+                }),
+            OpKind::Memory => {
+                if Self::uses_thread_segment(instruction) {
+                    return Err(Refusal::Unsupported {
+                        text: String::from("fs/gs"),
+                    });
+                }
+                let address = self.effective_address(instruction, operand);
+                let mut bytes = [0_u8; 16];
+                self.memory
+                    .read(address, &mut bytes)
+                    .map_err(Refusal::Fault)?;
+                Ok(u128::from_le_bytes(bytes))
+            }
+            _ => Err(Refusal::Unsupported {
+                text: String::from("vector operand"),
+            }),
+        }
+    }
+
+    /// Writes an XMM register or sixteen bytes of ordinary memory.
+    fn write_vector_operand(
+        &mut self,
+        instruction: &Instruction,
+        operand: u32,
+        value: u128,
+    ) -> Result<(), Refusal> {
+        match instruction.op_kind(operand) {
+            OpKind::Register => self
+                .registers
+                .set_xmm(instruction.op_register(operand), value)
+                .then_some(())
+                .ok_or_else(|| Refusal::Unsupported {
+                    text: String::from("vector register"),
+                }),
+            OpKind::Memory => {
+                if Self::uses_thread_segment(instruction) {
+                    return Err(Refusal::Unsupported {
+                        text: String::from("fs/gs"),
+                    });
+                }
+                let address = self.effective_address(instruction, operand);
+                self.memory
+                    .write(address, &value.to_le_bytes())
+                    .map_err(Refusal::Fault)
+            }
+            _ => Err(Refusal::Unsupported {
+                text: String::from("vector destination"),
+            }),
+        }
+    }
+
+    /// The state effect shared by `movaps`, `movups`, `movdqa`, and `movdqu`.
+    fn vector_move(&mut self, instruction: &Instruction) -> Result<Outcome, Refusal> {
+        let value = self.read_vector_operand(instruction, 1)?;
+        self.write_vector_operand(instruction, 0, value)?;
+        Ok(Outcome::Continued)
+    }
+
+    /// The state effect shared by `pxor` and `xorps`.
+    fn vector_xor(&mut self, instruction: &Instruction) -> Result<Outcome, Refusal> {
+        let left = self.read_vector_operand(instruction, 0)?;
+        let right = self.read_vector_operand(instruction, 1)?;
+        self.write_vector_operand(instruction, 0, left ^ right)?;
         Ok(Outcome::Continued)
     }
 

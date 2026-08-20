@@ -1034,7 +1034,8 @@ mod tests {
     use iced_x86::{
         Register,
         code_asm::{
-            CodeAssembler, byte_ptr, dword_ptr, ptr, qword_ptr, rax, rbx, rcx, rdi, rdx, rsi,
+            CodeAssembler, byte_ptr, dword_ptr, ptr, qword_ptr, rax, rbx, rcx, rdi, rdx, rsi, xmm0,
+            xmm1, xmmword_ptr,
         },
     };
 
@@ -1124,6 +1125,45 @@ mod tests {
         });
         assert_eq!(machine.registers.get(Register::RAX), 7);
         assert_eq!(machine.stop(), Some(&Stop::Finished));
+    }
+
+    #[test]
+    fn xmm_moves_copy_sixteen_bytes_and_rewind_exactly() {
+        let mut machine = machine(|code| {
+            code.mov(rsi, DATA as i64).unwrap();
+            code.mov(rdi, (DATA + 32) as i64).unwrap();
+            code.movdqu(xmm0, xmmword_ptr(rsi)).unwrap();
+            code.pxor(xmm0, xmm1).unwrap();
+            code.movups(xmmword_ptr(rdi), xmm0).unwrap();
+            code.ret().unwrap();
+        });
+        let source = *b"0123456789abcdef";
+        for (offset, byte) in source.into_iter().enumerate() {
+            assert!(machine.memory.poke(DATA + offset as u64, byte));
+        }
+
+        // Get to the SIMD move, then take it back: vector state belongs to
+        // the same exact rewind record as general registers and memory.
+        machine.step_one();
+        machine.step_one();
+        machine.step_one();
+        assert_eq!(
+            machine.registers.xmm(Register::XMM0),
+            Some(u128::from_le_bytes(source))
+        );
+        assert!(machine.step_back());
+        assert_eq!(machine.registers.xmm(Register::XMM0), Some(0));
+
+        machine.run();
+        assert_eq!(machine.stop(), Some(&Stop::Finished));
+        assert_eq!(
+            machine.registers.xmm(Register::XMM0),
+            Some(u128::from_le_bytes(source))
+        );
+        let copied: Vec<u8> = (0..16)
+            .map(|offset| machine.memory.peek(DATA + 32 + offset).unwrap())
+            .collect();
+        assert_eq!(copied, source);
     }
 
     #[test]

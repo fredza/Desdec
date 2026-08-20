@@ -430,7 +430,18 @@ fn registers(ui: &mut egui::Ui, machine: &Machine, language: Language) {
             );
         }
     });
-    let _ = language;
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new(text(language, Text::VectorRegisters)).color(MUTED));
+    egui::Grid::new("machine-vector-registers")
+        .num_columns(2)
+        .spacing([18.0, 4.0])
+        .show(ui, |ui| {
+            for (name, value) in machine.registers.vector() {
+                ui.monospace(egui::RichText::new(name).color(MUTED));
+                ui.monospace(format!("{value:032x}"));
+                ui.end_row();
+            }
+        });
 }
 
 /// The calls the run is inside, innermost first — which is the order a reader
@@ -699,8 +710,11 @@ mod tests {
     fn the_view_opens_on_the_entry_point() {
         let said: String = rendered().into_iter().map(|(text, _)| text).collect();
         assert!(
-            said.contains("rax") && said.contains("rsp"),
-            "the registers are on screen: {said}"
+            said.contains("rax")
+                && said.contains("rsp")
+                && said.contains("xmm0")
+                && said.contains("xmm15"),
+            "the general-purpose and XMM registers are on screen: {said}"
         );
     }
 
