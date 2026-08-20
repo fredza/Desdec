@@ -106,17 +106,31 @@ pub fn window_input() -> eframe::egui::RawInput {
     // A real window is whatever the reader's screen is, and a view that only
     // ever laid out at one width is one whose columns were never asked to
     // share a wide one. `DESDEC_WIDTH` is for looking at that.
-    let width = std::env::var("DESDEC_WIDTH")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(1200.0);
+    let size = window_size();
     eframe::egui::RawInput {
         screen_rect: Some(eframe::egui::Rect::from_min_size(
             eframe::egui::Pos2::ZERO,
-            eframe::egui::vec2(width, 800.0),
+            size,
         )),
         ..Default::default()
     }
+}
+
+/// How big the window a test lays out in is.
+///
+/// `DESDEC_WIDTH` and `DESDEC_HEIGHT` override it, for looking at a view at
+/// the size a real screen gives it: the default is deliberately small, and a
+/// view that only ever laid out at one size is one whose panes were never
+/// asked to share a large one.
+#[must_use]
+pub fn window_size() -> eframe::egui::Vec2 {
+    let read = |name: &str, fallback: f32| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(fallback)
+    };
+    eframe::egui::vec2(read("DESDEC_WIDTH", 1200.0), read("DESDEC_HEIGHT", 800.0))
 }
 
 /// A window wide enough for the listing to show all five of its columns.
@@ -303,8 +317,11 @@ pub fn write_svg(shapes: &[eframe::egui::epaint::ClippedShape], path: &str) {
     for clipped in shapes {
         frame_sheet::emit(&clipped.shape, &mut body);
     }
+    let size = window_size();
     let svg = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1200\" height=\"800\" viewBox=\"0 0 1200 800\"><rect width=\"100%\" height=\"100%\" fill=\"#0d1017\"/>\n{body}</svg>"
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\"><rect width=\"100%\" height=\"100%\" fill=\"#0d1017\"/>\n{body}</svg>",
+        width = size.x,
+        height = size.y
     );
     std::fs::write(path, svg).expect("writable");
 }
@@ -342,6 +359,32 @@ mod frame_sheet {
             // And scrolled to where the run stands: a listing showing its
             // first page says nothing about a run a hundred thousand rows down.
             app.follow_the_run();
+        }
+        // A breakpoint carrying a condition, so the pane that edits them has
+        // something in it to look at.
+        if std::env::var("DESDEC_BREAKPOINT").is_ok() {
+            let entry = app.analysis.as_ref().and_then(|a| a.entry_point);
+            if let (Some(entry), Some(machine)) = (entry, app.machine()) {
+                // Whatever `DESDEC_RUN` already put there keeps its place: the
+                // two are meant to be usable together.
+                if !machine.has_breakpoint(entry) {
+                    machine.toggle_breakpoint(entry);
+                }
+                if let Some(breakpoint) = machine.breakpoint_mut(entry) {
+                    let _ = breakpoint.set_condition("rcx == 0 && [rdi]:1 != 0");
+                    breakpoint.skip = 3;
+                }
+                let second = entry.wrapping_add(4);
+                if !machine.has_breakpoint(second) {
+                    machine.toggle_breakpoint(second);
+                }
+                if let Some(breakpoint) = machine.breakpoint_mut(second) {
+                    breakpoint.enabled = false;
+                }
+                for _ in 0..6 {
+                    machine.step_one();
+                }
+            }
         }
 
         // Two frames: panels are measured on the first and painted after.

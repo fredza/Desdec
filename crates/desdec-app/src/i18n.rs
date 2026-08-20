@@ -1351,6 +1351,37 @@ translations! {
         "No watchpoints. Right-clicking an address in the bytes view sets one.",
         "Ninguna vigilancia. Un clic derecho en una dirección de la vista de bytes coloca una.",
     ],
+    BreakpointCondition => ["Condition", "Condition", "Condición"],
+    BreakpointConditionHint => [
+        "rcx == 0 && [rdi]:1 != 0",
+        "rcx == 0 && [rdi]:1 != 0",
+        "rcx == 0 && [rdi]:1 != 0",
+    ],
+    BreakpointConditionHelp => [
+        "La course ne s’arrête ici que si cette expression est vraie. Registres par leur nom (rax, eax, al), mémoire entre crochets avec sa largeur ([rdi]:1, :2, :4, :8), nombres décimaux ou 0x, et les opérateurs usuels. Une adresse que rien ne mappe n’a pas de valeur : la condition ne tient pas plutôt que de valoir zéro.",
+        "The run stops here only if this expression is true. Registers by name (rax, eax, al), memory in brackets with its width ([rdi]:1, :2, :4, :8), decimal or 0x numbers, and the usual operators. An address nothing maps has no value: the condition does not hold rather than being worth zero.",
+        "La ejecución se detiene aquí solo si esta expresión es verdadera. Registros por su nombre (rax, eax, al), memoria entre corchetes con su anchura ([rdi]:1, :2, :4, :8), números decimales o 0x, y los operadores habituales. Una dirección que nada mapea no tiene valor: la condición no se cumple en lugar de valer cero.",
+    ],
+    BreakpointConditionRefused => [
+        "Cette condition n’a pas pu être lue ; l’ancienne est conservée. Position :",
+        "This condition could not be read; the previous one is kept. Position:",
+        "Esta condición no pudo leerse; se conserva la anterior. Posición:",
+    ],
+    BreakpointSkip => ["Laisser passer", "Let by", "Dejar pasar"],
+    BreakpointSkipHelp => [
+        "Nombre de passages remplissant la condition à laisser passer avant de s’arrêter.",
+        "How many passes meeting the condition to let by before stopping.",
+        "Cuántos pasos que cumplen la condición dejar pasar antes de detenerse.",
+    ],
+    BreakpointPasses => ["Passages", "Passes", "Pasos"],
+    RemoveBreakpoint => ["Retirer", "Remove", "Quitar"],
+    StepBackOne => ["Revenir d’une instruction", "Step back one instruction", "Retroceder una instrucción"],
+    RewindableSteps => ["Retour possible sur", "Can go back through", "Se puede retroceder"],
+    RewindExplained => [
+        "La course peut revenir en arrière : l’état d’avant chaque instruction est conservé, donc reculer le restaure exactement plutôt que de le recalculer. Seul le passé récent l’est.",
+        "The run can be taken backwards: the state before each instruction is kept, so going back restores it exactly rather than working it out again. Only the recent past is kept.",
+        "La ejecución puede retroceder: se conserva el estado anterior a cada instrucción, así que retroceder lo restaura exactamente en vez de recalcularlo. Solo se conserva el pasado reciente.",
+    ],
     StoppedAtBreakpoint => ["Arrêté sur un point d’arrêt", "Stopped at a breakpoint", "Detenido en un punto de interrupción"],
     StoppedAtWatchpoint => ["Arrêté sur une surveillance", "Stopped at a watchpoint", "Detenido en una vigilancia"],
     StoppedFinished => [

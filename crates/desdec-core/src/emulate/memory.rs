@@ -139,6 +139,13 @@ pub struct Memory {
     regions: Vec<Region>,
     /// Pages that have been written to, which win over the file's bytes.
     overlay: BTreeMap<u64, Box<[u8]>>,
+    /// Bytes as they were before the write now being recorded, in the order
+    /// they were overwritten.
+    ///
+    /// `None` when nothing is being recorded, which is most of the time: this
+    /// is switched on for the length of one instruction, so that instruction
+    /// can be undone. See [`Self::start_recording`].
+    undo: Option<Vec<(u64, u8)>>,
 }
 
 impl Memory {
@@ -149,6 +156,7 @@ impl Memory {
             file,
             regions: Vec::new(),
             overlay: BTreeMap::new(),
+            undo: None,
         }
     }
 
@@ -488,6 +496,33 @@ impl Memory {
         self.file.get(at).copied()
     }
 
+    /// Begins remembering what each write overwrites.
+    ///
+    /// One instruction's worth: the caller switches it on before an
+    /// instruction and takes the record afterwards. Anything already recorded
+    /// and not taken is dropped, because a half-recorded instruction cannot be
+    /// undone and keeping it would let a later undo restore a state that never
+    /// existed.
+    pub fn start_recording(&mut self) {
+        self.undo = Some(Vec::new());
+    }
+
+    /// Takes what was overwritten since [`Self::start_recording`], and stops.
+    pub fn take_recording(&mut self) -> Vec<(u64, u8)> {
+        self.undo.take().unwrap_or_default()
+    }
+
+    /// Puts bytes back as they were, newest first.
+    ///
+    /// The order matters: an instruction that wrote the same address twice
+    /// recorded both, and restoring them oldest-last would leave the middle
+    /// value there.
+    pub fn undo(&mut self, changes: &[(u64, u8)]) {
+        for (address, byte) in changes.iter().rev() {
+            self.set_byte(*address, *byte);
+        }
+    }
+
     /// Stores a byte in the overlay, materialising the page if needed.
     fn set_byte(&mut self, address: u64, byte: u8) {
         let page = address & !(PAGE - 1);
@@ -503,6 +538,15 @@ impl Memory {
             self.overlay.insert(page, fresh.into_boxed_slice());
         }
         let inside = usize::try_from(address - page).unwrap_or(0);
+        // What was there, before it stops being there. Read from the overlay
+        // the page has just been given, so it is the byte the run would read
+        // at this address rather than the file's own.
+        if self.undo.is_some() {
+            let previous = self.stored(address);
+            if let Some(record) = self.undo.as_mut() {
+                record.push((address, previous));
+            }
+        }
         if let Some(written) = self.overlay.get_mut(&page)
             && let Some(slot) = written.get_mut(inside)
         {

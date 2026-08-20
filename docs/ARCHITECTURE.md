@@ -62,6 +62,28 @@ says so, rather than inventing one:
   it still reads zero, so the call lands on the first page, which is
   deliberately left unmapped exactly as every operating system leaves it.
 
+Two things follow from being an interpreter rather than an attachment, and
+neither is available to a debugger that attaches to a real process.
+
+**A breakpoint can carry a condition.** A breakpoint inside a loop of ten
+thousand turns is a breakpoint the reader presses "run" at ten thousand times;
+what they wanted was the turn where `rcx` is four. `emulate::condition` is a
+small expression language over exactly what the machine holds — registers by
+name, memory through `[…]` at a stated width, numbers, and the usual
+operators — with no way to call anything and nothing to assign to: a condition
+is a question asked of the state, and asking it must not change the answer. An
+expression that does not parse is refused where it is typed. One that reads an
+address nothing maps has **no value** rather than a value of zero, so
+`[rax]:1 == 0` does not hold for a pointer that leads nowhere. A pass count
+lets a stated number of qualifying passes by first.
+
+**The run goes backwards.** The state before each instruction is kept — the
+register file, and the bytes that instruction overwrote — so stepping back
+restores it exactly rather than working it out again or re-running from the
+start. It is bounded, like the trace: the recent past, and the interface says
+how much of it there is. Stepping back out of a fault undoes the fault with the
+instruction, so a run that ended is a run that can carry on.
+
 What it buys is what a static reading can never give: register values that are
 values, a stack that is the stack, an indirect call that goes where it goes, a
 loop whose trip count is a fact, and breakpoints that are reached rather than

@@ -959,6 +959,9 @@ impl DesdecApp {
             Command::MachineStepOut => {
                 machine.step(Step::Out);
             }
+            Command::MachineStepBack => {
+                machine.step(Step::Back);
+            }
             Command::MachineRunToCursor => {
                 let Some(address) = cursor else { return };
                 machine.run_to(address);
@@ -1167,6 +1170,7 @@ impl DesdecApp {
             | Command::MachineStepOut
             | Command::MachineRunToCursor
             | Command::MachineRestart
+            | Command::MachineStepBack
             | Command::MachineToggleBreakpoint
             // Opening the view is the same act as asking for a run: it is what
             // builds the machine, and it goes through the one path that does.

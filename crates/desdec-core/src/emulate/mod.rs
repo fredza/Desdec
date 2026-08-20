@@ -28,6 +28,8 @@
 //! call that goes where it actually goes, a loop whose trip count is a fact,
 //! and breakpoints that are reached rather than reasoned about.
 
+/// Conditions a breakpoint carries; see the module's own documentation.
+pub mod condition;
 /// The emulated address space; see the module's own documentation.
 pub mod memory;
 /// The register file; see the module's own documentation.
@@ -35,7 +37,7 @@ pub mod registers;
 mod x86;
 
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     sync::Arc,
 };
 
@@ -49,6 +51,15 @@ use crate::{
         x86::{Cpu, Outcome, Refusal},
     },
 };
+
+/// How many instructions the run can be taken back through.
+///
+/// Each step back costs one register file and whatever bytes that instruction
+/// overwrote — a hundred and forty-odd bytes plus a handful — so a few
+/// thousand of them is under a megabyte. Bounded for the same reason the trace
+/// is: a run of a hundred million instructions must not become a hundred
+/// million saved states.
+pub const REWIND_LENGTH: usize = 4096;
 
 /// How many executed instructions the run keeps a record of.
 ///
@@ -157,6 +168,35 @@ pub struct Executed {
     pub ordinal: u64,
 }
 
+/// Everything one instruction changed, kept so it can be put back.
+///
+/// This is what makes a run reversible, and it is a thing only an emulator can
+/// offer: a debugger attached to a real process cannot un-write a byte. What
+/// is stored is not a reading or a reconstruction — it is the state as it was,
+/// so stepping back is exact rather than inferred.
+#[derive(Clone, Debug)]
+struct Undo {
+    /// The registers as they stood before the instruction ran.
+    registers: Registers,
+    /// The bytes it overwrote, and what they held.
+    memory: Vec<(u64, u8)>,
+    /// The call depth before it.
+    depth: i64,
+    /// What it did to the call stack, so that can be put back too.
+    frames: FrameChange,
+}
+
+/// What one instruction did to the call stack.
+#[derive(Clone, Debug)]
+enum FrameChange {
+    /// Nothing.
+    None,
+    /// It made a call, so undoing it takes that frame off again.
+    Pushed,
+    /// It returned, so undoing it puts the frame back.
+    Popped(Box<Frame>),
+}
+
 /// One call the run has made and not yet come back from.
 ///
 /// Recorded as the call happens rather than reconstructed afterwards by
@@ -173,6 +213,81 @@ pub struct Frame {
     pub returns_to: u64,
     /// The stack pointer just after the call was made.
     pub stack_pointer: u64,
+}
+
+/// A breakpoint, and what it takes for it to stop the run.
+///
+/// Bare, it stops every time. With a condition it stops only where that holds,
+/// and with a pass count it lets that many qualifying passes go by first —
+/// which together are what make a breakpoint inside a loop of ten thousand
+/// turns worth setting at all.
+#[derive(Clone, Debug, Default)]
+pub struct Breakpoint {
+    /// What the reader wrote, kept so it can be shown and edited again.
+    pub condition: String,
+    /// The same, read. `None` when there is no condition; a condition that
+    /// does not parse is refused when it is set, so this is never a silent
+    /// failure.
+    parsed: Option<condition::Expression>,
+    /// How many qualifying passes to let by before stopping. `0` stops at the
+    /// first.
+    pub skip: u64,
+    /// How many times the run has been here with the condition holding, since
+    /// the last restart. Shown, because "it never stopped" and "it stopped
+    /// after nine hundred passes" are different things to be told.
+    pub passes: u64,
+    /// Whether it stops at all. A breakpoint turned off keeps its condition
+    /// and its count, which is what makes turning it off useful rather than
+    /// the same as deleting it.
+    pub enabled: bool,
+}
+
+impl Breakpoint {
+    /// A breakpoint that stops every time.
+    #[must_use]
+    pub fn always() -> Self {
+        Self {
+            enabled: true,
+            ..Self::default()
+        }
+    }
+
+    /// Reads a condition into this breakpoint, or says why it cannot.
+    ///
+    /// # Errors
+    ///
+    /// [`condition::ParseError`], with the position in the text. The
+    /// breakpoint is left exactly as it was: a condition that does not parse
+    /// never replaces one that does.
+    pub fn set_condition(&mut self, source: &str) -> Result<(), condition::ParseError> {
+        if source.trim().is_empty() {
+            self.condition.clear();
+            self.parsed = None;
+            return Ok(());
+        }
+        let parsed = condition::Expression::parse(source)?;
+        source.clone_into(&mut self.condition);
+        self.parsed = Some(parsed);
+        Ok(())
+    }
+
+    /// Whether this breakpoint stops the run right now.
+    ///
+    /// Counts a pass whenever the condition holds, whether or not it stops on
+    /// it: the count is of qualifying passes, so `skip` means what a reader
+    /// expects it to mean.
+    fn stops(&mut self, registers: &Registers, memory: &Memory) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        if let Some(condition) = self.parsed.as_ref()
+            && !condition.holds(registers, memory)
+        {
+            return false;
+        }
+        self.passes = self.passes.saturating_add(1);
+        self.passes > self.skip
+    }
 }
 
 /// An address the reader is watching, and what they are watching for.
@@ -201,6 +316,8 @@ pub enum Step {
     Over,
     /// Until the function being run returns to the one that called it.
     Out,
+    /// One instruction the other way: the state as it was before it ran.
+    Back,
 }
 
 /// The emulated processor, its memory, and everything one run has done.
@@ -215,7 +332,7 @@ pub struct Machine {
     stack_top: u64,
     executed: u64,
     stop: Option<Stop>,
-    breakpoints: BTreeSet<u64>,
+    breakpoints: BTreeMap<u64, Breakpoint>,
     watchpoints: Vec<Watchpoint>,
     trace: VecDeque<Executed>,
     /// How many calls deep the run is, relative to where it started. What
@@ -223,6 +340,8 @@ pub struct Machine {
     depth: i64,
     /// The calls made and not yet returned from, outermost first.
     frames: Vec<Frame>,
+    /// How to put back each of the last few instructions, newest last.
+    rewind: VecDeque<Undo>,
 }
 
 impl Machine {
@@ -264,11 +383,12 @@ impl Machine {
             stack_top,
             executed: 0,
             stop: None,
-            breakpoints: BTreeSet::new(),
+            breakpoints: BTreeMap::new(),
             watchpoints: Vec::new(),
             trace: VecDeque::new(),
             depth: 0,
             frames: Vec::new(),
+            rewind: VecDeque::new(),
         };
         machine.restart();
         machine
@@ -304,6 +424,12 @@ impl Machine {
         self.trace.clear();
         self.depth = 0;
         self.frames.clear();
+        self.rewind.clear();
+        // The pass counts are of this run, not of the reader's session: a
+        // breakpoint that had gone by nine hundred times has gone by none.
+        for breakpoint in self.breakpoints.values_mut() {
+            breakpoint.passes = 0;
+        }
         self.stop = if self.bitness == 0 {
             Some(Stop::UnsupportedArchitecture {
                 architecture: self.architecture,
@@ -363,6 +489,43 @@ impl Machine {
         self.bitness != 0 && self.stop.as_ref().is_none_or(Stop::is_resumable)
     }
 
+    /// How many instructions the run can be taken back through.
+    ///
+    /// Fewer than have been executed once the record is full: what is kept is
+    /// the recent past, and the interface says so rather than offering a
+    /// button that would stop working part way.
+    #[must_use]
+    pub fn rewindable(&self) -> usize {
+        self.rewind.len()
+    }
+
+    /// Takes the run back one instruction, exactly.
+    ///
+    /// Not a re-run from the start and not a reading of what the instruction
+    /// probably did: the registers and the overwritten bytes are put back as
+    /// they were. Returns whether there was anything to go back through.
+    pub fn step_back(&mut self) -> bool {
+        let Some(undo) = self.rewind.pop_back() else {
+            return false;
+        };
+        self.registers = undo.registers;
+        self.memory.undo(&undo.memory);
+        self.depth = undo.depth;
+        match undo.frames {
+            FrameChange::None => {}
+            FrameChange::Pushed => {
+                self.frames.pop();
+            }
+            FrameChange::Popped(frame) => self.frames.push(*frame),
+        }
+        self.executed = self.executed.saturating_sub(1);
+        self.trace.pop_back();
+        // Whatever stopped the run is undone with it: the instruction that
+        // faulted has not run now, so the fault has not happened.
+        self.stop = None;
+        true
+    }
+
     /// The calls the run is inside, outermost first.
     #[must_use]
     pub fn frames(&self) -> &[Frame] {
@@ -383,23 +546,42 @@ impl Machine {
 
     // ----- what the reader sets ---------------------------------------------
 
-    /// Turns a breakpoint at an address on or off, and says which it now is.
+    /// Puts a breakpoint at an address or takes it away, and says which it now
+    /// is.
+    ///
+    /// Taking one away takes its condition with it. That is what the reader
+    /// asked for; turning one off without losing what was written on it is
+    /// [`Breakpoint::enabled`].
     pub fn toggle_breakpoint(&mut self, address: u64) -> bool {
-        if self.breakpoints.remove(&address) {
+        if self.breakpoints.remove(&address).is_some() {
             false
         } else {
-            self.breakpoints.insert(address);
+            self.breakpoints.insert(address, Breakpoint::always());
             true
         }
     }
 
     #[must_use]
     pub fn has_breakpoint(&self, address: u64) -> bool {
-        self.breakpoints.contains(&address)
+        self.breakpoints.contains_key(&address)
     }
 
-    pub fn breakpoints(&self) -> impl Iterator<Item = u64> + '_ {
-        self.breakpoints.iter().copied()
+    /// The breakpoint at an address, to read what it carries.
+    #[must_use]
+    pub fn breakpoint(&self, address: u64) -> Option<&Breakpoint> {
+        self.breakpoints.get(&address)
+    }
+
+    /// The same, to change it — a condition, a skip count, whether it is on.
+    pub fn breakpoint_mut(&mut self, address: u64) -> Option<&mut Breakpoint> {
+        self.breakpoints.get_mut(&address)
+    }
+
+    /// Every breakpoint, in address order.
+    pub fn breakpoints(&self) -> impl Iterator<Item = (u64, &Breakpoint)> + '_ {
+        self.breakpoints
+            .iter()
+            .map(|(address, breakpoint)| (*address, breakpoint))
     }
 
     pub fn clear_breakpoints(&mut self) {
@@ -445,6 +627,10 @@ impl Machine {
             Step::Into => self.step_one(),
             Step::Over => self.step_over(),
             Step::Out => self.run_until_depth(self.depth - 1),
+            Step::Back => {
+                self.step_back();
+                self.stop.as_ref()
+            }
         }
     }
 
@@ -536,15 +722,24 @@ impl Machine {
         self.stop.as_ref()
     }
 
-    /// Whether a breakpoint sits on the instruction about to run.
+    /// Whether a breakpoint on the instruction about to run stops it.
+    ///
+    /// The condition is asked here, of the state as it stands before the
+    /// instruction runs — which is the state the reader would be looking at if
+    /// it stopped, and so the one the condition should be about.
     fn paused_by_breakpoint(&mut self) -> bool {
         let address = self.registers.instruction_pointer;
-        if self.breakpoints.contains(&address) {
+        // Split apart so the condition can read the registers and the memory
+        // while the breakpoint counts its own passes.
+        let Some(mut breakpoint) = self.breakpoints.remove(&address) else {
+            return false;
+        };
+        let stops = breakpoint.stops(&self.registers, &self.memory);
+        self.breakpoints.insert(address, breakpoint);
+        if stops {
             self.stop = Some(Stop::Breakpoint { address });
-            true
-        } else {
-            false
         }
+        stops
     }
 
     /// Decodes and carries out the instruction at the instruction pointer,
@@ -559,18 +754,27 @@ impl Machine {
             return;
         };
         let touched = self.watch_touched(&instruction, at);
+        // The state as it stands, before anything changes it. Kept whatever
+        // the instruction turns out to do — including faulting, which is a
+        // thing a reader most wants to be able to step back out of.
+        let before = self.registers.clone();
+        let depth_before = self.depth;
+        self.memory.start_recording();
         let mut cpu = Cpu {
             registers: &mut self.registers,
             memory: &mut self.memory,
             bitness: self.bitness,
         };
         let outcome = cpu.execute(&instruction, &text);
+        let overwritten = self.memory.take_recording();
         self.executed = self.executed.saturating_add(1);
         self.record(at, text.clone());
+        let mut frames = FrameChange::None;
         match outcome {
             Ok(Outcome::Continued) => {}
             Ok(Outcome::Called { returns_to }) => {
                 self.depth += 1;
+                frames = FrameChange::Pushed;
                 // Bounded, like the trace: a runaway recursion must not turn
                 // into a list as long as the run itself.
                 if self.frames.len() < TRACE_LENGTH {
@@ -584,7 +788,9 @@ impl Machine {
             }
             Ok(Outcome::Returned) => {
                 self.depth -= 1;
-                self.frames.pop();
+                if let Some(frame) = self.frames.pop() {
+                    frames = FrameChange::Popped(Box::new(frame));
+                }
             }
             Err(refusal) => {
                 self.stop = Some(match refusal {
@@ -606,12 +812,34 @@ impl Machine {
                 // The instruction did not finish, so the pointer goes back to
                 // it: the reader is stopped *on* what failed, not after it.
                 self.registers.instruction_pointer = at;
+                self.remember_how_to_undo(before, overwritten, depth_before, FrameChange::None);
                 return;
             }
         }
+        self.remember_how_to_undo(before, overwritten, depth_before, frames);
         if let Some(stop) = touched {
             self.stop = Some(stop);
         }
+    }
+
+    /// Files away what one instruction changed, dropping the oldest when the
+    /// record is full.
+    fn remember_how_to_undo(
+        &mut self,
+        registers: Registers,
+        memory: Vec<(u64, u8)>,
+        depth: i64,
+        frames: FrameChange,
+    ) {
+        if self.rewind.len() >= REWIND_LENGTH {
+            self.rewind.pop_front();
+        }
+        self.rewind.push_back(Undo {
+            registers,
+            memory,
+            depth,
+            frames,
+        });
     }
 
     /// Reads and decodes the instruction at an address, reporting why not.
@@ -735,6 +963,7 @@ impl Machine {
         }
         self.depth = 0;
         self.frames.clear();
+        self.rewind.clear();
     }
 }
 
@@ -1404,6 +1633,377 @@ mod tests {
         );
         machine.run();
         assert!(machine.frames().is_empty(), "all of them returned");
+    }
+
+    /// A condition is what makes a breakpoint in a loop worth setting.
+    #[test]
+    fn a_conditional_breakpoint_stops_on_the_turn_it_names() {
+        let program = |code: &mut CodeAssembler| {
+            let top = code.create_label();
+            code.mov(rcx, 10_i64).unwrap();
+            code.set_label(&mut { top }).unwrap();
+            code.dec(rcx).unwrap();
+            code.jne(top).unwrap();
+            code.ret().unwrap();
+        };
+        let mut machine = machine(program);
+        let top = addresses(program)[1];
+        machine.toggle_breakpoint(top);
+        machine
+            .breakpoint_mut(top)
+            .expect("just set")
+            .set_condition("rcx == 4")
+            .expect("a condition that parses");
+
+        machine.run();
+        assert_eq!(machine.stop(), Some(&Stop::Breakpoint { address: top }));
+        assert_eq!(
+            machine.registers.get(Register::RCX),
+            4,
+            "stopped on the turn the condition names, not on the first"
+        );
+    }
+
+    /// A condition that never holds never stops, and the run finishes.
+    #[test]
+    fn a_condition_that_never_holds_never_stops_the_run() {
+        let program = |code: &mut CodeAssembler| {
+            let top = code.create_label();
+            code.mov(rcx, 5_i64).unwrap();
+            code.set_label(&mut { top }).unwrap();
+            code.dec(rcx).unwrap();
+            code.jne(top).unwrap();
+            code.ret().unwrap();
+        };
+        let mut machine = machine(program);
+        let top = addresses(program)[1];
+        machine.toggle_breakpoint(top);
+        machine
+            .breakpoint_mut(top)
+            .expect("just set")
+            .set_condition("rcx == 99")
+            .expect("parses");
+
+        machine.run();
+        assert_eq!(machine.stop(), Some(&Stop::Finished));
+    }
+
+    /// A pass count lets that many qualifying passes by first.
+    #[test]
+    fn a_pass_count_lets_that_many_go_by_before_stopping() {
+        let program = |code: &mut CodeAssembler| {
+            let top = code.create_label();
+            code.mov(rcx, 10_i64).unwrap();
+            code.set_label(&mut { top }).unwrap();
+            code.dec(rcx).unwrap();
+            code.jne(top).unwrap();
+            code.ret().unwrap();
+        };
+        let mut machine = machine(program);
+        let top = addresses(program)[1];
+        machine.toggle_breakpoint(top);
+        machine.breakpoint_mut(top).expect("just set").skip = 3;
+
+        machine.run();
+        assert_eq!(machine.stop(), Some(&Stop::Breakpoint { address: top }));
+        assert_eq!(
+            machine.registers.get(Register::RCX),
+            7,
+            "three turns went by, and it stopped on the fourth"
+        );
+        assert_eq!(machine.breakpoint(top).expect("still there").passes, 4);
+    }
+
+    /// A breakpoint turned off keeps what was written on it.
+    #[test]
+    fn a_breakpoint_turned_off_stops_nothing_and_forgets_nothing() {
+        let mut machine = machine(|code| {
+            code.mov(rax, 1_i64).unwrap();
+            code.ret().unwrap();
+        });
+        machine.toggle_breakpoint(CODE);
+        let breakpoint = machine.breakpoint_mut(CODE).expect("just set");
+        breakpoint.set_condition("rax == 0").expect("parses");
+        breakpoint.enabled = false;
+
+        machine.run();
+        assert_eq!(machine.stop(), Some(&Stop::Finished), "it stopped nothing");
+        assert_eq!(
+            machine.breakpoint(CODE).expect("still there").condition,
+            "rax == 0",
+            "and it is still what the reader wrote"
+        );
+    }
+
+    /// A condition that does not parse never replaces one that does.
+    #[test]
+    fn a_condition_that_does_not_parse_is_refused_and_changes_nothing() {
+        let mut machine = machine(|code| {
+            code.ret().unwrap();
+        });
+        machine.toggle_breakpoint(CODE);
+        let breakpoint = machine.breakpoint_mut(CODE).expect("just set");
+        breakpoint.set_condition("rax == 1").expect("parses");
+        assert!(breakpoint.set_condition("rax == ").is_err());
+        assert_eq!(
+            breakpoint.condition, "rax == 1",
+            "what was there is still there"
+        );
+    }
+
+    /// Restarting starts the counting again.
+    #[test]
+    fn restarting_starts_the_pass_counts_again() {
+        let program = |code: &mut CodeAssembler| {
+            let top = code.create_label();
+            code.mov(rcx, 4_i64).unwrap();
+            code.set_label(&mut { top }).unwrap();
+            code.dec(rcx).unwrap();
+            code.jne(top).unwrap();
+            code.ret().unwrap();
+        };
+        let mut machine = machine(program);
+        let top = addresses(program)[1];
+        machine.toggle_breakpoint(top);
+        machine.breakpoint_mut(top).expect("just set").skip = 100;
+        machine.run();
+        assert!(machine.breakpoint(top).expect("there").passes > 0);
+        machine.restart();
+        assert_eq!(machine.breakpoint(top).expect("there").passes, 0);
+    }
+
+    /// Stepping back puts every register where it was.
+    #[test]
+    fn a_step_back_is_the_state_as_it_was_and_not_a_reading_of_it() {
+        let mut machine = machine(|code| {
+            code.mov(rax, 1_i64).unwrap();
+            code.mov(rbx, 2_i64).unwrap();
+            code.add(rax, rbx).unwrap();
+            code.ret().unwrap();
+        });
+        machine.step_one();
+        machine.step_one();
+        let before = machine.registers.clone();
+        let at = machine.instruction_pointer();
+        let executed = machine.executed();
+
+        machine.step_one();
+        assert_eq!(machine.registers.get(Register::RAX), 3, "the add ran");
+
+        assert!(machine.step_back(), "there is something to go back through");
+        assert_eq!(machine.instruction_pointer(), at, "back on the add");
+        assert_eq!(machine.executed(), executed, "and it has not run");
+        for (name, value) in before.general() {
+            assert_eq!(
+                machine.registers.get(match name {
+                    "rax" => Register::RAX,
+                    "rbx" => Register::RBX,
+                    "rcx" => Register::RCX,
+                    _ => continue,
+                }),
+                value,
+                "{name} is back where it was"
+            );
+        }
+        for flag in Flag::ALL {
+            assert_eq!(
+                machine.registers.flag(flag),
+                before.flag(flag),
+                "{} is back where it was",
+                flag.short_name()
+            );
+        }
+    }
+
+    /// And puts back every byte it wrote.
+    #[test]
+    fn a_step_back_un_writes_what_the_instruction_wrote() {
+        let mut machine = machine(|code| {
+            code.mov(rdi, DATA as i64).unwrap();
+            code.mov(qword_ptr(rdi), rax).unwrap();
+            code.ret().unwrap();
+        });
+        // Something already there, so the test is about restoring rather than
+        // about clearing.
+        machine.memory.poke(DATA, 0x5a);
+        machine.registers.set(Register::RAX, 0x1122_3344_5566_7788);
+        machine.step_one();
+        machine.step_one();
+        assert_eq!(machine.memory.peek(DATA), Some(0x88), "the store happened");
+
+        assert!(machine.step_back());
+        assert_eq!(
+            machine.memory.peek(DATA),
+            Some(0x5a),
+            "and the byte that was there is there again"
+        );
+    }
+
+    /// A call and its return are undone as calls and returns.
+    #[test]
+    fn a_step_back_puts_the_call_stack_back() {
+        let mut machine = machine(|code| {
+            let callee = code.create_label();
+            code.call(callee).unwrap();
+            code.ret().unwrap();
+            code.set_label(&mut { callee }).unwrap();
+            code.mov(rax, 5_i64).unwrap();
+            code.ret().unwrap();
+        });
+        machine.step_one();
+        assert_eq!(machine.depth(), 1);
+        assert_eq!(machine.frames().len(), 1);
+        let stack_pointer = machine.registers.stack_pointer();
+
+        assert!(machine.step_back());
+        assert_eq!(machine.depth(), 0, "not in the call any more");
+        assert!(machine.frames().is_empty(), "and the frame is gone with it");
+        assert_eq!(
+            machine.registers.stack_pointer(),
+            stack_pointer + 8,
+            "the return address is off the stack again"
+        );
+
+        // Forward again, to the same place.
+        machine.step_one();
+        assert_eq!(machine.depth(), 1);
+        assert_eq!(machine.registers.stack_pointer(), stack_pointer);
+    }
+
+    /// Stepping back out of a fault undoes the fault with the instruction.
+    #[test]
+    fn a_step_back_out_of_a_fault_is_a_run_that_can_carry_on() {
+        let mut machine = machine(|code| {
+            code.mov(rax, 7_i64).unwrap();
+            code.xor(rdi, rdi).unwrap();
+            code.mov(rbx, qword_ptr(rdi)).unwrap();
+            code.ret().unwrap();
+        });
+        machine.run();
+        assert!(matches!(machine.stop(), Some(Stop::Fault { .. })));
+        assert!(!machine.can_continue(), "a fault is the end of that run");
+
+        assert!(machine.step_back(), "but not the end of the session");
+        assert_eq!(machine.stop(), None, "the fault has not happened now");
+        assert!(machine.can_continue());
+        assert_eq!(
+            machine.registers.get(Register::RAX),
+            7,
+            "the rest still ran"
+        );
+    }
+
+    /// Going back further than the record reaches says so rather than
+    /// pretending, and going back to the start leaves the run at the start.
+    #[test]
+    fn there_is_nothing_before_the_first_instruction() {
+        let mut machine = machine(|code| {
+            code.mov(rax, 1_i64).unwrap();
+            code.ret().unwrap();
+        });
+        assert!(!machine.step_back(), "nothing has run yet");
+        machine.step_one();
+        assert_eq!(machine.rewindable(), 1);
+        assert!(machine.step_back());
+        assert_eq!(machine.instruction_pointer(), CODE);
+        assert_eq!(machine.executed(), 0);
+        assert!(!machine.step_back(), "and no further");
+    }
+
+    /// A long run keeps only the recent past, and says how much.
+    #[test]
+    fn the_record_of_how_to_go_back_is_bounded() {
+        let mut machine = machine(|code| {
+            let top = code.create_label();
+            code.mov(rcx, 20_000_i64).unwrap();
+            code.set_label(&mut { top }).unwrap();
+            code.dec(rcx).unwrap();
+            code.jne(top).unwrap();
+            code.ret().unwrap();
+        });
+        machine.run();
+        assert_eq!(machine.stop(), Some(&Stop::Finished));
+        assert!(machine.executed() > u64::try_from(super::REWIND_LENGTH).unwrap_or(0));
+        assert_eq!(
+            machine.rewindable(),
+            super::REWIND_LENGTH,
+            "the recent past, and no more of it than that"
+        );
+    }
+
+    /// The strongest thing that can be said about going back: going back and
+    /// forward again lands on exactly the state that was left.
+    ///
+    /// Over a loop that computes, branches and writes to memory, so registers,
+    /// flags, the stack pointer and stored bytes all have to come back.
+    #[test]
+    fn going_back_and_forward_again_lands_on_the_same_state() {
+        let mut machine = machine(|code| {
+            let top = code.create_label();
+            code.mov(rcx, 200_i64).unwrap();
+            code.mov(rdi, DATA as i64).unwrap();
+            code.xor(rax, rax).unwrap();
+            code.set_label(&mut { top }).unwrap();
+            code.add(rax, rcx).unwrap();
+            code.mov(qword_ptr(rdi), rax).unwrap();
+            code.add(rdi, 8_i32).unwrap();
+            code.dec(rcx).unwrap();
+            code.jne(top).unwrap();
+            code.ret().unwrap();
+        });
+        for _ in 0..600 {
+            machine.step_one();
+        }
+        let registers: Vec<(&str, u64)> = machine.registers.general().collect();
+        let flags: Vec<bool> = Flag::ALL.map(|flag| machine.registers.flag(flag)).into();
+        let pointer = machine.instruction_pointer();
+        let executed = machine.executed();
+        let memory: Vec<Option<u8>> = (0..256).map(|at| machine.memory.peek(DATA + at)).collect();
+
+        // Not a multiple of the loop's length, so the walk back really lands
+        // somewhere else rather than on the same row of the same iteration.
+        for _ in 0..203 {
+            assert!(machine.step_back(), "the record reaches this far back");
+        }
+        assert_ne!(machine.executed(), executed, "it really moved");
+        assert_ne!(machine.instruction_pointer(), pointer, "and to another row");
+        for _ in 0..203 {
+            machine.step_one();
+        }
+
+        assert_eq!(machine.instruction_pointer(), pointer);
+        assert_eq!(machine.executed(), executed);
+        assert_eq!(
+            machine.registers.general().collect::<Vec<_>>(),
+            registers,
+            "every register is what it was"
+        );
+        assert_eq!(
+            Flag::ALL.map(|flag| machine.registers.flag(flag)).to_vec(),
+            flags,
+            "and every flag"
+        );
+        assert_eq!(
+            (0..256)
+                .map(|at| machine.memory.peek(DATA + at))
+                .collect::<Vec<_>>(),
+            memory,
+            "and every byte it had written"
+        );
+    }
+
+    /// Restarting throws the record away with everything else.
+    #[test]
+    fn restarting_leaves_nothing_to_step_back_through() {
+        let mut machine = machine(|code| {
+            code.mov(rax, 1_i64).unwrap();
+            code.ret().unwrap();
+        });
+        machine.step_one();
+        assert_eq!(machine.rewindable(), 1);
+        machine.restart();
+        assert_eq!(machine.rewindable(), 0);
+        assert!(!machine.step_back());
     }
 
     #[test]

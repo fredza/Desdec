@@ -56,10 +56,23 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let depth = machine.depth();
     let pages = machine.memory.written_pages();
     let stop = machine.stop().cloned();
+    let rewindable = machine.rewindable();
 
-    state_line(ui, language, stop.as_ref(), pointer, executed, depth, pages);
+    state_line(
+        ui,
+        language,
+        stop.as_ref(),
+        &Counts {
+            pointer,
+            executed,
+            depth,
+            pages,
+            rewindable,
+        },
+    );
     ui.add_space(10.0);
 
+    let mut asked = BreakpointEdit::default();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -96,7 +109,7 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 ui,
                 |ui| {
                     card(ui, text(language, Text::Breakpoints), |ui| {
-                        breakpoints(ui, machine, language);
+                        asked = breakpoints(ui, machine, language);
                     });
                 },
                 |ui| {
@@ -106,9 +119,69 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 },
             );
         });
+    apply(app, asked);
 }
 
-/// The six buttons of a debugger's transport, in the order they sit on one.
+/// What the reader asked of one breakpoint, acted on once the borrow the panes
+/// were drawn under has ended.
+#[derive(Default)]
+struct BreakpointEdit {
+    /// A breakpoint to take away.
+    remove: Option<u64>,
+    /// One to turn on or off.
+    enable: Option<(u64, bool)>,
+    /// One whose condition was typed into.
+    condition: Option<(u64, String)>,
+    /// One whose pass count was changed.
+    skip: Option<(u64, u64)>,
+    /// One to bring into view in the listing.
+    show: Option<u64>,
+}
+
+/// Acts on what a row of the breakpoint pane asked for.
+fn apply(app: &mut DesdecApp, asked: BreakpointEdit) {
+    if let Some(address) = asked.show {
+        app.selected_instruction = Some(address);
+        app.pending_instruction_scroll = Some(address);
+        app.active_view = crate::app::WorkspaceView::Disassembly;
+    }
+    let language = app.preferences.language;
+    let Some(machine) = app.machine.as_mut() else {
+        return;
+    };
+    if let Some(address) = asked.remove {
+        machine.toggle_breakpoint(address);
+    }
+    if let Some((address, enabled)) = asked.enable
+        && let Some(breakpoint) = machine.breakpoint_mut(address)
+    {
+        breakpoint.enabled = enabled;
+    }
+    if let Some((address, skip)) = asked.skip
+        && let Some(breakpoint) = machine.breakpoint_mut(address)
+    {
+        breakpoint.skip = skip;
+    }
+    if let Some((address, source)) = asked.condition {
+        let refused = machine
+            .breakpoint_mut(address)
+            .and_then(|breakpoint| breakpoint.set_condition(&source).err());
+        if let Some(error) = refused {
+            // Said out loud rather than swallowed: the condition the reader
+            // typed is not the one the run is using, and they have to be told
+            // which one it is using.
+            app.note(
+                crate::journal::Level::Failure,
+                format!(
+                    "{} {error}",
+                    text(language, Text::BreakpointConditionRefused)
+                ),
+            );
+        }
+    }
+}
+
+/// The transport of a debugger, in the order the buttons sit on one.
 fn transport(app: &mut DesdecApp, ui: &mut egui::Ui) {
     use crate::commands::Command;
 
@@ -119,6 +192,7 @@ fn transport(app: &mut DesdecApp, ui: &mut egui::Ui) {
         (Icon::WalkInto, Command::MachineStepInto),
         (Icon::WalkOver, Command::MachineStepOver),
         (Icon::WalkOut, Command::MachineStepOut),
+        (Icon::WalkBack, Command::MachineStepBack),
         (Icon::Breakpoint, Command::MachineToggleBreakpoint),
         (Icon::Restart, Command::MachineRestart),
     ];
@@ -184,16 +258,25 @@ fn start_at_function(app: &mut DesdecApp, ui: &mut egui::Ui) {
     }
 }
 
-/// One line saying where the run is and why it is not running.
-fn state_line(
-    ui: &mut egui::Ui,
-    language: Language,
-    stop: Option<&Stop>,
+/// The numbers the state line reports, gathered before the panes borrow the
+/// machine to draw themselves.
+struct Counts {
     pointer: u64,
     executed: u64,
     depth: i64,
     pages: usize,
-) {
+    rewindable: usize,
+}
+
+/// One line saying where the run is and why it is not running.
+fn state_line(ui: &mut egui::Ui, language: Language, stop: Option<&Stop>, counts: &Counts) {
+    let Counts {
+        pointer,
+        executed,
+        depth,
+        pages,
+        rewindable,
+    } = *counts;
     // `horizontal`, never `horizontal_wrapped`: in a wrapped row egui 0.31
     // draws every one of these at the same position, so four facts and their
     // four values come out as one smear. It is the same fault that put a
@@ -212,6 +295,10 @@ fn state_line(
         ui.separator();
         ui.label(egui::RichText::new(text(language, Text::PagesWritten)).color(MUTED));
         ui.monospace(pages.to_string());
+        ui.separator();
+        ui.label(egui::RichText::new(text(language, Text::RewindableSteps)).color(MUTED))
+            .on_hover_text(text(language, Text::RewindExplained));
+        ui.monospace(rewindable.to_string());
     });
     ui.add_space(6.0);
     match stop {
@@ -445,16 +532,94 @@ fn regions(ui: &mut egui::Ui, machine: &Machine) {
         });
 }
 
-/// Every breakpoint the reader has set.
-fn breakpoints(ui: &mut egui::Ui, machine: &Machine, language: Language) {
-    let mut any = false;
-    for address in machine.breakpoints() {
-        any = true;
-        ui.monospace(egui::RichText::new(format!("{address:#018x}")).color(BREAKPOINT));
-    }
-    if !any {
+/// Every breakpoint, with what it takes for each to stop the run.
+///
+/// Editable in place rather than behind a window: a condition is written while
+/// looking at the run it is about, and a reader who has to open a dialog to
+/// change `rcx == 4` into `rcx == 3` will not bother.
+fn breakpoints(ui: &mut egui::Ui, machine: &Machine, language: Language) -> BreakpointEdit {
+    let mut asked = BreakpointEdit::default();
+    let set: Vec<(u64, &desdec_core::emulate::Breakpoint)> = machine.breakpoints().collect();
+    if set.is_empty() {
         ui.label(egui::RichText::new(text(language, Text::MachineNoBreakpoints)).color(MUTED));
+        return asked;
     }
+    for (address, breakpoint) in set {
+        ui.horizontal(|ui| {
+            let mut enabled = breakpoint.enabled;
+            if ui.checkbox(&mut enabled, "").changed() {
+                asked.enable = Some((address, enabled));
+            }
+            let colour = if breakpoint.enabled {
+                BREAKPOINT
+            } else {
+                MUTED
+            };
+            if ui
+                .add(
+                    egui::Label::new(
+                        egui::RichText::new(format!("{address:#018x}"))
+                            .monospace()
+                            .color(colour),
+                    )
+                    .sense(egui::Sense::click()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                asked.show = Some(address);
+            }
+            if breakpoint.passes > 0 {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} {}",
+                        text(language, Text::BreakpointPasses),
+                        breakpoint.passes
+                    ))
+                    .small()
+                    .color(MUTED),
+                );
+            }
+            if ui
+                .small_button(text(language, Text::RemoveBreakpoint))
+                .clicked()
+            {
+                asked.remove = Some(address);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(text(language, Text::BreakpointCondition)).color(MUTED))
+                .on_hover_text(text(language, Text::BreakpointConditionHelp));
+            let mut source = breakpoint.condition.clone();
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut source)
+                    .hint_text(text(language, Text::BreakpointConditionHint))
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(260.0),
+            );
+            // Read when the reader has finished, not on every keystroke: a
+            // half-typed `rcx ==` is not a condition that failed, it is one
+            // that is not written yet.
+            if field.lost_focus() && source != breakpoint.condition {
+                asked.condition = Some((address, source));
+            }
+            ui.label(egui::RichText::new(text(language, Text::BreakpointSkip)).color(MUTED))
+                .on_hover_text(text(language, Text::BreakpointSkipHelp));
+            let mut skip = breakpoint.skip;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut skip)
+                        .speed(1.0)
+                        .range(0..=u64::MAX),
+                )
+                .changed()
+            {
+                asked.skip = Some((address, skip));
+            }
+        });
+        ui.add_space(6.0);
+    }
+    asked
 }
 
 /// Every address the reader is watching, and what for.
@@ -487,6 +652,7 @@ mod tests {
 
     use crate::{
         app::WorkspaceView,
+        commands::Command,
         testing::{drawn, window_input},
     };
 
@@ -535,6 +701,80 @@ mod tests {
         assert!(
             said.contains("rax") && said.contains("rsp"),
             "the registers are on screen: {said}"
+        );
+    }
+
+    /// The transport's back button undoes exactly one instruction, through the
+    /// command a key is bound to.
+    #[test]
+    fn the_back_button_takes_the_run_back_one_instruction() {
+        let ctx = egui::Context::default();
+        let mut app = crate::testing::emulatable_sample().opened(WorkspaceView::Machine);
+        for _ in 0..4 {
+            app.run_command(&ctx, Command::MachineStepInto);
+        }
+        let machine = app.machine().expect("a machine");
+        let executed = machine.executed();
+        let pointer = machine.instruction_pointer();
+        assert!(executed >= 4, "the fixture's entry point runs");
+
+        app.run_command(&ctx, Command::MachineStepBack);
+        let machine = app.machine().expect("a machine");
+        assert_eq!(machine.executed(), executed - 1, "exactly one");
+        assert_ne!(machine.instruction_pointer(), pointer);
+
+        app.run_command(&ctx, Command::MachineStepInto);
+        let machine = app.machine().expect("a machine");
+        assert_eq!(machine.executed(), executed, "and forward again");
+        assert_eq!(machine.instruction_pointer(), pointer);
+    }
+
+    /// A condition typed into a breakpoint is what the run then uses; one that
+    /// does not parse is refused and said out loud.
+    #[test]
+    fn a_condition_typed_into_a_breakpoint_is_read_or_refused_aloud() {
+        let ctx = egui::Context::default();
+        let mut app = crate::testing::emulatable_sample().opened(WorkspaceView::Machine);
+        let entry = app
+            .analysis
+            .as_ref()
+            .and_then(|analysis| analysis.entry_point)
+            .expect("an entry point");
+        app.selected_instruction = Some(entry);
+        app.run_command(&ctx, Command::MachineToggleBreakpoint);
+
+        super::apply(
+            &mut app,
+            super::BreakpointEdit {
+                condition: Some((entry, String::from("rax == 1"))),
+                ..super::BreakpointEdit::default()
+            },
+        );
+        assert_eq!(
+            app.machine()
+                .and_then(|machine| machine.breakpoint(entry))
+                .map(|breakpoint| breakpoint.condition.clone()),
+            Some(String::from("rax == 1"))
+        );
+
+        let before = app.journal.entries().len();
+        super::apply(
+            &mut app,
+            super::BreakpointEdit {
+                condition: Some((entry, String::from("rax == "))),
+                ..super::BreakpointEdit::default()
+            },
+        );
+        assert_eq!(
+            app.machine()
+                .and_then(|machine| machine.breakpoint(entry))
+                .map(|breakpoint| breakpoint.condition.clone()),
+            Some(String::from("rax == 1")),
+            "what does not parse never replaces what does"
+        );
+        assert!(
+            app.journal.entries().len() > before,
+            "and the reader is told, rather than left with a field that did nothing"
         );
     }
 

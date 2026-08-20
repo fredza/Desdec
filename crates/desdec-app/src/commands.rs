@@ -128,6 +128,8 @@ commands! {
     MachineStepOut => [Machine, StepOut], Some(Shortcut::shift(KeyName::F11)),
     MachineRunToCursor => [Machine, RunToCursor], Some(Shortcut::ctrl(KeyName::F10)),
     MachineRestart => [Machine, Restart], Some(Shortcut::ctrl(KeyName::F9)),
+    // The one a debugger attached to a process cannot offer at all.
+    MachineStepBack => [Machine, StepBackOne], Some(Shortcut::ctrl(KeyName::F11)),
     MachineToggleBreakpoint => [Machine, ToggleBreakpoint], Some(Shortcut::ctrl(KeyName::F2)),
     // Looking for a newer release. Never on a shortcut by default: it reaches
     // the network, and a key that does that should be one the reader chose.
@@ -212,6 +214,7 @@ impl Command {
                 | Self::MachineStepOut
                 | Self::MachineRunToCursor
                 | Self::MachineRestart
+                | Self::MachineStepBack
                 | Self::MachineToggleBreakpoint
         )
     }
@@ -265,7 +268,8 @@ impl Command {
             | Self::MachineStepInto
             | Self::MachineStepOver
             | Self::MachineStepOut
-            | Self::MachineRestart => WorkspaceView::Machine,
+            | Self::MachineRestart
+            | Self::MachineStepBack => WorkspaceView::Machine,
             _ => return None,
         })
     }
