@@ -449,6 +449,9 @@ fn show_assembly_preview(app: &mut DesdecApp, ctx: &egui::Context) {
     let (rows, hidden) = preview_instructions(analysis, &app.functions, preview);
     let mut jump = None;
     let language = app.preferences.language;
+    // The same width the listing holds its address column to, so a line read
+    // here and the same line read there are read at the same place.
+    let address_width = app.listing_columns.address;
 
     // A stable id keeps the window where the reader put it as the inspected
     // line changes.
@@ -473,11 +476,14 @@ fn show_assembly_preview(app: &mut DesdecApp, ctx: &egui::Context) {
             .show(ui, |ui| {
                 for instruction in rows {
                     ui.horizontal(|ui| {
-                        ui.label(syntax::dim(
-                            ui,
-                            &format!("{:#018x}", instruction.address),
-                            egui::Color32::TRANSPARENT,
-                        ));
+                        let width = crate::ui::disassembly::monospace_width(ui, address_width);
+                        crate::ui::disassembly::sized_cell(ui, width, |ui| {
+                            ui.label(syntax::dim(
+                                ui,
+                                &format!("{:#018x}", instruction.address),
+                                egui::Color32::TRANSPARENT,
+                            ))
+                        });
                         ui.label(syntax::assembly(
                             ui,
                             &instruction.text,

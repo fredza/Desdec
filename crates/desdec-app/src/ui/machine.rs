@@ -487,7 +487,7 @@ mod tests {
 
     use crate::{
         app::WorkspaceView,
-        testing::{drawn, opened_app, window_input},
+        testing::{drawn, window_input},
     };
 
     /// Draws this view alone, and returns every string it put on screen with
@@ -497,7 +497,11 @@ mod tests {
     /// their own text, and a test about this view must not answer for theirs.
     fn rendered() -> Vec<(String, egui::Pos2)> {
         let ctx = egui::Context::default();
-        let mut app = opened_app(WorkspaceView::Machine);
+        // The x86-64 fixture rather than the host's own binary, so the view is
+        // drawn holding the same thing on every runner: an Apple Silicon one
+        // would draw the line saying its architecture has no interpreter, and
+        // a test about the layout would be looking at a different view.
+        let mut app = crate::testing::emulatable_sample().opened(WorkspaceView::Machine);
         let mut draw = |ctx: &egui::Context| {
             egui::CentralPanel::default().show(ctx, |ui| super::show(&mut app, ui));
         };
@@ -539,7 +543,11 @@ mod tests {
     #[test]
     fn a_run_puts_what_it_carried_out_on_screen() {
         let ctx = egui::Context::default();
-        let mut app = opened_app(WorkspaceView::Machine);
+        // The x86-64 fixture rather than the host's own binary: an Apple
+        // Silicon runner's binary is AArch64, which has no interpreter here,
+        // so nothing would run and the test would fail on the architecture
+        // rather than on anything this view does.
+        let mut app = crate::testing::emulatable_sample().opened(WorkspaceView::Machine);
         let entry = app
             .analysis
             .as_ref()
@@ -552,7 +560,7 @@ mod tests {
             }
             machine.executed()
         };
-        assert!(executed > 0, "the reference binary's entry point decodes");
+        assert!(executed > 0, "the fixture's entry point decodes and runs");
         let mut draw = |ctx: &egui::Context| {
             egui::CentralPanel::default().show(ctx, |ui| super::show(&mut app, ui));
         };

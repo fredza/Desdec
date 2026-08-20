@@ -79,6 +79,9 @@ struct Listing<'a> {
     notes: &'a crate::annotations::Annotations,
     /// Whether hovering a row says what its operand designates.
     hints: bool,
+    /// How wide each column is held, in pixels, so the listing does not walk
+    /// sideways as the reader scrolls; see [`Columns`].
+    columns: [f32; 4],
     /// The emulated run, when one has been started: where it stands now, and
     /// which rows the reader has put a breakpoint on.
     ///
@@ -109,6 +112,7 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
         // The general switch still governs: a reader who turned the tooltips
         // off asked for a listing and nothing else.
         hints: app.preferences.show_tooltips && app.preferences.show_operand_hints,
+        columns: app.listing_columns.pixels(ui, language),
         machine: app.machine.as_ref(),
         language,
     };
@@ -451,14 +455,15 @@ fn instructions(
                         // are their own legend, and a word here would be read
                         // as a column of data.
                         gutter_cell(ui);
-                        for title in [
-                            Text::Address,
-                            Text::Bytes,
-                            Text::Section,
-                            Text::Stack,
-                            Text::Instruction,
+                        let [address, bytes, section, stack] = listing.columns;
+                        for (title, width) in [
+                            (Text::Address, address),
+                            (Text::Bytes, bytes),
+                            (Text::Section, section),
+                            (Text::Stack, stack),
+                            (Text::Instruction, 0.0),
                         ] {
-                            ui.strong(text(language, title));
+                            sized_cell(ui, width, |ui| ui.strong(text(language, title)));
                         }
                         ui.end_row();
                     }
@@ -507,6 +512,125 @@ pub fn section_starts(analysis: &Analysis) -> Vec<usize> {
         }
     }
     starts
+}
+
+/// How wide each column of the listing is held, in characters.
+///
+/// A virtualised grid lays out only the rows on screen, so egui sizes each
+/// column to whatever those rows happen to hold. Scrolling from a stretch of
+/// two-byte instructions into a stretch of ten-byte ones therefore shifted
+/// every column to the right of the bytes — sixty-three pixels, measured — and
+/// the listing walked sideways under the reader's eye as they scrolled.
+///
+/// The answer is to hold each column to the widest thing the *whole* binary
+/// could put in it, not the widest thing currently visible. Counted in
+/// characters here and turned into pixels where the font is known: the count
+/// depends on the file and is worked out once, the pixels depend on the theme
+/// and are worked out every frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Columns {
+    pub address: usize,
+    pub bytes: usize,
+    pub section: usize,
+    pub stack: usize,
+}
+
+impl Columns {
+    /// The widths in pixels, in this frame's font and the reader's language.
+    ///
+    /// The greater of what the data needs and what the heading needs. The
+    /// heading is set in the proportional bold of the theme and the data in a
+    /// monospace, so neither can be worked out from the other — and a column
+    /// whose heading was wider than its data grew by exactly that much on the
+    /// one screenful where the heading is visible, which put it a pixel to the
+    /// right of where every other screenful had it.
+    fn pixels(self, ui: &egui::Ui, language: Language) -> [f32; 4] {
+        let heading = |title: Text| {
+            let text = text(language, title).to_owned();
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            ui.fonts(|fonts| {
+                fonts
+                    .layout_no_wrap(text, font, egui::Color32::WHITE)
+                    .size()
+                    .x
+            })
+        };
+        [
+            (self.address, Text::Address),
+            (self.bytes, Text::Bytes),
+            (self.section, Text::Section),
+            (self.stack, Text::Stack),
+        ]
+        .map(|(characters, title)| text_width(ui, characters).max(heading(title)))
+    }
+
+    /// The widths one binary calls for.
+    ///
+    /// Walks the listing once, like the section index beside it, and for the
+    /// same reason: a large shared library holds eighteen million instructions
+    /// and this is not frame work.
+    #[must_use]
+    pub fn of(analysis: &Analysis, stack: &Trace) -> Self {
+        // `{:#018x}`, which every address is written as, whatever it is.
+        let address = 18;
+        let mut bytes = 1;
+        let mut section = 1;
+        for instruction in &analysis.instructions {
+            bytes = bytes.max(instruction.bytes.as_slice().len());
+            section = section.max(instruction.section.chars().count());
+        }
+        let mut stack_width = 1;
+        for index in 0..analysis.instructions.len() {
+            if let Some(depth) = stack.depth(index) {
+                stack_width = stack_width.max(format!("{depth:#x}").len());
+            }
+        }
+        Self {
+            address,
+            // Two hexadecimal digits each, a space between them, and the two
+            // the patch marker takes — reserved whether or not anything is
+            // patched, so writing a byte does not move the columns either.
+            bytes: bytes * 3 - 1 + 2,
+            section,
+            stack: stack_width,
+        }
+    }
+}
+
+/// The width of `characters` monospace digits, in this frame's font.
+fn text_width(ui: &egui::Ui, characters: usize) -> f32 {
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    // Every digit of a monospace font is one advance wide, and so is every
+    // other glyph in it; measuring one and multiplying is exact here and
+    // costs nothing per row.
+    let advance = ui.fonts(|fonts| fonts.glyph_width(&font, '0'));
+    // A column is never more characters than a screen has pixels; the cast is
+    // exact for every width this can be asked for.
+    advance * f32::from(u16::try_from(characters).unwrap_or(u16::MAX))
+}
+
+/// Draws a cell held to a column's width.
+///
+/// The width is a floor rather than a ceiling: it is computed from the widest
+/// content the file can produce, so nothing ever exceeds it, and a heading
+/// wider than the data still gets the room it needs.
+pub fn sized_cell(
+    ui: &mut egui::Ui,
+    width: f32,
+    contents: impl FnOnce(&mut egui::Ui) -> egui::Response,
+) -> egui::Response {
+    ui.scope(|ui| {
+        ui.set_min_width(width);
+        contents(ui)
+    })
+    .inner
+}
+
+/// The width of `characters` monospace glyphs, for a caller holding a cell to
+/// a width the listing does not decide — the assembly window's address column.
+#[must_use]
+pub fn monospace_width(ui: &egui::Ui, characters: usize) -> f32 {
+    text_width(ui, characters)
 }
 
 /// The row an instruction is drawn on, counting the headings above it.
@@ -645,8 +769,8 @@ fn instruction_row(
     // where the processor is matters more than where the pointer last clicked.
     let running = run_marks(listing, instruction.address);
     let address_fill = running.map_or(selected_fill, |(colour, _)| colour);
-    let address = ui
-        .add(
+    let address = sized_cell(ui, listing.columns[0], |ui| {
+        ui.add(
             egui::Label::new(syntax::dim(
                 ui,
                 &format!("{:#018x}", instruction.address),
@@ -654,7 +778,8 @@ fn instruction_row(
             ))
             .sense(egui::Sense::click()),
         )
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    });
     let address = match running {
         Some((_, what)) => address.on_hover_text(text(language, what)),
         None => address,
@@ -663,9 +788,9 @@ fn instruction_row(
     // the ones still in the file: the listing must describe the binary being
     // built.
     let bytes = hex(patch.map_or(&instruction.bytes, |patch| &patch.replacement));
-    match patch {
-        Some(patch) => {
-            ui.label(
+    sized_cell(ui, listing.columns[1], |ui| match patch {
+        Some(patch) => ui
+            .label(
                 egui::RichText::new(format!("{bytes} *"))
                     .monospace()
                     .color(PATCHED),
@@ -674,22 +799,23 @@ fn instruction_row(
                 "{} {}",
                 text(language, Text::OriginalBytes),
                 hex(&patch.original)
-            ));
-        }
-        None => {
-            ui.label(syntax::dim(ui, &bytes, egui::Color32::TRANSPARENT));
-        }
-    }
-    ui.label(syntax::dim(
-        ui,
-        &instruction.section,
-        egui::Color32::TRANSPARENT,
-    ));
+            )),
+        None => ui.label(syntax::dim(ui, &bytes, egui::Color32::TRANSPARENT)),
+    });
+    sized_cell(ui, listing.columns[2], |ui| {
+        ui.label(syntax::dim(
+            ui,
+            &instruction.section,
+            egui::Color32::TRANSPARENT,
+        ))
+    });
     // The stack as it stands *before* this instruction runs, which is what a
     // reader stopped on it would see. Looked up by address rather than by row:
     // the listing is virtualised, and an index computed from a visible range
     // drifts the moment either changes.
-    stack_cell(ui, analysis, listing.stack, instruction.address, language);
+    sized_cell(ui, listing.columns[3], |ui| {
+        stack_cell(ui, analysis, listing.stack, instruction.address, language)
+    });
     // The reader's own name and comment ride at the end of the line, where an
     // assembler puts a comment — a column of their own sat off the right edge
     // of the listing, where nobody would ever scroll to find them.
@@ -1159,23 +1285,21 @@ fn stack_cell(
     stack: &Trace,
     address: u64,
     language: Language,
-) {
+) -> egui::Response {
     let depth = analysis
         .instruction_index(address)
         .and_then(|index| stack.depth(index));
     match depth {
-        Some(depth) => {
-            ui.label(syntax::dim(
+        Some(depth) => ui
+            .label(syntax::dim(
                 ui,
                 &format!("{depth:#x}"),
                 egui::Color32::TRANSPARENT,
             ))
-            .on_hover_text(text(language, Text::StackHelp));
-        }
-        None => {
-            ui.label(egui::RichText::new("?").monospace().color(MUTED))
-                .on_hover_text(text(language, Text::StackUnknown));
-        }
+            .on_hover_text(text(language, Text::StackHelp)),
+        None => ui
+            .label(egui::RichText::new("?").monospace().color(MUTED))
+            .on_hover_text(text(language, Text::StackUnknown)),
     }
 }
 
@@ -1188,9 +1312,76 @@ mod tests {
         app::{Dialog, WorkspaceView},
         commands::Command,
         i18n::{Language, Text, text},
-        testing::{drawn, drawn_text, opened_app, reference_analysis, window_input},
+        testing::{
+            drawn, drawn_text, listing_window_input, opened_app, reference_analysis, window_input,
+        },
         ui::views,
     };
+
+    /// The listing must not walk sideways as the reader scrolls.
+    ///
+    /// A virtualised grid sizes each column to the rows on screen, so
+    /// scrolling from short instructions into long ones used to shift every
+    /// column right of the bytes — sixty-three pixels, measured on the
+    /// reference binary. Drawn at two scroll positions here, and every column
+    /// has to land in the same place in both.
+    #[test]
+    fn the_columns_stay_where_they_are_as_the_listing_scrolls() {
+        fn column_positions(at: Option<u64>) -> Vec<f32> {
+            let ctx = egui::Context::default();
+            let mut app = opened_app(WorkspaceView::Disassembly);
+            app.selected_instruction = at;
+            app.pending_instruction_scroll = at;
+            let mut draw = |ctx: &egui::Context| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let _ = super::show(&mut app, ui);
+                });
+            };
+            let _ = ctx.run(window_input(), &mut draw);
+            let output = ctx.run(window_input(), &mut draw);
+            // Every position a row put text at, kept only where several rows
+            // agree — which is what a column is. The address column alone
+            // would prove nothing: it is the first, and the first never moves.
+            // What moved was everything to the right of the bytes.
+            let mut seen: Vec<f32> = drawn(&output.shapes)
+                .into_iter()
+                .map(|(_, at)| at.x)
+                .collect();
+            seen.sort_by(f32::total_cmp);
+            let mut columns = Vec::new();
+            let mut run = 0_usize;
+            for index in 0..seen.len() {
+                run += 1;
+                // Two positions are the same column when they are the same
+                // number: they come from the same layout, not from arithmetic
+                // on it, so there is nothing to be tolerant of here.
+                let ends = index + 1 == seen.len()
+                    || seen[index + 1].total_cmp(&seen[index]) != std::cmp::Ordering::Equal;
+                if ends {
+                    if run >= 5 {
+                        columns.push(seen[index]);
+                    }
+                    run = 0;
+                }
+            }
+            columns
+        }
+
+        let analysis = reference_analysis();
+        let top = analysis.instructions.first().expect("a listing").address;
+        // A row far enough down that the visible instructions are other ones.
+        let far = analysis
+            .instructions
+            .get(analysis.instructions.len() / 2)
+            .expect("a listing")
+            .address;
+        assert_ne!(top, far, "the two positions are different rows");
+        assert_eq!(
+            column_positions(Some(top)),
+            column_positions(Some(far)),
+            "the columns moved between two scroll positions"
+        );
+    }
 
     /// The two marks a run puts on the listing.
     ///
@@ -1216,6 +1407,7 @@ mod tests {
                     accent: egui::Color32::WHITE,
                     notes: &app.annotations,
                     hints: false,
+                    columns: [0.0; 4],
                     machine: app.machine.as_ref(),
                     language: Language::English,
                 },
@@ -1224,12 +1416,13 @@ mod tests {
         }
 
         let ctx = egui::Context::default();
-        let mut app = opened_app(WorkspaceView::Disassembly);
+        // The x86-64 fixture, for the reason given on `emulatable_sample`.
+        let mut app = crate::testing::emulatable_sample().opened(WorkspaceView::Disassembly);
         let entry = app
             .analysis
             .as_ref()
             .and_then(|analysis| analysis.entry_point)
-            .expect("the reference binary has an entry point");
+            .expect("the fixture has an entry point");
         app.selected_instruction = Some(entry);
 
         assert!(
@@ -1572,11 +1765,11 @@ mod tests {
             // Two frames to put the row on screen: the scroll area learns its
             // content size from the first, and lands on the second.
             app.pending_instruction_scroll = Some(address);
-            let _ = ctx.run(window_input(), |ctx| {
+            let _ = ctx.run(listing_window_input(), |ctx| {
                 views::show_central_panel(&mut app, ctx);
             });
             app.pending_instruction_scroll = Some(address);
-            let placed = ctx.run(window_input(), |ctx| {
+            let placed = ctx.run(listing_window_input(), |ctx| {
                 views::show_central_panel(&mut app, ctx);
             });
             let position = assembly_position(&placed.shapes, address, &assembly)
@@ -1636,7 +1829,7 @@ mod tests {
 
         let mut app = opened_app(WorkspaceView::Disassembly);
         let ctx = egui::Context::default();
-        let output = ctx.run(window_input(), |ctx| {
+        let output = ctx.run(listing_window_input(), |ctx| {
             views::show_central_panel(&mut app, ctx);
         });
 
@@ -1759,7 +1952,7 @@ mod tests {
         );
 
         let ctx = egui::Context::default();
-        let output = ctx.run(window_input(), |ctx| {
+        let output = ctx.run(listing_window_input(), |ctx| {
             views::show_central_panel(&mut app, ctx);
         });
 

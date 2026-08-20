@@ -457,6 +457,12 @@ pub struct DesdecApp {
     /// for the same reason: finding the section boundaries means walking every
     /// decoded instruction, and a large shared library holds eighteen million.
     pub section_starts: Vec<usize>,
+    /// How wide each column of the listing is held, indexed once per binary.
+    ///
+    /// Derived from the analysis and the stack index, like `section_starts`
+    /// above: it walks every decoded instruction, and the listing reads it on
+    /// every row of every frame. See [`crate::ui::disassembly::Columns`].
+    pub listing_columns: crate::ui::disassembly::Columns,
     /// The assembly bubble opened from a pseudo-code line.
     pub pseudocode_assembly: Option<PseudocodeAssembly>,
     /// File offset of the string inspected in the Strings view.
@@ -1279,6 +1285,9 @@ impl DesdecApp {
                 self.stack = desdec_core::Trace::of(&analysis);
                 self.string_references = crate::ui::strings::CodeReferences::of(&analysis);
                 self.section_starts = crate::ui::disassembly::section_starts(&analysis);
+                // After the stack, which it reads: the depth column is held to
+                // the deepest frame the whole file reaches.
+                self.listing_columns = crate::ui::disassembly::Columns::of(&analysis, &self.stack);
                 self.analysis = Some(analysis);
                 self.error = None;
                 // Kept so an operand's target can be read without going back
@@ -2079,6 +2088,7 @@ impl DesdecApp {
         self.stack = desdec_core::Trace::default();
         self.string_references = crate::ui::strings::CodeReferences::default();
         self.section_starts.clear();
+        self.listing_columns = crate::ui::disassembly::Columns::default();
         self.xrefs = crate::xrefs::Index::default();
         self.references_address = None;
         self.search = crate::ui::search::State::default();
@@ -2262,6 +2272,12 @@ impl DesdecApp {
             section_starts: analysis
                 .as_ref()
                 .map(crate::ui::disassembly::section_starts)
+                .unwrap_or_default(),
+            listing_columns: analysis
+                .as_ref()
+                .map(|analysis| {
+                    crate::ui::disassembly::Columns::of(analysis, &desdec_core::Trace::of(analysis))
+                })
                 .unwrap_or_default(),
             // The file's bytes are installed by the test fixture afterwards,
             // so the pointer half of the index is filled in there.

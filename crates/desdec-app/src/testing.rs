@@ -82,15 +82,59 @@ pub fn samples() -> Vec<Sample> {
         .collect()
 }
 
+/// The first sample whose architecture the emulator has an interpreter for.
+///
+/// A test that runs anything must not use the host's own binary: on an Apple
+/// Silicon runner that binary is AArch64, which is decoded and read like any
+/// other but has no processor here, so every such test failed there and only
+/// there. The fixtures carry a real `x86-64` one whatever the host is.
+#[must_use]
+pub fn emulatable_sample() -> Sample {
+    samples()
+        .into_iter()
+        .find(|sample| {
+            matches!(
+                sample.analysis.summary.architecture,
+                desdec_core::Architecture::X86_64 | desdec_core::Architecture::X86
+            )
+        })
+        .expect("a fixture the emulator can run")
+}
+
 /// A window large enough for a view to lay out as it would on screen.
 pub fn window_input() -> eframe::egui::RawInput {
+    // A real window is whatever the reader's screen is, and a view that only
+    // ever laid out at one width is one whose columns were never asked to
+    // share a wide one. `DESDEC_WIDTH` is for looking at that.
+    let width = std::env::var("DESDEC_WIDTH")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1200.0);
     eframe::egui::RawInput {
         screen_rect: Some(eframe::egui::Rect::from_min_size(
             eframe::egui::Pos2::ZERO,
-            eframe::egui::vec2(1200.0, 800.0),
+            eframe::egui::vec2(width, 800.0),
         )),
         ..Default::default()
     }
+}
+
+/// A window wide enough for the listing to show all five of its columns.
+///
+/// The listing holds each column to the widest thing the file can put in it —
+/// a fifteen-byte instruction is forty-six characters of bytes alone — so that
+/// nothing moves as the reader scrolls. That costs width, and the listing
+/// shares the workspace with the pseudo-code beside it, so in the ordinary
+/// test window the last columns are past the right edge and have to be
+/// scrolled to. A test about what the listing *says* should not be a test of
+/// what fits in six hundred pixels wide.
+#[must_use]
+pub fn listing_window_input() -> eframe::egui::RawInput {
+    let mut input = window_input();
+    if let Some(rect) = input.screen_rect.as_mut() {
+        rect.max.x = rect.min.x + 1800.0;
+    }
+    input
 }
 
 /// A frame of that window in which the primary button is pressed somewhere.
