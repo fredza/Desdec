@@ -82,6 +82,19 @@ pub fn samples() -> Vec<Sample> {
         .collect()
 }
 
+/// The reference binary with its symbol table taken away.
+///
+/// What most files worth reading actually look like, and the state the
+/// Functions view used to be empty in.
+#[must_use]
+pub fn stripped_app(view: WorkspaceView) -> DesdecApp {
+    let mut analysis = reference_analysis().clone();
+    analysis.symbols.clear();
+    let mut app = DesdecApp::for_test(Some(analysis), view);
+    app.file_bytes = reference_bytes().to_vec();
+    app
+}
+
 /// The first sample whose architecture the emulator has an interpreter for.
 ///
 /// A test that runs anything must not use the host's own binary: on an Apple
@@ -341,9 +354,14 @@ mod frame_sheet {
         // Which view to draw. Every view is worth looking at, and a sheet that
         // could only ever show the first one meant editing this file to look
         // at any other.
-        let mut app = opened_app(view_named(
-            std::env::var("DESDEC_VIEW").unwrap_or_default().as_str(),
-        ));
+        let view = view_named(std::env::var("DESDEC_VIEW").unwrap_or_default().as_str());
+        // `DESDEC_STRIP=1` takes the symbol table away, which is the state
+        // most files worth reading are in.
+        let mut app = if std::env::var("DESDEC_STRIP").is_ok() {
+            super::stripped_app(view)
+        } else {
+            opened_app(view)
+        };
         app.navigation_open = true;
         // A sheet of the listing is worth little without a run on it: the
         // marks a run leaves are exactly what a reader has to look at.

@@ -19,7 +19,13 @@ what keeps it usable as a library and testable without a window.
 - **Formats** — ELF, PE and Mach-O: header recognition, the section table, the
   entry point, load-time mapping, linked libraries, hardening (RELRO, canary,
   NX, PIE, CFG), and the PE import table read one descriptor at a time.
-- **Symbols** — for all three formats.
+- **Symbols** — for all three formats, and (`discover`) the functions of a file
+  that names none: the entry point, every address something calls, and
+  compiler prologues standing where the last function ended. Each address
+  carries the reason it is offered, and the reasons are not equally good — a
+  call is what the bytes say, a prologue is a reading of their shape. Measured
+  against a real binary's own symbol table: about ninety per cent of what it
+  names is found again from the code alone.
 - **Disassembly** — iced-x86 for x86 and x86-64, Capstone for AArch64. Every
   executable byte that was read is decoded; nothing caps the number of
   instructions, and `Decoded::truncated` marks only code lying past the bytes

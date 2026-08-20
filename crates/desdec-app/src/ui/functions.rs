@@ -5,7 +5,7 @@ use std::{
     ops::Range,
 };
 
-use desdec_core::{Analysis, Instruction, Symbol};
+use desdec_core::{Analysis, Instruction, Symbol, discover};
 use eframe::egui;
 
 use crate::{
@@ -30,6 +30,13 @@ pub struct Function {
     pub end: u64,
     /// Position of the decoded body inside [`Analysis::instructions`].
     pub instructions: Range<usize>,
+    /// Why this is here, for the ones the file does not name.
+    ///
+    /// `None` for a function the symbol table names, which needs no reason
+    /// beyond having a name. `Some` for one worked out from the code, and the
+    /// view says which reason it was: a reader must be able to tell an address
+    /// something calls from a shape that looked like a beginning.
+    pub found_by: Option<discover::Evidence>,
     blocks: Vec<BasicBlock>,
 }
 
@@ -80,6 +87,17 @@ pub fn show(
     if !selected_function.is_some_and(|address| functions.iter().any(|item| item.start == address))
     {
         *selected_function = Some(functions[0].start);
+    }
+    // Said once, above the table, when the file named none of them: the
+    // column on each row says where that row came from, and this says why
+    // there is a column at all.
+    if functions.iter().all(|function| function.found_by.is_some()) {
+        ui.label(
+            egui::RichText::new(text(language, Text::UnnamedFunctionsFound))
+                .small()
+                .color(MUTED),
+        );
+        ui.add_space(4.0);
     }
 
     let mut go_to = None;
@@ -135,7 +153,7 @@ fn function_list(
             .auto_shrink([false, false])
             .show_rows(ui, ROW_HEIGHT, functions.len() + 1, |ui, rows| {
                 egui::Grid::new("function_symbols")
-                    .num_columns(4)
+                    .num_columns(5)
                     .striped(true)
                     // Vertical spacing must be the one the virtualiser assumed
                     // when it placed this batch of rows, or they drift.
@@ -147,7 +165,7 @@ fn function_list(
                             // it is its own word, and a heading would be read
                             // as a fourth thing measured about a function.
                             ui.label("");
-                            for title in [Text::Name, Text::Size, Text::Blocks] {
+                            for title in [Text::Name, Text::Size, Text::Blocks, Text::FoundBy] {
                                 ui.strong(text(language, title));
                             }
                             ui.end_row();
@@ -193,12 +211,61 @@ fn function_list(
                             });
                             ui.label(format_size(function.size()));
                             ui.label(function.blocks.len().to_string());
+                            origin(ui, function, language);
                             ui.end_row();
                         }
                     });
             });
     });
     go_to
+}
+
+/// Where a row came from: the file's own symbol table, or the code.
+///
+/// Shown on every row rather than only on the found ones, so the column means
+/// the same thing all the way down and a reader does not have to work out
+/// whether a blank cell means "named" or "nothing to say".
+fn origin(ui: &mut egui::Ui, function: &Function, language: Language) {
+    let Some(evidence) = function.found_by else {
+        ui.label(
+            egui::RichText::new(text(language, Text::NamedByTheFile))
+                .small()
+                .color(MUTED),
+        );
+        return;
+    };
+    let (label, help, certain) = match evidence {
+        discover::Evidence::EntryPoint => (
+            text(language, Text::FoundAsEntryPoint).to_owned(),
+            None,
+            true,
+        ),
+        discover::Evidence::Called(callers) => (
+            format!("{} ×{callers}", text(language, Text::FoundAsCalled)),
+            Some(format!(
+                "{} {callers}",
+                text(language, Text::FoundAsCalledTimes)
+            )),
+            true,
+        ),
+        discover::Evidence::Prologue => (
+            text(language, Text::FoundAsPrologue).to_owned(),
+            Some(text(language, Text::FoundAsPrologueHelp).to_owned()),
+            false,
+        ),
+    };
+    // A reading is drawn quieter than a fact. The two are not the same claim,
+    // and a column that drew them alike would be inviting the reader to treat
+    // them alike.
+    let colour = if certain {
+        ui.visuals().text_color()
+    } else {
+        MUTED
+    };
+    let cell = ui.label(egui::RichText::new(label).small().color(colour));
+    if let Some(help) = help {
+        cell.on_hover_text(help);
+    }
 }
 
 /// What the jump button carries: an arrow into the listing, drawn from the
@@ -482,27 +549,59 @@ pub fn all(analysis: &Analysis) -> Vec<Function> {
         .max()
         .unwrap_or_default();
 
-    symbols
+    // The file's own names first, then what the code points at where it names
+    // nothing. A stripped binary has an empty symbol table, and without this
+    // the whole view — the graph, the pseudo-code, "run this function" — is
+    // empty with it.
+    let mut starts: Vec<(u64, Option<String>, Option<discover::Evidence>)> = symbols
         .iter()
-        .enumerate()
-        .map(|(index, symbol)| {
+        .map(|symbol| {
             let start = symbol
                 .address
                 .expect("function symbols were filtered above");
-            let end = if symbol.size > 0 {
-                start.saturating_add(symbol.size)
-            } else {
-                symbols
-                    .get(index + 1)
-                    .and_then(|next| next.address)
-                    .unwrap_or(decoded_end)
-            }
-            .max(start);
+            (start, Some(symbol.name.clone()), None)
+        })
+        .collect();
+    for found in discover::functions(analysis) {
+        starts.push((found.address, None, Some(found.evidence)));
+    }
+    starts.sort_by_key(|(start, _, _)| *start);
+    starts.dedup_by_key(|(start, _, _)| *start);
+
+    // Where each one ends: at its own declared size when it has one, and
+    // otherwise where the next one begins. Worked out after the two lists are
+    // merged, so a named function that runs up to an unnamed one ends there
+    // rather than swallowing it.
+    let sizes: HashMap<u64, u64> = symbols
+        .iter()
+        .filter(|symbol| symbol.size > 0)
+        .filter_map(|symbol| symbol.address.map(|address| (address, symbol.size)))
+        .collect();
+
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, (start, name, found_by))| {
+            let start = *start;
+            let end = sizes
+                .get(&start)
+                .map_or_else(
+                    || {
+                        starts
+                            .get(index + 1)
+                            .map_or(decoded_end, |(next, _, _)| *next)
+                    },
+                    |size| start.saturating_add(*size),
+                )
+                .max(start);
             let instructions = analysis.instruction_span(start..end);
             Function {
-                name: symbol.name.clone(),
+                name: name
+                    .clone()
+                    .unwrap_or_else(|| discover::placeholder_name(start)),
                 start,
                 end,
+                found_by: *found_by,
                 blocks: basic_blocks(&analysis.instructions[instructions.clone()]),
                 instructions,
             }
@@ -641,6 +740,80 @@ mod tests {
         }
     }
 
+    /// A file that names nothing still has a Functions view.
+    ///
+    /// The state most files worth reading are in, and the one this view used
+    /// to be empty in — and with it the graph, the pseudo-code and "run this
+    /// function".
+    #[test]
+    fn a_stripped_binary_still_has_functions_to_show() {
+        let mut analysis = crate::testing::reference_analysis().clone();
+        analysis.symbols.clear();
+        let found = all(&analysis);
+        assert!(
+            found.len() > 20,
+            "a real binary's own code points at more than a handful: {}",
+            found.len()
+        );
+        for function in &found {
+            assert!(
+                function.found_by.is_some(),
+                "{} has no symbol table to have come from",
+                function.name
+            );
+            assert!(
+                function.name.starts_with("sub_"),
+                "{} is drawn as what it is: an address, not a name",
+                function.name
+            );
+            assert!(
+                entry(function, &analysis).is_some(),
+                "{} leads into the listing",
+                function.name
+            );
+        }
+    }
+
+    /// What the file names keeps its name, and is not marked as found.
+    #[test]
+    fn a_named_function_keeps_its_name_and_says_so() {
+        let analysis = crate::testing::reference_analysis();
+        let found = all(analysis);
+        if analysis.symbols.iter().all(|symbol| symbol.imported) {
+            return; // This host's own binary names nothing.
+        }
+        let named: Vec<&Function> = found
+            .iter()
+            .filter(|function| function.found_by.is_none())
+            .collect();
+        assert!(!named.is_empty(), "the host binary names some");
+        assert!(
+            named
+                .iter()
+                .all(|function| !function.name.starts_with("sub_")),
+            "a named function is shown under its name"
+        );
+    }
+
+    /// Rows are in address order and none is listed twice, whichever list each
+    /// came from.
+    #[test]
+    fn the_two_lists_are_merged_in_order_and_without_repeats() {
+        let analysis = crate::testing::reference_analysis();
+        let found = all(analysis);
+        let mut previous = None;
+        for function in &found {
+            if let Some(previous) = previous {
+                assert!(
+                    function.start > previous,
+                    "{:#x} follows {previous:#x}",
+                    function.start
+                );
+            }
+            previous = Some(function.start);
+        }
+    }
+
     /// Every function the table offers a way into must lead somewhere the
     /// listing can really show. An address the decoder never reached would
     /// move the workspace to the disassembly and leave it looking at nothing,
@@ -707,6 +880,7 @@ mod tests {
             start: 0xdead_beef,
             end: 0xdead_bef0,
             instructions: 0..0,
+            found_by: None,
             blocks: Vec::new(),
         };
         assert_eq!(entry(&empty, analysis), None);

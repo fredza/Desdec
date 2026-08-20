@@ -1457,6 +1457,27 @@ translations! {
     ExecuteAccess => ["exécution", "execute", "ejecución"],
     // Updates. Asking a server whether there is a newer release tells it this
     // copy was started, so the first question is whether to ask at all.
+    // Where a function in the table came from, for a file that names none.
+    FoundBy => ["Trouvée par", "Found by", "Encontrada por"],
+    NamedByTheFile => ["nommée par le fichier", "named by the file", "nombrada por el archivo"],
+    FoundAsEntryPoint => ["le point d’entrée", "the entry point", "el punto de entrada"],
+    FoundAsCalled => ["appelée", "called", "llamada"],
+    FoundAsCalledTimes => [
+        "Quelque chose appelle cette adresse : c’est ce que les octets disent, pas une lecture de leur forme. Nombre d’instructions qui l’appellent :",
+        "Something calls this address: that is what the bytes say, not a reading of their shape. Instructions that call it:",
+        "Algo llama a esta dirección: es lo que dicen los bytes, no una lectura de su forma. Instrucciones que la llaman:",
+    ],
+    FoundAsPrologue => ["un prologue", "a prologue", "un prólogo"],
+    FoundAsPrologueHelp => [
+        "Cette adresse commence comme un compilateur commence une fonction, et se tient là où la précédente s’est terminée. C’est une lecture de la forme du code, pas un fait : rien dans le fichier ne dit que c’est une fonction.",
+        "This address begins the way a compiler begins a function, and stands where the previous one ended. That is a reading of the code's shape, not a fact: nothing in the file says this is a function.",
+        "Esta dirección comienza como un compilador comienza una función, y está donde terminó la anterior. Es una lectura de la forma del código, no un hecho: nada en el archivo dice que sea una función.",
+    ],
+    UnnamedFunctionsFound => [
+        "Ce fichier ne nomme pas ses fonctions. Celles-ci sont trouvées à partir de son propre code ; la colonne dit d’où vient chacune.",
+        "This file names none of its functions. These are found from its own code; the column says where each one comes from.",
+        "Este archivo no nombra ninguna de sus funciones. Estas se encuentran a partir de su propio código; la columna dice de dónde viene cada una.",
+    ],
     Updates => ["Mises à jour", "Updates", "Actualizaciones"],
     CheckForUpdates => ["Rechercher une mise à jour", "Check for an update", "Buscar una actualización"],
     UpdateConsentTitle => [

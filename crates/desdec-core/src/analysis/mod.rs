@@ -22,6 +22,7 @@ use std::{
 
 pub mod details;
 pub mod disassembly;
+pub mod discover;
 pub mod entropy;
 pub mod flags;
 pub mod hash;

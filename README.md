@@ -29,7 +29,7 @@ so. Where it does not know, it says that instead of guessing.
 | --- | --- |
 | **Overview** | Format, architecture, entry point, SHA-256, entropy, hardening (RELRO, canary, NX, PIE, CFG), detected source language, and every linked library — each with an explanation of what it is for. |
 | **Segments** | The section table: addresses, sizes, permissions and per-section entropy, so a packed or encrypted region stands out. |
-| **Functions** | Named functions with their bodies, basic blocks and a local control-flow graph. One click on a row opens that function's code in the listing. |
+| **Functions** | Named functions with their bodies, basic blocks and a local control-flow graph. One click on a row opens that function's code in the listing. A file that names none of them still has this view: its functions are found from its own code — the entry point, everything something calls, compiler prologues — and each row says which of those it came from, because an address something calls is a fact and a prologue is a reading. |
 | **Strings** | Printable strings with their offsets and encodings, filterable, with the instructions that reference them. |
 | **Disassembly** | x86, x86-64 (iced-x86) and AArch64 (Capstone) listings, with per-instruction byte editing. Right-click an instruction to be told what its operand designates and what last wrote each register it names. The bar carries the condition flags of the selected row — which it settles, which it consults, and which of them the bytes settle to a value known whatever ran before — and a row you have written about is marked in the margin. |
 | **Pseudo-code** | A conservative, built-in translation of the decoded flow — or the output of Rizin/rz-ghidra or RetDec when one is installed and chosen. |
