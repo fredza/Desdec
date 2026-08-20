@@ -116,6 +116,19 @@ commands! {
     RunScript => [Script, RunScript], Some(Shortcut::plain(KeyName::F5)),
     Plugins => [Plugins], None,
     ReloadPlugins => [Plugins, ReloadPlugins], None,
+    // The emulated processor. Its keys are the ones a debugger has had since
+    // Turbo Debugger — F9 runs, F11 steps into, F10 steps over — and they are
+    // deliberately not the walk's F7 and F8: one follows the flow by reading,
+    // the other carries it out, and a reader must never press one meaning the
+    // other.
+    Machine => [Machine], Some(Shortcut::ctrl(KeyName::Num8)),
+    MachineRun => [Machine, Run], Some(Shortcut::plain(KeyName::F9)),
+    MachineStepInto => [Machine, StepInto], Some(Shortcut::plain(KeyName::F11)),
+    MachineStepOver => [Machine, StepOver], Some(Shortcut::plain(KeyName::F10)),
+    MachineStepOut => [Machine, StepOut], Some(Shortcut::shift(KeyName::F11)),
+    MachineRunToCursor => [Machine, RunToCursor], Some(Shortcut::ctrl(KeyName::F10)),
+    MachineRestart => [Machine, Restart], Some(Shortcut::ctrl(KeyName::F9)),
+    MachineToggleBreakpoint => [Machine, ToggleBreakpoint], Some(Shortcut::ctrl(KeyName::F2)),
     Yara => [Yara], None,
     RunYara => [Yara, RunYara], None,
     ToggleYaraModule => [Yara, ToggleYaraModule], None,
@@ -190,6 +203,13 @@ impl Command {
                 | Self::References
                 | Self::Search
                 | Self::RunScript
+                | Self::MachineRun
+                | Self::MachineStepInto
+                | Self::MachineStepOver
+                | Self::MachineStepOut
+                | Self::MachineRunToCursor
+                | Self::MachineRestart
+                | Self::MachineToggleBreakpoint
         )
     }
 
@@ -224,7 +244,11 @@ impl Command {
             | Self::WalkToEntry
             | Self::WalkClear
             | Self::EditAnnotation
-            | Self::ToggleBookmark => WorkspaceView::Disassembly,
+            | Self::ToggleBookmark
+            // Running to the cursor and setting a breakpoint are both about a
+            // row of the listing, so they leave the reader looking at it.
+            | Self::MachineRunToCursor
+            | Self::MachineToggleBreakpoint => WorkspaceView::Disassembly,
             Self::Decompile => WorkspaceView::Decompile,
             Self::AiAssistance
             | Self::AskAboutBinary
@@ -233,6 +257,12 @@ impl Command {
             // Exporting shows the patches it is about to write.
             Self::Patches | Self::ExportPatched => WorkspaceView::Patches,
             Self::Yara => WorkspaceView::Yara,
+            Self::Machine
+            | Self::MachineRun
+            | Self::MachineStepInto
+            | Self::MachineStepOver
+            | Self::MachineStepOut
+            | Self::MachineRestart => WorkspaceView::Machine,
             _ => return None,
         })
     }

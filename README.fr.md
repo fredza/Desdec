@@ -7,7 +7,11 @@ La clef publique est distribuée gratuitement avec le binaire.
 
 Desdec est un explorateur de binaires local et open source, fait pour lire les
 exécutables qu'on a le droit de lire. Il ouvre un fichier ELF, PE ou Mach-O,
-dit ce qu'il contient, et ne l'exécute jamais.
+dit ce qu'il contient, et ne l'exécute jamais sur votre machine.
+
+Là où il exécute un binaire, c'est sur un processeur qu'il construit lui-même :
+un émulateur sans système d'exploitation derrière lui, décrit sous **Machine**
+plus bas. Aucun octet du fichier n'atteint jamais votre propre processeur.
 
 Sa règle de conduite est de ne rien inventer. Quand une réponse est exacte —
 l'adresse que désigne un opérande, les octets qu'un correctif écrirait — elle
@@ -30,6 +34,7 @@ deviner.
 | **Chaînes** | Les chaînes imprimables avec leur décalage et leur encodage, filtrables, et les instructions qui les référencent. |
 | **Désassemblage** | Listings x86, x86-64 (iced-x86) et AArch64 (Capstone), avec édition des octets d'une instruction. Un clic droit explique ce que désigne l'opérande et ce qui a écrit en dernier dans chaque registre nommé. La barre porte les drapeaux de condition de la ligne sélectionnée — ceux qu'elle établit, ceux qu'elle consulte, et ceux dont les octets fixent la valeur quoi qu'il se soit passé avant — et une ligne sur laquelle vous avez écrit est marquée en marge. |
 | **Pseudo-code** | Une traduction prudente du flot décodé, intégrée à l'outil — ou la sortie de Rizin/rz-ghidra ou de RetDec si l'un d'eux est installé et choisi. |
+| **Machine** | Un processeur émulé, éteint tant que vous n’en demandez pas un. Registres, mémoire, pile, points d’arrêt, surveillances, pas à pas détaillé/principal/sortant, exécution jusqu’au curseur et pile des appels — autant de mesures, puisque quelque chose s’est réellement exécuté. Cela tourne sur un processeur que Desdec construit, jamais sur le vôtre : aucun octet du fichier n’atteint le processeur de votre machine, et un appel système, une bibliothèque absente ou une instruction non émulée arrêtent la course et sont nommés plutôt que devinés. x86 et x86-64. |
 | **Correctifs** | Les modifications d'octets en attente, et l'export qui les écrit dans une **copie**. Le fichier analysé n'est jamais modifié. |
 | **YARA** | Optionnel. Lance un `yara` ou `yr` installé localement sur le fichier ouvert, avec vos propres règles. Désactivé par défaut. |
 | **Assistance IA** | Optionnelle, désactivée par défaut. Un modèle relit ce qui a été décodé — un binaire entier, une fonction, une instruction — et sa réponse est étiquetée comme une lecture proposée, jamais comme un constat. Un modèle local (Ollama) ou l'API d'Anthropic, selon ce que vous configurez. |

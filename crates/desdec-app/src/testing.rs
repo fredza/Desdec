@@ -165,6 +165,19 @@ pub fn drawn_text(shapes: &[eframe::egui::epaint::ClippedShape]) -> String {
 /// ```text
 /// DESDEC_FRAME=/tmp/frame.svg cargo test -p desdec-app frame_sheet
 /// ```
+///
+/// Two more say what to draw. `DESDEC_VIEW` names the view, by the English
+/// label of its own command — every view is worth looking at, and this file
+/// used to have to be edited to see any but the first. `DESDEC_RUN` starts the
+/// emulation and steps it a few instructions, with a breakpoint on the entry
+/// point and the listing scrolled to where the run stands: the marks a run
+/// leaves are the whole of what there is to look at, and a listing showing its
+/// first page carries none of them.
+///
+/// ```text
+/// DESDEC_FRAME=/tmp/f.svg DESDEC_VIEW=Machine cargo test -p desdec-app frame_sheet
+/// DESDEC_FRAME=/tmp/f.svg DESDEC_VIEW=Disassembly DESDEC_RUN=1 cargo test -p desdec-app frame_sheet
+/// ```
 /// Renders the windows to an SVG, for a human to look at.
 ///
 /// The companion of [`frame_sheet`], for what that one cannot show: a window
@@ -229,14 +242,49 @@ mod frame_sheet {
             return;
         };
         let ctx = egui::Context::default();
-        let mut app = opened_app(WorkspaceView::Overview);
+        // Which view to draw. Every view is worth looking at, and a sheet that
+        // could only ever show the first one meant editing this file to look
+        // at any other.
+        let mut app = opened_app(view_named(
+            std::env::var("DESDEC_VIEW").unwrap_or_default().as_str(),
+        ));
         app.navigation_open = true;
+        // A sheet of the listing is worth little without a run on it: the
+        // marks a run leaves are exactly what a reader has to look at.
+        if std::env::var("DESDEC_RUN").is_ok() {
+            let entry = app.analysis.as_ref().and_then(|a| a.entry_point);
+            app.selected_instruction = entry;
+            if let (Some(entry), Some(machine)) = (entry, app.machine()) {
+                machine.toggle_breakpoint(entry);
+                for _ in 0..3 {
+                    machine.step_one();
+                }
+            }
+            // And scrolled to where the run stands: a listing showing its
+            // first page says nothing about a run a hundred thousand rows down.
+            app.follow_the_run();
+        }
 
         // Two frames: panels are measured on the first and painted after.
         let _ = ctx.run(window_input(), |ctx| app.run_frame(ctx));
         let output = ctx.run(window_input(), |ctx| app.run_frame(ctx));
 
         super::write_svg(&output.shapes, &path);
+    }
+
+    /// The view a sheet was asked for, by the name its command carries.
+    ///
+    /// Matched against the English label so the name does not change with the
+    /// reader's language, and falling back to the overview.
+    fn view_named(name: &str) -> WorkspaceView {
+        WorkspaceView::ALL
+            .iter()
+            .copied()
+            .find(|view| {
+                crate::i18n::text(crate::i18n::Language::English, view.text())
+                    .eq_ignore_ascii_case(name)
+            })
+            .unwrap_or(WorkspaceView::Overview)
     }
 
     pub fn colour(c: egui::Color32) -> String {
@@ -247,6 +295,61 @@ mod frame_sheet {
             c.b(),
             f32::from(c.a()) / 255.0
         )
+    }
+
+    /// One run of text, and whatever is painted behind it.
+    ///
+    /// Its own function because it is the longest arm by far and the one that
+    /// grows: the background alone took a dozen lines to find.
+    fn emit_text(text: &egui::epaint::TextShape, out: &mut String) {
+        // What is painted *behind* the text. It is not a shape of its
+        // own and not in the row's mesh either: it is a property of
+        // the layout job's sections, and the tessellator turns it into
+        // rectangles only after the frame is handed over. A sheet that
+        // did not read it here showed no selection, no patched byte
+        // and no mark a run leaves — every one of which is a colour
+        // behind text, and the only thing distinguishing those rows.
+        //
+        // Drawn as one rectangle over the whole galley rather than one
+        // per section: the sections' own widths are not measured until
+        // tessellation, and what a reader needs from a sheet is which
+        // rows are marked, not by how many pixels.
+        if let Some(behind) = text
+            .galley
+            .job
+            .sections
+            .iter()
+            .map(|section| section.format.background)
+            .find(|fill| *fill != egui::Color32::TRANSPARENT)
+        {
+            let size = text.galley.size();
+            let _ = writeln!(
+                out,
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"/>",
+                text.pos.x,
+                text.pos.y,
+                size.x,
+                size.y,
+                colour(behind)
+            );
+        }
+        let content = text
+            .galley
+            .text()
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
+        let _ = writeln!(
+            out,
+            "<text x=\"{}\" y=\"{}\" fill=\"{}\" font-size=\"12\" font-family=\"sans-serif\">{content}</text>",
+            text.pos.x,
+            text.pos.y + 11.0,
+            colour(if text.fallback_color == egui::Color32::PLACEHOLDER {
+                egui::Color32::WHITE
+            } else {
+                text.fallback_color
+            })
+        );
     }
 
     pub fn emit(shape: &egui::Shape, out: &mut String) {
@@ -269,25 +372,7 @@ mod frame_sheet {
                     rect.stroke.width
                 );
             }
-            egui::Shape::Text(text) => {
-                let content = text
-                    .galley
-                    .text()
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;");
-                let _ = writeln!(
-                    out,
-                    "<text x=\"{}\" y=\"{}\" fill=\"{}\" font-size=\"12\" font-family=\"sans-serif\">{content}</text>",
-                    text.pos.x,
-                    text.pos.y + 11.0,
-                    colour(if text.fallback_color == egui::Color32::PLACEHOLDER {
-                        egui::Color32::WHITE
-                    } else {
-                        text.fallback_color
-                    })
-                );
-            }
+            egui::Shape::Text(text) => emit_text(text, out),
             egui::Shape::Circle(circle) => {
                 let _ = writeln!(
                     out,
@@ -316,10 +401,20 @@ mod frame_sheet {
                     .iter()
                     .map(|p| format!("{},{}", p.x, p.y))
                     .collect();
+                // The fill as well as the stroke: a filled shape with no
+                // stroke — which is what a solid glyph is — was drawn as
+                // nothing at all, so the one icon painted that way was
+                // invisible on the sheet while being perfectly visible in the
+                // application. The same fault Circle had.
                 let _ = writeln!(
                     out,
-                    "<polyline points=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"/>",
+                    "<polyline points=\"{}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>",
                     points.join(" "),
+                    if path.fill == egui::Color32::TRANSPARENT {
+                        "none".to_owned()
+                    } else {
+                        colour(path.fill)
+                    },
                     match path.stroke.color {
                         egui::epaint::ColorMode::Solid(solid) => colour(solid),
                         egui::epaint::ColorMode::UV(_) => "#ffffff".to_owned(),

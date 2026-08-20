@@ -42,6 +42,11 @@ pub enum Icon {
     WalkOver,
     WalkOut,
     WalkClear,
+    /// The emulated processor, and the transport of a run on it.
+    Machine,
+    Run,
+    Restart,
+    Breakpoint,
 }
 
 impl Icon {
@@ -76,6 +81,10 @@ impl Icon {
         Self::WalkOver,
         Self::WalkOut,
         Self::WalkClear,
+        Self::Machine,
+        Self::Run,
+        Self::Restart,
+        Self::Breakpoint,
     ];
 }
 
@@ -175,6 +184,10 @@ pub fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::
         Icon::WalkOver => walk_over(&pen),
         Icon::WalkOut => walk_out(&pen),
         Icon::WalkClear => walk_clear(&pen),
+        Icon::Machine => machine(&pen),
+        Icon::Run => run(&pen),
+        Icon::Restart => restart(&pen),
+        Icon::Breakpoint => breakpoint(&pen),
     }
 }
 
@@ -236,6 +249,27 @@ impl Pen<'_> {
             self.at(center.0, center.1),
             self.rect.width() * radius,
             self.stroke,
+        );
+    }
+
+    /// A closed shape filled rather than outlined, for a glyph whose weight is
+    /// the point of it — a tape deck's play against a step's open arrow.
+    fn solid(&self, points: &[(f32, f32)]) {
+        let corners: Vec<egui::Pos2> = points.iter().map(|(x, y)| self.at(*x, *y)).collect();
+        self.painter.add(egui::Shape::convex_polygon(
+            corners,
+            self.color,
+            egui::Stroke::NONE,
+        ));
+    }
+
+    /// A filled circle of a chosen size, unlike [`Self::dot`], whose size is
+    /// fixed because it marks a point rather than being the glyph itself.
+    fn disc(&self, center: (f32, f32), radius: f32) {
+        self.painter.circle_filled(
+            self.at(center.0, center.1),
+            self.rect.width() * radius,
+            self.color,
         );
     }
 }
@@ -457,6 +491,48 @@ fn walk_out(pen: &Pen) {
 /// The tape deck's stop: the walk put down where it stands.
 fn walk_clear(pen: &Pen) {
     pen.boxed((0.14, 0.14), (0.86, 0.86), 1.0);
+}
+
+/// A processor: a square die with legs on all four sides. Deliberately not a
+/// bug or a play button — what this view holds is a machine, and the run is
+/// only one of the things it offers.
+fn machine(pen: &Pen) {
+    pen.boxed((0.26, 0.26), (0.74, 0.74), 1.0);
+    for offset in [0.38_f32, 0.5, 0.62] {
+        pen.line((offset, 0.06), (offset, 0.26));
+        pen.line((offset, 0.74), (offset, 0.94));
+        pen.line((0.06, offset), (0.26, offset));
+        pen.line((0.74, offset), (0.94, offset));
+    }
+}
+
+/// The tape deck's play, for a run that carries on until something stops it.
+///
+/// Solid, where the step buttons beside it are outlines: the two are one
+/// press apart and would otherwise be two triangles the reader has to read
+/// the tooltip to tell apart.
+fn run(pen: &Pen) {
+    pen.solid(&[(0.18, 0.06), (0.92, 0.5), (0.18, 0.94)]);
+}
+
+/// An arrow coming back round to where it started: three quarters of a circle,
+/// with a head on the end that closes it.
+fn restart(pen: &Pen) {
+    let turn: Vec<(f32, f32)> = (0..=24_u8)
+        .map(|step| {
+            let angle = std::f32::consts::TAU * (0.12 + 0.76 * f32::from(step) / 24.0);
+            (0.5 + 0.36 * angle.cos(), 0.52 + 0.36 * angle.sin())
+        })
+        .collect();
+    pen.path(&turn);
+    // The head sits on the gap the arc leaves, pointing the way round.
+    pen.path(&[(0.62, 0.02), (0.84, 0.2), (0.58, 0.3)]);
+}
+
+/// The filled disc a debugger has used for a breakpoint since there were
+/// debuggers.
+fn breakpoint(pen: &Pen) {
+    pen.disc((0.5, 0.5), 0.34);
 }
 
 /// A chevron pointing left (`-1.0`) or right (`1.0`).

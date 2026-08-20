@@ -9,6 +9,9 @@ pub mod assistant;
 mod binary;
 mod bytes;
 pub mod decompiler;
+/// Running a binary on a processor Desdec builds; see the module's own
+/// documentation.
+pub mod emulate;
 /// Synthetic binaries for tests; see the module's own documentation.
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;

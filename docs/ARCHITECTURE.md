@@ -30,6 +30,9 @@ what keeps it usable as a library and testable without a window.
   (`flags`), and the stack state at each instruction (`Trace`).
 - **Assembly and patching** — one typed line encoded back to bytes
   (`assemble`), and patches that keep their length and are written to a copy.
+- **Emulation** (`emulate`) — a processor Desdec builds: a register file, an
+  address space laid out from the file's own segment table, and an interpreter
+  over the instructions iced-x86 already decoded. See below.
 - **Optional external tools** — decompilers (`rizin` + `rz-ghidra`, RetDec),
   YARA, and the AI assistant. None is required, none is started unless it is
   selected, and none of them executes the analysed file.
@@ -38,6 +41,39 @@ Parsing untrusted files is bounded and total by construction: every read goes
 through the bounds-checked helpers in `bytes.rs`, table walks are capped, no
 input can panic, and at most `ANALYSIS_BYTE_LIMIT` (256 MiB) of a file is read.
 `unsafe_code` is forbidden across the workspace.
+
+## The emulated processor
+
+Desdec never runs the file. `emulate` does not change that: it interprets the
+instructions the listing shows, on memory it builds itself, and no byte of the
+file ever reaches the machine's processor. There is no operating system behind
+it either, and that is the whole of the trade — every point where a real
+debugger would ask the system for an answer is a point where the run stops and
+says so, rather than inventing one:
+
+- an instruction the interpreter does not carry out — never skipped, because
+  everything after it would be a fiction,
+- a `syscall`, an interrupt, a `cpuid`: a question for a system,
+- a read or a write outside anything the file maps,
+- a call through the table of external calls, which only a loader fills in —
+  it still reads zero, so the call lands on the first page, which is
+  deliberately left unmapped exactly as every operating system leaves it.
+
+What it buys is what a static reading can never give: register values that are
+values, a stack that is the stack, an indirect call that goes where it goes, a
+loop whose trip count is a fact, and breakpoints that are reached rather than
+reasoned about.
+
+Three decisions are worth naming. **Memory is mapped by segment, not by
+section** — that is what a loader maps, and mapping by section puts `.text` and
+the note before it in one page under the note's read-only rights, so the first
+fetch faults. **The file's bytes are borrowed, never copied**: a written page
+goes to an overlay consulted first, so emulating a shared library costs the
+pages the program wrote to. And **rights are enforced rather than recorded**:
+writing to `.text` faults, and so does fetching from `.data`.
+
+Only x86 and x86-64 have an interpreter. AArch64 is decoded and read like
+everything else, and says plainly that it has no processor here.
 
 ## What the diagram above is not yet
 

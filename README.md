@@ -7,7 +7,11 @@ The public key is distributed free of charge with the binary.
 
 Desdec is a local, open-source binary explorer for reading executables you are
 allowed to read. It opens an ELF, PE or Mach-O file, tells you what is inside
-it, and never runs it.
+it, and never runs it on your machine.
+
+Where it does run a binary, it runs it on a processor it builds itself — an
+emulator with no operating system behind it, described under **Machine**
+below. No byte of the file ever reaches your own processor.
 
 Its guiding rule is that the tool must not invent anything. Where an answer is
 exact — the address an operand designates, the bytes a patch would write — it
@@ -29,6 +33,7 @@ so. Where it does not know, it says that instead of guessing.
 | **Strings** | Printable strings with their offsets and encodings, filterable, with the instructions that reference them. |
 | **Disassembly** | x86, x86-64 (iced-x86) and AArch64 (Capstone) listings, with per-instruction byte editing. Right-click an instruction to be told what its operand designates and what last wrote each register it names. The bar carries the condition flags of the selected row — which it settles, which it consults, and which of them the bytes settle to a value known whatever ran before — and a row you have written about is marked in the margin. |
 | **Pseudo-code** | A conservative, built-in translation of the decoded flow — or the output of Rizin/rz-ghidra or RetDec when one is installed and chosen. |
+| **Machine** | An emulated processor, off until you ask for one. Registers, memory, a stack, breakpoints, watchpoints, step into/over/out, run to cursor, and a call stack — all of them measurements, because something really ran. It runs on a processor Desdec builds, never on yours: no byte of the file reaches your machine's processor, and a system call, a library that is not open or an instruction that is not emulated stops the run and is named rather than guessed past. x86 and x86-64. |
 | **Patches** | Pending byte edits, and the export that writes them to a **copy**. The analysed file is never modified. |
 | **YARA** | Optional. Runs a locally installed `yara` or `yr` against the open file with rules you provide. Off by default. |
 | **AI assistance** | Optional, off by default. A model reads back what was decoded — a whole binary, a function, one instruction — and its answer is labelled a proposed reading, never a finding. A local model (Ollama) or Anthropic's API, whichever you configure. |

@@ -14,6 +14,7 @@ pub mod expert;
 pub mod flags;
 pub mod functions;
 pub mod library_note;
+pub mod machine;
 pub mod navigation;
 pub mod notice;
 pub mod operand_note;
