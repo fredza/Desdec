@@ -645,25 +645,56 @@ mod tests {
     /// listing can really show. An address the decoder never reached would
     /// move the workspace to the disassembly and leave it looking at nothing,
     /// so the offer is withheld instead.
+    ///
+    /// Asked of the synthetic binaries rather than of the host's own, which is
+    /// what this used to use. A PE names no functions at all — its symbols
+    /// live in a separate PDB — so on Windows the test asserted that the host
+    /// binary declares functions and failed there and only there, on a
+    /// property of the format rather than on anything this code does. The
+    /// fixtures carry named function symbols in all three formats, which is
+    /// what they were built for.
     #[test]
     fn the_way_into_the_listing_lands_on_a_decoded_instruction() {
-        let analysis = crate::testing::reference_analysis();
-        let functions = all(analysis);
-        assert!(!functions.is_empty(), "the host binary declares functions");
+        let mut checked = 0_usize;
+        for sample in crate::testing::samples() {
+            let label = sample.fixture.label;
+            let analysis = &sample.analysis;
+            let functions = all(analysis);
+            assert!(!functions.is_empty(), "{label} names functions");
 
-        let mut offered = 0_usize;
-        for function in &functions {
+            let mut offered = 0_usize;
+            for function in &functions {
+                let Some(address) = entry(function, analysis) else {
+                    continue;
+                };
+                offered += 1;
+                assert!(
+                    analysis.instruction_index(address).is_some(),
+                    "{label}: {} leads to {address:#x}, which is not in the listing",
+                    function.name
+                );
+            }
+            assert!(offered > 0, "{label}: no function could be reached at all");
+            checked += offered;
+        }
+        assert!(checked > 0, "the fixtures reach at least one function");
+    }
+
+    /// The same of the host's own binary, which is a real and much richer file
+    /// than any fixture — when its format names functions at all.
+    #[test]
+    fn the_host_binary_is_held_to_the_same_promise() {
+        let analysis = crate::testing::reference_analysis();
+        for function in &all(analysis) {
             let Some(address) = entry(function, analysis) else {
                 continue;
             };
-            offered += 1;
             assert!(
                 analysis.instruction_index(address).is_some(),
                 "{} leads to {address:#x}, which is not in the listing",
                 function.name
             );
         }
-        assert!(offered > 0, "no function could be reached at all");
     }
 
     /// A symbol whose body was never decoded is not offered: the button is
