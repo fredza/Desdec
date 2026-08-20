@@ -57,7 +57,12 @@ impl Index {
             // constant — `and $0xffffffff0000,%rax` is not a reference to
             // anything, and a reader asking who reaches an address should not
             // have to sort arithmetic out of the answer.
-            let Some(target) = operand::target_address(instruction)
+            // A branch's target as well as an ordinary operand's: AArch64
+            // writes every branch target as an immediate, which the general
+            // reader refuses on purpose, so the index held no branches at all
+            // on those files.
+            let Some(target) = operand::branch_target(instruction)
+                .or_else(|| operand::target_address(instruction))
                 .filter(|at| analysis.section_at(*at).is_some())
             else {
                 continue;
@@ -179,7 +184,7 @@ mod tests {
             if !mnemonic.starts_with("call") && mnemonic != "bl" {
                 return None;
             }
-            let target = operand::target_address(instruction)?;
+            let target = operand::branch_target(instruction)?;
             Some((target, instruction.address))
         }) else {
             return; // Nothing on this host calls a fixed address.

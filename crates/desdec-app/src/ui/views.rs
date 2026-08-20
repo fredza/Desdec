@@ -143,6 +143,7 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 ui,
                 analysis,
                 &app.functions,
+                &app.callgraph,
                 &mut app.selected_function,
                 language,
             );

@@ -1458,6 +1458,48 @@ translations! {
     // Updates. Asking a server whether there is a newer release tells it this
     // copy was started, so the first question is whether to ask at all.
     // Where a function in the table came from, for a file that names none.
+    // The call graph: how anything gets to a function, and what it reaches.
+    Callers => ["Qui appelle celle-ci", "What calls this one", "Qué llama a esta"],
+    Callees => ["Ce qu’elle appelle", "What it calls", "Lo que llama"],
+    NothingCallsThis => [
+        "Rien dans ce fichier n’appelle cette fonction. Un point d’entrée, une fonction dont l’adresse est seulement passée ailleurs, et du code mort se ressemblent tous vus d’ici.",
+        "Nothing in this file calls this function. An entry point, a function whose address is only handed elsewhere, and dead code all look alike from here.",
+        "Nada en este archivo llama a esta función. Un punto de entrada, una función cuya dirección solo se pasa a otro sitio, y código muerto se parecen todos vistos desde aquí.",
+    ],
+    CallsNothing => [
+        "Cette fonction n’appelle rien de ce que le fichier contient.",
+        "This function calls nothing the file holds.",
+        "Esta función no llama a nada de lo que el archivo contiene.",
+    ],
+    IndirectCalls => ["appels indirects", "indirect calls", "llamadas indirectas"],
+    IndirectCallsHelp => [
+        "Des appels passant par un registre — leur cible n’est pas dans le texte, seule une exécution la connaîtrait. Ils sont comptés plutôt qu’oubliés : cette fonction appelle bien quelque chose.",
+        "Calls through a register — their target is not in the text, and only a run would know it. Counted rather than forgotten: this function does call something.",
+        "Llamadas a través de un registro: su destino no está en el texto, solo una ejecución lo sabría. Se cuentan en vez de olvidarse: esta función sí llama a algo.",
+    ],
+    CallsOutside => ["appels hors du fichier", "calls out of the file", "llamadas fuera del archivo"],
+    CallsOutsideHelp => [
+        "Des appels vers une adresse que les fonctions de ce fichier ne couvrent pas : une bibliothèque, dont le code est dans un autre fichier.",
+        "Calls to an address this file's functions do not cover: a library, whose code is in another file.",
+        "Llamadas a una dirección que las funciones de este archivo no cubren: una biblioteca, cuyo código está en otro archivo.",
+    ],
+    HowToGetHere => ["Comment on arrive ici", "How anything gets here", "Cómo se llega aquí"],
+    HowToGetHereHelp => [
+        "Les chemins d’appels les plus courts depuis les fonctions que rien n’appelle — points d’entrée compris — jusqu’à celle-ci.",
+        "The shortest chains of calls from the functions nothing calls — entry points among them — to this one.",
+        "Las cadenas de llamadas más cortas desde las funciones que nada llama —puntos de entrada incluidos— hasta esta.",
+    ],
+    NoWayHere => [
+        "Aucun chemin d’appels ne mène ici depuis un point de départ du fichier.",
+        "No chain of calls leads here from a starting point of the file.",
+        "Ninguna cadena de llamadas lleva aquí desde un punto de partida del archivo.",
+    ],
+    Reaches => ["Atteint en tout", "Reaches in all", "Alcanza en total"],
+    ReachesHelp => [
+        "Combien de fonctions distinctes cette fonction peut atteindre, directement ou de proche en proche.",
+        "How many distinct functions this one can reach, directly or through others.",
+        "Cuántas funciones distintas puede alcanzar esta, directamente o a través de otras.",
+    ],
     FoundBy => ["Trouvée par", "Found by", "Encontrada por"],
     NamedByTheFile => ["nommée par le fichier", "named by the file", "nombrada por el archivo"],
     FoundAsEntryPoint => ["le point d’entrée", "the entry point", "el punto de entrada"],

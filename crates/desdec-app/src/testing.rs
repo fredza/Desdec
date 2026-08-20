@@ -378,6 +378,18 @@ mod frame_sheet {
             // first page says nothing about a run a hundred thousand rows down.
             app.follow_the_run();
         }
+        // A function that has callers and callees, so the call graph pane has
+        // something in it: the first function of a file usually has neither.
+        if std::env::var("DESDEC_CONNECTED").is_ok() {
+            let chosen = app.functions.iter().find(|function| {
+                app.callgraph
+                    .edges(function.start)
+                    .is_some_and(|edges| !edges.callers.is_empty() && !edges.calls.is_empty())
+            });
+            if let Some(chosen) = chosen {
+                app.selected_function = Some(chosen.start);
+            }
+        }
         // A breakpoint carrying a condition, so the pane that edits them has
         // something in it to look at.
         if std::env::var("DESDEC_BREAKPOINT").is_ok() {
@@ -523,14 +535,22 @@ mod frame_sheet {
                 );
             }
             egui::Shape::Text(text) => emit_text(text, out),
+            // The stroke as well as the fill. Writing only the fill drew a
+            // stroked ring as a solid disc of whatever its fill happened to be
+            // — which for a ring is nothing at all — so every outlined circle
+            // in the application came out on the sheet as a filled blob, and
+            // "this glyph is too heavy" could not be told from "the sheet is
+            // drawing it wrong".
             egui::Shape::Circle(circle) => {
                 let _ = writeln!(
                     out,
-                    "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{}\"/>",
+                    "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>",
                     circle.center.x,
                     circle.center.y,
                     circle.radius,
-                    colour(circle.fill)
+                    colour(circle.fill),
+                    colour(circle.stroke.color),
+                    circle.stroke.width
                 );
             }
             egui::Shape::LineSegment { points, stroke } => {

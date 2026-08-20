@@ -4,6 +4,7 @@ use eframe::egui;
 
 mod annotations;
 mod app;
+mod callgraph;
 mod commands;
 mod i18n;
 mod icons;

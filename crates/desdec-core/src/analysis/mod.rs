@@ -49,6 +49,18 @@ use crate::binary::{BinarySummary, inspect_bytes};
 /// into memory.
 pub const ANALYSIS_BYTE_LIMIT: u64 = 256 * 1024 * 1024;
 
+/// A bounded file read together with the facts derived from those bytes.
+///
+/// The bytes are the exact prefix that was analysed, never an unbounded second
+/// read of the file. A user interface can use them for its hex view and its
+/// indexes without turning a successful, bounded analysis into a later I/O
+/// failure or allocating the rest of a multi-gigabyte image.
+#[derive(Debug)]
+pub struct AnalysedFile {
+    pub analysis: Analysis,
+    pub bytes: Vec<u8>,
+}
+
 /// Everything the current milestone can tell about a binary.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Analysis {
@@ -231,6 +243,24 @@ pub fn analyse_path_cancellable(
     path: impl AsRef<Path>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Analysis>> {
+    analyse_path_with_bytes_cancellable(path, cancelled)
+        .map(|analysed| analysed.map(|analysed| analysed.analysis))
+}
+
+/// Reads a binary and returns both its analysis and the bounded bytes read.
+///
+/// The returned [`AnalysedFile::bytes`] is at most [`ANALYSIS_BYTE_LIMIT`]
+/// long and is exactly the slice the analysis describes. In particular, this
+/// never follows a successful analysis with an unbounded `read_to_end`.
+///
+/// # Errors
+///
+/// Returns an error if the file metadata cannot be read, or if the file cannot
+/// be opened or read.
+pub fn analyse_path_with_bytes_cancellable(
+    path: impl AsRef<Path>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<AnalysedFile>> {
     const READ_CHUNK: usize = 64 * 1024;
     let path = path.as_ref();
     let size = fs::metadata(path)?.len();
@@ -257,7 +287,7 @@ pub fn analyse_path_cancellable(
     if cancelled.load(Ordering::Relaxed) {
         Ok(None)
     } else {
-        Ok(Some(analysis))
+        Ok(Some(AnalysedFile { analysis, bytes }))
     }
 }
 
@@ -416,6 +446,27 @@ mod tests {
             analyse_path_cancellable(path, &cancelled)
                 .expect("metadata stays readable")
                 .is_none()
+        );
+    }
+
+    /// The bytes handed to the caller are the bounded bytes just analysed,
+    /// rather than a second, potentially much larger read of the same path.
+    #[test]
+    fn a_file_carries_the_exact_prefix_that_was_analysed() {
+        let cancelled = AtomicBool::new(false);
+        let path = std::env::current_exe().expect("the test binary has a path");
+        let analysed = analyse_path_with_bytes_cancellable(&path, &cancelled)
+            .expect("the test binary is readable")
+            .expect("the unset token does not cancel it");
+
+        assert_eq!(
+            analysed.analysis.analysed_bytes,
+            analysed.bytes.len() as u64
+        );
+        assert_eq!(analysed.analysis.summary.path, path);
+        assert_eq!(
+            analysed.analysis.truncated,
+            analysed.analysis.summary.size > analysed.bytes.len() as u64
         );
     }
 

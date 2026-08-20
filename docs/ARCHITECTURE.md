@@ -138,6 +138,22 @@ rather than a model the core reasons over. An IR belongs in the core if one is
 ever built; nothing depends on it today, and the diagram should not be read as
 saying it exists.
 
+## The call graph
+
+The Functions view answers "what is in this function" and the reference index
+answers "who names this address". Neither answers the question a reader
+actually arrives with — *how does anything get to here* — because that is a
+chain, and no single step of it is visible from either end.
+
+`callgraph` is that chain, built once per binary from the calls the listing
+already decoded, in both directions. Three things it does not do: it does not
+guess at `call *%rax`, it counts it, so a function whose callees are all
+indirect does not read as one that calls nothing; it does not follow a call
+into a library, whose code is in a file that is not open; and it does not
+invent a caller for a function nothing calls — an entry point, a callback
+handed to a library and dead code look alike from here, and "nothing calls
+this" is the honest answer to all three.
+
 ## Scripts and plugins
 
 A script does not act. It is handed a *subject* — the analysis, the file's

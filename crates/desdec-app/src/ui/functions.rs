@@ -77,6 +77,7 @@ pub fn show(
     ui: &mut egui::Ui,
     analysis: &Analysis,
     functions: &[Function],
+    graph: &crate::callgraph::Graph,
     selected_function: &mut Option<u64>,
     language: Language,
 ) -> Option<u64> {
@@ -91,6 +92,24 @@ pub fn show(
     // Said once, above the table, when the file named none of them: the
     // column on each row says where that row came from, and this says why
     // there is a column at all.
+    // How many calls this file's own code states, said once above the table:
+    // it is the measure of how much the panel below has to work with, and a
+    // file whose calls are nearly all indirect has a graph that says little.
+    if !graph.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} {} · {} {}",
+                    graph.len(),
+                    text(language, Text::Functions).to_lowercase(),
+                    graph.calls(),
+                    text(language, Text::Callees).to_lowercase(),
+                ))
+                .small()
+                .color(MUTED),
+            );
+        });
+    }
     if functions.iter().all(|function| function.found_by.is_some()) {
         ui.label(
             egui::RichText::new(text(language, Text::UnnamedFunctionsFound))
@@ -111,12 +130,21 @@ pub fn show(
         );
         let selected = selected_function
             .and_then(|address| functions.iter().find(|function| function.start == address));
-        go_to = go_to.or(function_details(
+        let details = function_details(
             &mut columns[1],
             analysis,
+            functions,
+            graph,
             selected,
             language,
-        ));
+        );
+        go_to = go_to.or(details.go_to);
+        // A step through the call graph selects that function and leaves the
+        // reader here: they are walking the graph, and each step is where the
+        // next question is asked.
+        if let Some(walked) = details.walked {
+            *selected_function = Some(walked);
+        }
     });
     go_to
 }
@@ -276,16 +304,25 @@ const JUMP: &str = "\u{2192}";
 fn function_details(
     ui: &mut egui::Ui,
     analysis: &Analysis,
+    functions: &[Function],
+    graph: &crate::callgraph::Graph,
     selected: Option<&Function>,
     language: Language,
-) -> Option<u64> {
+) -> Details {
     let Some(function) = selected else {
         ui.label(egui::RichText::new(text(language, Text::SelectFunction)).color(MUTED));
-        return None;
+        return Details {
+            go_to: None,
+            walked: None,
+        };
     };
 
     let mut go_to = None;
-    ui.heading(&function.name);
+    // A compiler-produced name can be wider than the whole detail panel. The
+    // list owns a horizontal scrollbar, but this heading does not: keep the
+    // panel within its column and leave the complete name one hover away.
+    ui.add(egui::Label::new(egui::RichText::new(&function.name).heading()).truncate())
+        .on_hover_text(&function.name);
     ui.horizontal(|ui| {
         ui.monospace(format!("{:#018x}", function.start));
         // Beside the address, because that is what the reader is about to go
@@ -308,11 +345,195 @@ fn function_details(
         }
     });
     ui.add_space(8.0);
+    // Who calls this one, and what it calls, before the graph of its own
+    // blocks: a reader arriving at a function asks how anything gets to it
+    // before they ask what it does inside.
+    let walked = call_graph(ui, functions, graph, function, language);
+    ui.add_space(8.0);
     let hovered_block = control_flow_graph(ui, analysis, function, language);
     ui.add_space(12.0);
     pseudocode(ui, analysis, function, hovered_block, language);
-    go_to
+    // What the reader clicked in the call graph is handled by the caller,
+    // which owns the selection; the jump button's answer is kept for when
+    // nothing in the graph was clicked.
+    Details { go_to, walked }
 }
+
+/// What the detail panel asked of the view around it.
+struct Details {
+    /// A listing address to move to.
+    go_to: Option<u64>,
+    /// A function to select, from a step through the call graph.
+    walked: Option<u64>,
+}
+
+/// What calls this function and what it calls, each a step away.
+///
+/// Returns a function the reader clicked, which the caller makes the selected
+/// one — so the panel is walked rather than only read.
+fn call_graph(
+    ui: &mut egui::Ui,
+    functions: &[Function],
+    graph: &crate::callgraph::Graph,
+    function: &Function,
+    language: Language,
+) -> Option<u64> {
+    let edges = graph.edges(function.start)?;
+    let name_of = |address: u64| {
+        functions
+            .iter()
+            .find(|other| other.start == address)
+            .map_or_else(|| format!("{address:#x}"), |other| other.name.clone())
+    };
+    let mut chosen = None;
+    card(ui, text(language, Text::Callers), |ui| {
+        if edges.callers.is_empty() {
+            ui.label(egui::RichText::new(text(language, Text::NothingCallsThis)).color(MUTED));
+        }
+        // One row per caller, however many times it calls: "this function
+        // calls that one" is the fact, and the count of instructions doing it
+        // is noise at this level.
+        let mut seen: Vec<u64> = edges.callers.iter().map(|call| call.from).collect();
+        seen.dedup();
+        for caller in seen.iter().take(CALL_ROWS) {
+            if function_link(ui, &name_of(*caller)).clicked() {
+                chosen = Some(*caller);
+            }
+        }
+        if seen.len() > CALL_ROWS {
+            ui.label(
+                egui::RichText::new(format!("… {}", seen.len() - CALL_ROWS))
+                    .small()
+                    .color(MUTED),
+            );
+        }
+        // How the reader gets here from a starting point, which is the whole
+        // question this panel exists to answer.
+        ways_in(ui, graph, function.start, &name_of, language);
+    });
+    ui.add_space(6.0);
+    card(ui, text(language, Text::Callees), |ui| {
+        let mut seen: Vec<u64> = edges.calls.iter().map(|call| call.to).collect();
+        seen.dedup();
+        if seen.is_empty() && edges.indirect == 0 && edges.outside == 0 {
+            ui.label(egui::RichText::new(text(language, Text::CallsNothing)).color(MUTED));
+        }
+        for callee in seen.iter().take(CALL_ROWS) {
+            if function_link(ui, &name_of(*callee)).clicked() {
+                chosen = Some(*callee);
+            }
+        }
+        if seen.len() > CALL_ROWS {
+            ui.label(
+                egui::RichText::new(format!("… {}", seen.len() - CALL_ROWS))
+                    .small()
+                    .color(MUTED),
+            );
+        }
+        // The two kinds of call the graph cannot follow, said rather than
+        // left out: a function whose callees are all indirect would otherwise
+        // read as one that calls nothing.
+        for (count, label, help) in [
+            (edges.indirect, Text::IndirectCalls, Text::IndirectCallsHelp),
+            (edges.outside, Text::CallsOutside, Text::CallsOutsideHelp),
+        ] {
+            if count > 0 {
+                ui.label(
+                    egui::RichText::new(format!("{count} {}", text(language, label)))
+                        .small()
+                        .color(MUTED),
+                )
+                .on_hover_text(text(language, help));
+            }
+        }
+        let reaches = graph.reachable_from(function.start).len();
+        if reaches > 0 {
+            ui.label(
+                egui::RichText::new(format!("{} {reaches}", text(language, Text::Reaches)))
+                    .small()
+                    .color(MUTED),
+            )
+            .on_hover_text(text(language, Text::ReachesHelp));
+        }
+    });
+    chosen
+}
+
+/// A function-name link that cannot widen a call-graph card.
+///
+/// Rust and C++ symbols routinely span several hundred pixels. The complete
+/// spelling is still useful — especially for two specialisations that only
+/// differ near their end — so truncation is visual only and the hover says the
+/// whole name.
+fn function_link(ui: &mut egui::Ui, name: &str) -> egui::Response {
+    // `card` centres children that keep their intrinsic width. Reserve a full
+    // line first, then put the label in it, or a short name would float in the
+    // middle while a long one was clipped at the card's edge.
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+        egui::Sense::hover(),
+    );
+    ui.put(
+        rect,
+        egui::Label::new(egui::RichText::new(name).color(ui.visuals().hyperlink_color))
+            .truncate()
+            .halign(egui::Align::LEFT)
+            .sense(egui::Sense::click()),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+    .on_hover_text(name)
+}
+
+/// The shortest chains of calls that reach this function from a starting
+/// point of the file.
+fn ways_in(
+    ui: &mut egui::Ui,
+    graph: &crate::callgraph::Graph,
+    to: u64,
+    name_of: &impl Fn(u64) -> String,
+    language: Language,
+) {
+    let starts: Vec<u64> = graph.unreached().take(STARTS_TRIED).collect();
+    let mut paths: Vec<Vec<u64>> = Vec::new();
+    for start in starts {
+        if start == to {
+            continue;
+        }
+        paths.extend(graph.paths(start, to, 1));
+        if paths.len() >= WAYS_IN {
+            break;
+        }
+    }
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(text(language, Text::HowToGetHere))
+            .small()
+            .strong(),
+    )
+    .on_hover_text(text(language, Text::HowToGetHereHelp));
+    if paths.is_empty() {
+        ui.label(
+            egui::RichText::new(text(language, Text::NoWayHere))
+                .small()
+                .color(MUTED),
+        );
+        return;
+    }
+    paths.sort_by_key(Vec::len);
+    for path in paths.iter().take(WAYS_IN) {
+        let chain: Vec<String> = path.iter().map(|address| name_of(*address)).collect();
+        let chain = chain.join(" → ");
+        ui.add(egui::Label::new(egui::RichText::new(&chain).small().color(MUTED)).truncate())
+            .on_hover_text(chain);
+    }
+}
+
+/// How many callers or callees are listed before the rest are counted.
+const CALL_ROWS: usize = 12;
+/// How many ways in are shown, and how many starting points are tried to find
+/// them. Both bounded: a large binary has thousands of each.
+const WAYS_IN: usize = 3;
+const STARTS_TRIED: usize = 24;
 
 /// Returns the block currently under the pointer so the pseudo-code can follow
 /// the graph without making a click change the selected function.
@@ -738,6 +959,67 @@ mod tests {
             text: text.to_owned(),
             section: std::sync::Arc::from(".text"),
         }
+    }
+
+    /// The call graph pane answers the three questions it exists for, and
+    /// clicking a name in it walks to that function.
+    #[test]
+    fn the_call_graph_pane_names_callers_and_callees_and_walks_between_them() {
+        use eframe::egui;
+
+        let mut app = crate::testing::opened_app(crate::app::WorkspaceView::Functions);
+        app.preferences.language = Language::English;
+        // A function with something at both ends, which the first function of
+        // a file usually is not.
+        let connected = app
+            .functions
+            .iter()
+            .find(|function| {
+                app.callgraph
+                    .edges(function.start)
+                    .is_some_and(|edges| !edges.callers.is_empty() && !edges.calls.is_empty())
+            })
+            .map(|function| function.start);
+        let Some(connected) = connected else {
+            return; // Nothing on this host has both.
+        };
+        app.selected_function = Some(connected);
+
+        let ctx = egui::Context::default();
+        let mut draw = |ctx: &egui::Context| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = super::show(
+                    ui,
+                    app.analysis.as_ref().expect("a binary"),
+                    &app.functions,
+                    &app.callgraph,
+                    &mut app.selected_function,
+                    Language::English,
+                );
+            });
+        };
+        let _ = ctx.run(crate::testing::window_input(), &mut draw);
+        let output = ctx.run(crate::testing::window_input(), &mut draw);
+        let said = crate::testing::drawn_text(&output.shapes);
+
+        for heading in [Text::Callers, Text::Callees, Text::HowToGetHere] {
+            let wanted = text(Language::English, heading);
+            assert!(said.contains(wanted), "{wanted:?} is on screen");
+        }
+        // The callers are named, not counted.
+        let caller = app
+            .callgraph
+            .edges(connected)
+            .and_then(|edges| edges.callers.first())
+            .map(|call| call.from)
+            .expect("it has a caller");
+        let name = app
+            .functions
+            .iter()
+            .find(|function| function.start == caller)
+            .map(|function| function.name.clone())
+            .expect("the caller is a function");
+        assert!(said.contains(&name), "the caller is named: {name}");
     }
 
     /// A file that names nothing still has a Functions view.

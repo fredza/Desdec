@@ -149,8 +149,18 @@ fn absolute(text: &str) -> Option<u64> {
         }
         index = end.max(start + 2);
 
-        let immediate = start > 0 && matches!(bytes[start - 1], b'$' | b'#');
-        let displacement = bytes.get(end) == Some(&b'(');
+        // An immediate, whether or not a sign stands between the marker and
+        // the digits: `mov w0, #-0x10` moves the number, and reading `0x10`
+        // out of it claimed the instruction referred to address sixteen.
+        let before = bytes[..start].iter().rev();
+        let marker = before
+            .take_while(|byte| matches!(byte, b'-' | b'+'))
+            .count();
+        let immediate = start > marker && matches!(bytes[start - marker - 1], b'$' | b'#');
+        // A displacement from a register, in either syntax: `0x4f0(%rsp)` on
+        // x86 and `[sp, #-0x10]` on AArch64. Both are near a register, not at
+        // the address the digits spell.
+        let displacement = bytes.get(end) == Some(&b'(') || bracketed(bytes, start);
         if immediate || displacement {
             continue;
         }
@@ -163,6 +173,68 @@ fn absolute(text: &str) -> Option<u64> {
         found = Some(value);
     }
     found
+}
+
+/// Whether the digits at `start` stand inside a `[…]` memory operand.
+///
+/// `AArch64` writes every memory access that way — `[sp, #-0x10]`, `[x0, x1]` —
+/// and what is inside is an offset from a register, never an address on its
+/// own. The scan is backwards from the digits: an opening bracket before them
+/// with no closing bracket in between is one that is still open.
+fn bracketed(bytes: &[u8], start: usize) -> bool {
+    bytes[..start]
+        .iter()
+        .rev()
+        .find_map(|byte| match byte {
+            b'[' => Some(true),
+            b']' => Some(false),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
+/// Where a branch or a call goes, when the text states it.
+///
+/// Separate from [`target_address`] because the two disagree on purpose: a
+/// number written as an immediate is a *value* to every instruction except
+/// these, where it is the address being branched to. `AArch64` writes every
+/// branch that way — `b.eq #0x100000180`, `bl #0x4001f0` — so without this the
+/// jump arrows, the cross-references and the function discovery all saw a file
+/// whose code branched nowhere.
+///
+/// Returns `None` for an indirect branch, whose target is in a register and is
+/// not knowable from the text.
+#[must_use]
+pub fn branch_target(instruction: &Instruction) -> Option<u64> {
+    let mut words = instruction.text.split_whitespace();
+    if !is_branch(words.next()?) {
+        return None;
+    }
+    if let Some(target) = target_address(instruction) {
+        return Some(target);
+    }
+    // The immediate form, which `absolute` refuses for every other
+    // instruction. The target is the last operand there is: `b.eq #0x1234`
+    // has only one, `cbz x0, #0x1234` has it after a comma, and
+    // `tbz w0, #3, #0x1234` after two — so the last word of the line is it,
+    // whichever of those the line happens to be.
+    let last = instruction.text.split_whitespace().next_back()?;
+    let digits = last
+        .trim_end_matches(&[',', '!'][..])
+        .trim_start_matches(['#', '$']);
+    read_hex(digits)
+}
+
+/// Whether a mnemonic branches or calls.
+///
+/// The x86 `j*` family and `call`, and the `AArch64` forms — including the
+/// conditional `b.<cond>` spellings, which are one mnemonic each.
+#[must_use]
+pub fn is_branch(mnemonic: &str) -> bool {
+    mnemonic.starts_with('j')
+        || mnemonic.starts_with("b.")
+        || mnemonic.starts_with("call")
+        || matches!(mnemonic, "b" | "bl" | "cbz" | "cbnz" | "tbz" | "tbnz")
 }
 
 fn read_hex(word: &str) -> Option<u64> {
@@ -331,6 +403,66 @@ fn written_constant(instruction: &Instruction, architecture: Architecture) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A branch on `AArch64` writes its target as an immediate, and the general
+    /// reader refuses an immediate on purpose. Without [`branch_target`] the
+    /// jump arrows, the cross-reference index and the function discovery all
+    /// saw a file whose code branched nowhere.
+    #[test]
+    fn an_aarch64_branch_target_is_read_even_though_it_is_written_as_an_immediate() {
+        for (text, expected) in [
+            ("b.eq #0x100000180", 0x1_0000_0180_u64),
+            ("b #0x4001f0", 0x0040_01f0),
+            ("bl #0x4001f0", 0x0040_01f0),
+            ("cbz x0, #0x1234", 0x1234),
+            ("tbz w0, #3, #0x1234", 0x1234),
+        ] {
+            let line = instruction(0x1000, text, 4);
+            assert_eq!(
+                branch_target(&line),
+                Some(expected),
+                "{text} branches to {expected:#x}"
+            );
+            assert_eq!(
+                target_address(&line),
+                None,
+                "{text} designates no operand address: the number is where it goes"
+            );
+        }
+    }
+
+    /// And an instruction that is not a branch keeps its immediate as a value.
+    #[test]
+    fn an_immediate_that_is_not_a_branch_target_is_still_not_an_address() {
+        for text in ["mov w0, #0x2a", "add x0, x1, #0x10", "mov $0x10,%eax"] {
+            let line = instruction(0x1000, text, 4);
+            assert_eq!(branch_target(&line), None, "{text} is not a branch");
+            assert_eq!(target_address(&line), None, "{text} designates nothing");
+        }
+    }
+
+    /// A stack offset is not an address, in either syntax.
+    ///
+    /// `[sp, #-0x10]` used to be read as address sixteen: the guard against a
+    /// displacement was written for x86's `0x4f0(%rsp)` and knew nothing of
+    /// `AArch64`'s brackets, and the guard against an immediate did not see the
+    /// minus sign between the `#` and the digits.
+    #[test]
+    fn a_stack_offset_is_not_an_address_in_either_syntax() {
+        for text in [
+            "stp x29, x30, [sp, #-0x10]!",
+            "ldp x29, x30, [sp], #0x10",
+            "ldr x0, [x1, #0x28]",
+            "mov %rcx,0x4f0(%rsp)",
+            "mov w0, #-0x10",
+        ] {
+            assert_eq!(
+                target_address(&instruction(0x1000, text, 4)),
+                None,
+                "{text} names no address"
+            );
+        }
+    }
 
     fn instruction(address: u64, text: &str, length: usize) -> Instruction {
         Instruction {

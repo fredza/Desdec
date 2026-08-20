@@ -1052,7 +1052,10 @@ fn jump_target(instruction: &Instruction) -> Option<u64> {
     if !is_jump(mnemonic) {
         return None;
     }
-    operand::target_address(instruction)
+    // Through the branch reader, not the general one: AArch64 writes every
+    // branch target as an immediate, which the general reader refuses on
+    // purpose — so the gutter used to draw no arrows at all on those files.
+    operand::branch_target(instruction)
 }
 
 /// Whether a mnemonic branches within the listing: the x86 `j*` family, and

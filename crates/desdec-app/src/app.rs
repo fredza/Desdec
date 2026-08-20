@@ -10,7 +10,8 @@ use std::{
 };
 
 use desdec_core::{
-    Analysis, analyse_path_cancellable, assistant, decompiler, emulate::Machine, update, yara,
+    AnalysedFile, Analysis, Trace, analyse_path_with_bytes_cancellable, assistant, decompiler,
+    emulate::Machine, update, yara,
 };
 use eframe::{Storage, egui};
 
@@ -356,8 +357,48 @@ struct BackgroundJobs {
 
 /// One in-flight analysis, and the flag the interface uses to abandon it.
 struct InspectionJob {
-    receiver: Receiver<(PathBuf, std::io::Result<Analysis>)>,
+    receiver: Receiver<(PathBuf, std::io::Result<PreparedInspection>)>,
     cancelled: Arc<AtomicBool>,
+}
+
+/// Everything the interface needs from one opened file, prepared away from
+/// the frame loop. Installing this is just moving values into the app: a
+/// large binary must never appear to have opened successfully, then freeze
+/// while its indexes are built on the UI thread.
+struct PreparedInspection {
+    analysis: Analysis,
+    file_bytes: Vec<u8>,
+    functions: Vec<crate::ui::functions::Function>,
+    stack: Trace,
+    string_references: crate::ui::strings::CodeReferences,
+    section_starts: Vec<usize>,
+    listing_columns: crate::ui::disassembly::Columns,
+    callgraph: crate::callgraph::Graph,
+    xrefs: crate::xrefs::Index,
+}
+
+impl PreparedInspection {
+    fn of(analysed: AnalysedFile) -> Self {
+        let AnalysedFile { analysis, bytes } = analysed;
+        let functions = crate::ui::functions::all(&analysis);
+        let stack = Trace::of(&analysis);
+        let string_references = crate::ui::strings::CodeReferences::of(&analysis);
+        let section_starts = crate::ui::disassembly::section_starts(&analysis);
+        let listing_columns = crate::ui::disassembly::Columns::of(&analysis, &stack);
+        let callgraph = crate::callgraph::Graph::of(&analysis, &functions);
+        let xrefs = crate::xrefs::Index::of(&analysis, &bytes);
+        Self {
+            analysis,
+            file_bytes: bytes,
+            functions,
+            stack,
+            string_references,
+            section_starts,
+            listing_columns,
+            callgraph,
+            xrefs,
+        }
+    }
 }
 
 /// The usual place for downloads, where a platform has one.
@@ -552,6 +593,12 @@ pub struct DesdecApp {
     /// for the same reason: finding the section boundaries means walking every
     /// decoded instruction, and a large shared library holds eighteen million.
     pub section_starts: Vec<usize>,
+    /// Which function calls which, indexed once per binary.
+    ///
+    /// Derived from the analysis and the function list, like the indexes
+    /// beside it: it walks every decoded call, and the view reads it on every
+    /// frame.
+    pub callgraph: crate::callgraph::Graph,
     /// How wide each column of the listing is held, indexed once per binary.
     ///
     /// Derived from the analysis and the stack index, like `section_starts`
@@ -1370,11 +1417,25 @@ impl DesdecApp {
             cancelled: Arc::clone(&cancelled),
         });
         std::thread::spawn(move || {
-            let result = analyse_path_cancellable(&path, &cancelled).and_then(|analysis| {
-                analysis.ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::Interrupted, "analysis cancelled")
-                })
-            });
+            let result =
+                analyse_path_with_bytes_cancellable(&path, &cancelled).and_then(|analysed| {
+                    analysed.ok_or_else(|| {
+                        std::io::Error::new(std::io::ErrorKind::Interrupted, "analysis cancelled")
+                    })
+                });
+            let result = result.map(PreparedInspection::of);
+            // Building the indexes is deliberately part of the job. It is all
+            // CPU work over the bounded prefix the analysis just read, and
+            // doing it on the frame thread made a large file look as if the
+            // opening had failed just after the worker answered.
+            let result = if cancelled.load(Ordering::Relaxed) {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "analysis cancelled",
+                ))
+            } else {
+                result
+            };
             // The receiver is deliberately dropped when the user cancels. A
             // result that completed just before that point is then ignored.
             let _ = sender.send((path, result));
@@ -1382,29 +1443,23 @@ impl DesdecApp {
         });
     }
 
-    fn apply_inspection(&mut self, path: &Path, result: std::io::Result<Analysis>) {
+    fn apply_inspection(&mut self, path: &Path, result: std::io::Result<PreparedInspection>) {
         match result {
-            Ok(analysis) => {
+            Ok(prepared) => {
                 self.remember_recent_binary(path);
                 // Cleared first: what follows describes the new file, and
                 // resetting afterwards would throw the function index away.
                 self.reset_file_state();
-                self.functions = crate::ui::functions::all(&analysis);
-                self.stack = desdec_core::Trace::of(&analysis);
-                self.string_references = crate::ui::strings::CodeReferences::of(&analysis);
-                self.section_starts = crate::ui::disassembly::section_starts(&analysis);
-                // After the stack, which it reads: the depth column is held to
-                // the deepest frame the whole file reaches.
-                self.listing_columns = crate::ui::disassembly::Columns::of(&analysis, &self.stack);
-                self.analysis = Some(analysis);
+                self.functions = prepared.functions;
+                self.stack = prepared.stack;
+                self.string_references = prepared.string_references;
+                self.section_starts = prepared.section_starts;
+                self.listing_columns = prepared.listing_columns;
+                self.callgraph = prepared.callgraph;
+                self.file_bytes = prepared.file_bytes;
+                self.xrefs = prepared.xrefs;
+                self.analysis = Some(prepared.analysis);
                 self.error = None;
-                // Kept so an operand's target can be read without going back
-                // to the disk on every inspection.
-                self.file_bytes = std::fs::read(path).unwrap_or_default();
-                self.xrefs = crate::xrefs::Index::of(
-                    self.analysis.as_ref().expect("just installed"),
-                    &self.file_bytes,
-                );
                 // Whatever was worked out about these bytes last time.
                 self.annotations = self.stored_annotations().unwrap_or_default();
                 self.annotations_saved = self.annotations.clone();
@@ -2456,6 +2511,7 @@ impl DesdecApp {
         self.string_references = crate::ui::strings::CodeReferences::default();
         self.section_starts.clear();
         self.listing_columns = crate::ui::disassembly::Columns::default();
+        self.callgraph = crate::callgraph::Graph::default();
         self.xrefs = crate::xrefs::Index::default();
         self.references_address = None;
         self.search = crate::ui::search::State::default();
@@ -2644,6 +2700,12 @@ impl DesdecApp {
                 .as_ref()
                 .map(|analysis| {
                     crate::ui::disassembly::Columns::of(analysis, &desdec_core::Trace::of(analysis))
+                })
+                .unwrap_or_default(),
+            callgraph: analysis
+                .as_ref()
+                .map(|analysis| {
+                    crate::callgraph::Graph::of(analysis, &crate::ui::functions::all(analysis))
                 })
                 .unwrap_or_default(),
             // The file's bytes are installed by the test fixture afterwards,
@@ -3106,7 +3168,13 @@ mod tests {
     fn opening_a_binary_indexes_its_functions_and_closing_forgets_them() {
         for sample in crate::testing::samples() {
             let mut app = DesdecApp::default();
-            app.apply_inspection(Path::new("fixture.bin"), Ok(sample.analysis.clone()));
+            app.apply_inspection(
+                Path::new("fixture.bin"),
+                Ok(PreparedInspection::of(AnalysedFile {
+                    analysis: sample.analysis.clone(),
+                    bytes: sample.fixture.bytes.clone(),
+                })),
+            );
             assert!(
                 !app.functions.is_empty(),
                 "{} declares {} functions and none was indexed",
@@ -3122,7 +3190,10 @@ mod tests {
         let mut app = DesdecApp::default();
         app.apply_inspection(
             crate::testing::reference_path(),
-            Ok(crate::testing::reference_analysis().clone()),
+            Ok(PreparedInspection::of(AnalysedFile {
+                analysis: crate::testing::reference_analysis().clone(),
+                bytes: crate::testing::reference_bytes().to_vec(),
+            })),
         );
         let listing = app
             .analysis

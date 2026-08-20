@@ -343,17 +343,36 @@ fn decompile(pen: &Pen) {
 
 /// Bytes replaced: a run of cells with one written over.
 fn patches(pen: &Pen) {
-    pen.boxed((0.0, 0.28), (1.0, 0.72), 1.0);
-    pen.line((0.34, 0.28), (0.34, 0.72));
-    pen.line((0.66, 0.28), (0.66, 0.72));
-    pen.filled((0.36, 0.3), (0.64, 0.7), 0.0);
+    // Four cells rather than three, and the changed one off-centre: three with
+    // the middle one filled read as a progress bar half done.
+    pen.boxed((0.0, 0.3), (1.0, 0.7), 1.0);
+    for x in [0.25_f32, 0.5, 0.75] {
+        pen.line((x, 0.3), (x, 0.7));
+    }
+    pen.filled((0.52, 0.32), (0.73, 0.68), 0.0);
 }
 
-/// A magnifier over a rule: scanning the file for patterns.
+/// A scan frame with its sweep: rules run over the whole file.
+///
+/// Deliberately not a magnifier. Every tool drew one for twenty years, and it
+/// came to mean "search" in general — while YARA is not a search but a set of
+/// rules run over everything. Four corners and a sweep is the mark a reader
+/// now recognises as scanning, and it is nothing like any other glyph here.
 fn yara(pen: &Pen) {
-    pen.circle((0.42, 0.42), 0.3);
-    pen.line((0.64, 0.64), (1.0, 1.0));
-    pen.line((0.3, 0.42), (0.54, 0.42));
+    const REACH: f32 = 0.3;
+    for (x, y, horizontal, vertical) in [
+        (0.0_f32, 0.0_f32, 1.0_f32, 1.0_f32),
+        (1.0, 0.0, -1.0, 1.0),
+        (0.0, 1.0, 1.0, -1.0),
+        (1.0, 1.0, -1.0, -1.0),
+    ] {
+        pen.path(&[
+            (x + horizontal * REACH, y),
+            (x, y),
+            (x, y + vertical * REACH),
+        ]);
+    }
+    pen.line((0.06, 0.5), (0.94, 0.5));
 }
 
 /// Two sparks: a reading offered alongside the listing, not a measurement of
@@ -430,10 +449,14 @@ fn preferences(pen: &Pen) {
 }
 
 /// The usual circled letter, drawn rather than typed so it needs no font.
+///
+/// The ring is drawn at the same weight as every other glyph rather than
+/// filled: a solid disc with a hole in it was the heaviest mark on the bar,
+/// and the eye went to "about" before it went to anything the reader came for.
 fn about(pen: &Pen) {
-    pen.circle((0.5, 0.5), 0.5);
-    pen.dot((0.5, 0.24));
-    pen.line((0.5, 0.44), (0.5, 0.78));
+    pen.circle((0.5, 0.5), 0.46);
+    pen.line((0.5, 0.22), (0.5, 0.3));
+    pen.line((0.5, 0.42), (0.5, 0.76));
 }
 
 /// Three bars: the menu.
@@ -675,10 +698,23 @@ mod sheet {
                         format!("{},{}", p.0, p.1)
                     })
                     .collect();
+                // A closed shape is a `polygon` and an open one a `polyline`,
+                // because SVG closes the first and not the second. Written as
+                // a polyline with no fill, a filled glyph — the transport's
+                // play triangle — came out as an empty cell; written as a
+                // polygon, every open glyph came out with a line joining its
+                // two ends, which is a pair of quotation marks turned into two
+                // triangles. The shape itself says which it is.
+                let (element, fill) = if path.closed {
+                    ("polygon", colour(path.fill != egui::Color32::TRANSPARENT))
+                } else {
+                    ("polyline", "none")
+                };
                 let _ = writeln!(
                     out,
-                    "<polyline points=\"{}\" fill=\"none\" stroke=\"{INK}\" stroke-width=\"{}\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>",
+                    "<{element} points=\"{}\" fill=\"{fill}\" stroke=\"{}\" stroke-width=\"{}\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>",
                     points.join(" "),
+                    colour(path.stroke.width > 0.0),
                     path.stroke.width
                 );
             }
