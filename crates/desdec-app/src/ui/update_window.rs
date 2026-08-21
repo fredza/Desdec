@@ -53,6 +53,8 @@ pub fn consent(app: &mut DesdecApp, ctx: &egui::Context) {
         window = window.current_pos(crate::ui::opening_position(ctx, id, step, SIZE));
     }
     window.show(ctx, |ui| {
+        consent_banner(ui, language, tint);
+        ui.add_space(10.0);
         ui.label(text(language, Text::UpdateConsentExplained));
         ui.add_space(16.0);
         ui.horizontal(|ui| {
@@ -109,27 +111,30 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         ui.set_min_width(SIZE.x);
         match &app.update {
             UpdateState::Idle if app.preferences.check_for_updates != Some(true) => {
-                ui.label(
-                    egui::RichText::new(text(language, Text::UpdateCheckingDisabled)).color(MUTED),
+                status_card(
+                    ui,
+                    text(language, Text::Updates),
+                    text(language, Text::UpdateCheckingDisabled),
+                    tint,
                 );
             }
             UpdateState::Idle | UpdateState::Checking => {
+                status_card(ui, text(language, Text::Updates), "", tint);
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label(text(language, Text::UpdateChecking));
                 });
             }
             UpdateState::UpToDate => {
-                ui.add_space(8.0);
-                ui.heading(text(language, Text::UpdateUpToDate));
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(format!(
+                status_card(
+                    ui,
+                    text(language, Text::UpdateUpToDate),
+                    &format!(
                         "{} {}",
                         text(language, Text::UpdateCurrentVersion),
                         running_version()
-                    ))
-                    .color(MUTED),
+                    ),
+                    egui::Color32::from_rgb(120, 196, 132),
                 );
             }
             UpdateState::Offered(release) => {
@@ -155,8 +160,12 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                 downloaded(ui, release, file, language, tint, &mut act);
             }
             UpdateState::Failed(error) => {
-                ui.add_space(8.0);
-                ui.colored_label(ERROR, explain(error, language));
+                status_card(
+                    ui,
+                    text(language, Text::Updates),
+                    &explain(error, language),
+                    ERROR,
+                );
                 ui.add_space(8.0);
                 if ui.button(text(language, Text::UpdateOpenPage)).clicked() {
                     act = Some(Act::OpenPage);
@@ -176,6 +185,50 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         Some(Act::ShowFile) => show_file(app, ctx),
         None => {}
     }
+}
+
+/// A small coloured card for the states that would otherwise be one line of
+/// text adrift in a large window. It gives progress, success and errors the
+/// same deliberate visual weight as an offered release.
+fn status_card(ui: &mut egui::Ui, title: &str, detail: &str, colour: egui::Color32) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 64.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(rect, 8.0, colour.gamma_multiply(0.13));
+    let inner = rect.shrink2(egui::vec2(16.0, 12.0));
+    ui.painter().circle_filled(
+        inner.left_center() + egui::vec2(5.0, 0.0),
+        5.0,
+        colour.gamma_multiply(0.9),
+    );
+    ui.painter().text(
+        inner.left_top() + egui::vec2(18.0, 0.0),
+        egui::Align2::LEFT_TOP,
+        title,
+        egui::FontId::proportional(17.0),
+        colour,
+    );
+    if !detail.is_empty() {
+        ui.painter().text(
+            inner.left_bottom() + egui::vec2(18.0, 0.0),
+            egui::Align2::LEFT_BOTTOM,
+            detail,
+            egui::FontId::proportional(12.0),
+            MUTED,
+        );
+    }
+    ui.add_space(10.0);
+}
+
+/// The consent question gets a quiet header too: it is a choice about a
+/// network request, not an error prompt.
+fn consent_banner(ui: &mut egui::Ui, language: Language, tint: egui::Color32) {
+    status_card(
+        ui,
+        text(language, Text::Updates),
+        text(language, Text::UpdateConsentTitle),
+        tint,
+    );
 }
 
 /// What a press asked for, acted on once the window's borrow has ended.

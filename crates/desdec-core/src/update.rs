@@ -15,7 +15,8 @@
 //! act with `gpg`, described in the release notes.
 
 use std::{
-    io::Read,
+    fs::{self, OpenOptions},
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -281,7 +282,8 @@ pub fn download(
             size: release.archive.size,
         });
     }
-    let expected = read_checksum(&fetch_text(&checksum.url)?).ok_or(Error::NoChecksum)?;
+    let expected = read_checksum(&fetch_text(&checksum.url)?, &release.archive.name)
+        .ok_or(Error::NoChecksum)?;
 
     let bytes = fetch_bytes(&release.archive.url, release.archive.size, &mut progress)?;
     let found = hash::to_hex(&hash::sha256(&bytes));
@@ -289,24 +291,101 @@ pub fn download(
         return Err(Error::ChecksumMismatch { expected, found });
     }
 
-    let destination = directory.join(&release.archive.name);
-    // Written whole and then renamed, so an interrupted write never leaves
-    // something under the archive's name.
-    let partial = directory.join(format!("{}.part", release.archive.name));
-    std::fs::write(&partial, &bytes).map_err(|error| Error::Storage(error.to_string()))?;
-    std::fs::rename(&partial, &destination).map_err(|error| {
-        let _ = std::fs::remove_file(&partial);
-        Error::Storage(error.to_string())
-    })?;
-    Ok(destination)
+    keep_verified_archive(directory, &release.archive.name, &bytes, &expected)
 }
 
-/// The hash out of a `sha256sum` line: the hex, then the file it names.
+/// Keeps verified bytes under their release name without overwriting anything.
+///
+/// A download directory need not exist yet: it is common for a portable copy
+/// of Desdec to be pointed at a new folder. The temporary file is synced and
+/// then hard-linked into place. Linking, unlike a Unix rename, never replaces
+/// a file that appeared meanwhile; an existing matching archive is simply
+/// reused. Thus clicking Download twice cannot replace an archive the reader
+/// already has.
+fn keep_verified_archive(
+    directory: &Path,
+    name: &str,
+    bytes: &[u8],
+    expected: &str,
+) -> Result<PathBuf, Error> {
+    fs::create_dir_all(directory).map_err(|error| Error::Storage(error.to_string()))?;
+    let destination = directory.join(name);
+    if destination.exists() {
+        return existing_verified_archive(&destination, expected);
+    }
+
+    // create_new makes a stale partial file harmless instead of overwriting
+    // it. The process id separates concurrent copies of Desdec; the attempt
+    // number also copes with a previous interrupted download from this copy.
+    let partial = (0..128)
+        .map(|attempt| directory.join(format!(".{name}.{}.{}.part", std::process::id(), attempt)))
+        .find(|path| !path.exists())
+        .ok_or_else(|| Error::Storage(String::from("too many unfinished update downloads")))?;
+
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        file.write_all(bytes)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        file.sync_all()
+            .map_err(|error| Error::Storage(error.to_string()))?;
+
+        // This is an atomic "create destination if absent" on the same
+        // filesystem. A rename would overwrite an existing file on Unix.
+        match fs::hard_link(&partial, &destination) {
+            Ok(()) => {
+                fs::remove_file(&partial).map_err(|error| Error::Storage(error.to_string()))?;
+                Ok(destination)
+            }
+            Err(_) if destination.exists() => existing_verified_archive(&destination, expected),
+            Err(error) => Err(Error::Storage(error.to_string())),
+        }
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&partial);
+    }
+    result
+}
+
+/// Returns an already-present archive only when it is exactly the one the
+/// release named. A different local file is left untouched.
+fn existing_verified_archive(destination: &Path, expected: &str) -> Result<PathBuf, Error> {
+    let size = fs::metadata(destination)
+        .map_err(|error| Error::Storage(error.to_string()))?
+        .len();
+    if size > MAXIMUM_ARCHIVE {
+        return Err(Error::TooLarge { size });
+    }
+    let bytes = fs::read(destination).map_err(|error| Error::Storage(error.to_string()))?;
+    let found = hash::to_hex(&hash::sha256(&bytes));
+    if found.eq_ignore_ascii_case(expected) {
+        Ok(destination.to_owned())
+    } else {
+        Err(Error::Storage(format!(
+            "{} already exists and is not the published archive",
+            destination.display()
+        )))
+    }
+}
+
+/// The hash for `archive_name` out of a `sha256sum` line.
+///
+/// The file name matters: a release can carry one checksum per platform, and
+/// accepting the first hash in a combined file could verify Linux bytes using
+/// the macOS line by mistake.
 #[must_use]
-pub fn read_checksum(contents: &str) -> Option<String> {
-    let word = contents.split_whitespace().next()?;
+pub fn read_checksum(contents: &str, archive_name: &str) -> Option<String> {
+    let (word, file_name) = contents.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let hash = fields.next()?;
+        let file_name = fields.next()?.trim_start_matches('*');
+        (fields.next().is_none() && file_name == archive_name).then_some((hash, file_name))
+    })?;
     let hexadecimal = word.len() == 64 && word.chars().all(|c| c.is_ascii_hexdigit());
-    hexadecimal.then(|| word.to_ascii_lowercase())
+    (file_name == archive_name && hexadecimal).then(|| word.to_ascii_lowercase())
 }
 
 /// A `GET` whose body is text.
@@ -394,17 +473,49 @@ mod tests {
         let line =
             "b6b9fc880f039d205a2995ae88ed07d88ead6ddd85f1574f32f7704bf8d04b0a  desdec.tar.gz\n";
         assert_eq!(
-            read_checksum(line).as_deref(),
+            read_checksum(line, "desdec.tar.gz").as_deref(),
             Some("b6b9fc880f039d205a2995ae88ed07d88ead6ddd85f1574f32f7704bf8d04b0a")
         );
     }
 
     #[test]
     fn anything_that_is_not_a_hash_is_refused() {
-        assert_eq!(read_checksum(""), None);
-        assert_eq!(read_checksum("not a hash  desdec.tar.gz"), None);
+        assert_eq!(read_checksum("", "desdec.tar.gz"), None);
+        assert_eq!(
+            read_checksum("not a hash  desdec.tar.gz", "desdec.tar.gz"),
+            None
+        );
         // The right length, the wrong alphabet.
-        assert_eq!(read_checksum(&"z".repeat(64)), None);
+        assert_eq!(read_checksum(&"z".repeat(64), "desdec.tar.gz"), None);
+    }
+
+    #[test]
+    fn a_checksum_for_another_archive_is_refused() {
+        let line = format!("{}  desdec-macos.zip\n", "a".repeat(64));
+        assert_eq!(read_checksum(&line, "desdec-linux.tar.gz"), None);
+    }
+
+    #[test]
+    fn a_verified_archive_creates_its_destination_and_can_be_reused() {
+        let directory = std::env::temp_dir().join(format!(
+            "desdec-update-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        let bytes = b"a small verified archive";
+        let expected = hash::to_hex(&hash::sha256(bytes));
+
+        let first = keep_verified_archive(&directory, "desdec.tar.gz", bytes, &expected)
+            .expect("the new directory and archive are created");
+        let again = keep_verified_archive(&directory, "desdec.tar.gz", bytes, &expected)
+            .expect("the already verified archive is reused");
+        assert_eq!(first, again);
+        assert_eq!(fs::read(first).expect("archive is readable"), bytes);
+
+        fs::remove_dir_all(directory).expect("test directory is removed");
     }
 
     /// GitHub's answer, cut down to the fields this reads.
