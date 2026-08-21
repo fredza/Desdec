@@ -287,7 +287,10 @@ fn hooks(plugin: &Plugin, language: Language) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use eframe::egui;
 
@@ -299,14 +302,23 @@ mod tests {
         testing::{opened_app, window_input},
     };
 
+    /// Tests run in parallel. A readable name alone is not a unique temporary
+    /// directory: a second invocation can otherwise remove the first one's
+    /// manifest while it is being read, turning a plugin test into a reading
+    /// of whichever state happened to win the race.
+    static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+
     /// A plugin directory of this test's own, with one plugin in it.
     ///
     /// The application is never pointed at the real plugin directory here: a
     /// test must not depend on what the machine running it happens to have
     /// installed, and must never write into it.
     fn installed(name: &str, manifest: &str, script: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("desdec-ui-plugins-{name}"));
-        let _ = std::fs::remove_dir_all(&root);
+        let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "desdec-ui-plugins-{name}-{}-{sequence}",
+            std::process::id()
+        ));
         let directory = root.join(name);
         std::fs::create_dir_all(&directory).expect("the test directory can be created");
         std::fs::write(directory.join(plugins::MANIFEST), manifest).expect("manifest written");

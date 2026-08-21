@@ -72,6 +72,9 @@ commands! {
     WalkStepOut => [Disassembly, StepOut], Some(Shortcut::shift(KeyName::F8)),
     WalkBack => [Disassembly, StepBack], Some(Shortcut::shift(KeyName::F7)),
     WalkToEntry => [Disassembly, WalkToEntry], None,
+    DisassemblyStartEntry => [Disassembly, EntryPoint], None,
+    DisassemblyStartMain => [Disassembly, MainFunction], None,
+    DisassemblyStartProbable => [Disassembly, ProbableFunction], None,
     // The reader's own reading of the file: a name for an address, a sentence
     // about it, a mark to come back to.
     // Who names an address, and finding what the listing will not scroll to.
@@ -99,6 +102,10 @@ commands! {
     DecompilerBuiltin => [Decompiler, BuiltinDecompiler], None,
     DecompilerRzGhidra => [Decompiler, RzGhidraEngine], None,
     DecompilerRetDec => [Decompiler, RetDecEngine], None,
+    RerunDecompilation => [Decompiler, RerunDecompiler], None,
+    ShowDecompilationAssembly => [Decompiler, AssemblyPreview], None,
+    CopyPseudoCode => [Decompiler, CopyPseudoCode], None,
+    DecompilerPreferences => [Decompiler, Preferences], None,
     ToggleDecompilationCache => [Decompiler, CacheDecompilations], None,
     ClearDecompilationCache => [Decompiler, ClearCache], None,
     ThemeSystem => [Theme, SystemTheme], None,
@@ -216,6 +223,9 @@ impl Command {
                 | Self::MachineRestart
                 | Self::MachineStepBack
                 | Self::MachineToggleBreakpoint
+                | Self::RerunDecompilation
+                | Self::ShowDecompilationAssembly
+                | Self::CopyPseudoCode
         )
     }
 
@@ -255,7 +265,10 @@ impl Command {
             // row of the listing, so they leave the reader looking at it.
             | Self::MachineRunToCursor
             | Self::MachineToggleBreakpoint => WorkspaceView::Disassembly,
-            Self::Decompile => WorkspaceView::Decompile,
+            Self::Decompile
+            | Self::RerunDecompilation
+            | Self::ShowDecompilationAssembly
+            | Self::CopyPseudoCode => WorkspaceView::Decompile,
             Self::AiAssistance
             | Self::AskAboutBinary
             | Self::AskAboutFunction

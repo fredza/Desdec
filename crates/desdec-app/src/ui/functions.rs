@@ -89,6 +89,8 @@ pub fn show(
     {
         *selected_function = Some(functions[0].start);
     }
+    function_guide(ui, language);
+    ui.add_space(8.0);
     // Said once, above the table, when the file named none of them: the
     // column on each row says where that row came from, and this says why
     // there is a column at all.
@@ -147,6 +149,20 @@ pub fn show(
         }
     });
     go_to
+}
+
+/// The few distinctions a reader needs before the table can answer questions
+/// rather than look like a directory of confident-looking names. Kept above
+/// both panes: the explanation applies to the evidence column, the call graph
+/// and the pseudo-code together, not just to the currently selected row.
+fn function_guide(ui: &mut egui::Ui, language: Language) {
+    card(ui, text(language, Text::HowToReadFunctions), |ui| {
+        ui.label(egui::RichText::new(text(language, Text::FunctionsGuideIntro)).color(MUTED));
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(text(language, Text::FunctionsGuideList)).small());
+        ui.add_space(2.0);
+        ui.label(egui::RichText::new(text(language, Text::FunctionsGuideRelations)).small());
+    });
 }
 
 /// The first decoded instruction of a function, which is where the listing is
@@ -344,6 +360,12 @@ fn function_details(
             );
         }
     });
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(text(language, Text::FunctionDetailGuide))
+            .small()
+            .color(MUTED),
+    );
     ui.add_space(8.0);
     // Who calls this one, and what it calls, before the graph of its own
     // blocks: a reader arriving at a function asks how anything gets to it
@@ -958,6 +980,34 @@ mod tests {
             bytes: desdec_core::InstructionBytes::new(&[0x90]).expect("one byte"),
             text: text.to_owned(),
             section: std::sync::Arc::from(".text"),
+        }
+    }
+
+    /// The view teaches the confidence boundary before it shows a dense table
+    /// of names: a function recovered from a call and one inferred from a
+    /// prologue must not read as equally certain.
+    #[test]
+    fn functions_guide_explains_evidence_and_how_to_read_the_graphs() {
+        use eframe::egui;
+
+        let ctx = egui::Context::default();
+        let mut draw = |ctx: &egui::Context| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                super::function_guide(ui, Language::English);
+            });
+        };
+        let _ = ctx.run(crate::testing::window_input(), &mut draw);
+        let output = ctx.run(crate::testing::window_input(), &mut draw);
+        let said = crate::testing::drawn_text(&output.shapes);
+
+        for item in [
+            Text::HowToReadFunctions,
+            Text::FunctionsGuideIntro,
+            Text::FunctionsGuideList,
+            Text::FunctionsGuideRelations,
+        ] {
+            let wanted = text(Language::English, item);
+            assert!(said.contains(wanted), "{wanted:?} is on screen");
         }
     }
 

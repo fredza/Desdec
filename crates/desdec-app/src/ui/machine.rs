@@ -15,6 +15,7 @@ use desdec_core::emulate::{
     Machine, Stop, Watchpoint,
     memory::{Access, Fault},
     registers::Flag,
+    system::{SystemCall, SystemPlatform},
 };
 use eframe::egui;
 
@@ -99,6 +100,12 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
                         trace(ui, machine, language);
                     });
                     ui.add_space(8.0);
+                    if let Some(Stop::SystemCall { call, .. }) = machine.stop() {
+                        card(ui, text(language, Text::SystemRequest), |ui| {
+                            system_call(ui, call, language);
+                        });
+                        ui.add_space(8.0);
+                    }
                     card(ui, text(language, Text::MappedRegions), |ui| {
                         regions(ui, machine);
                     });
@@ -351,10 +358,15 @@ fn explain(stop: &Stop, language: Language) -> (String, bool) {
             ),
             true,
         ),
-        Stop::SystemCall { at, instruction } => (
+        Stop::SystemCall {
+            at,
+            instruction,
+            call,
+        } => (
             format!(
-                "{} — {instruction} ({at:#018x})",
-                say(Text::StoppedSystemCall)
+                "{} — {} / {instruction} ({at:#018x})",
+                say(Text::StoppedSystemCall),
+                call.display_name(),
             ),
             true,
         ),
@@ -528,6 +540,39 @@ fn trace(ui: &mut egui::Ui, machine: &Machine, language: Language) {
         });
 }
 
+/// The operating-system boundary, decoded like a tiny `strace` line but
+/// deliberately without a return value: nothing behind this emulator answers
+/// the request.
+fn system_call(ui: &mut egui::Ui, call: &SystemCall, language: Language) {
+    ui.label(egui::RichText::new(text(language, Text::SystemRequestExplained)).color(MUTED));
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.monospace(egui::RichText::new(call.display_name()).strong());
+        ui.label(egui::RichText::new(call.platform.label()).color(MUTED));
+        ui.label(format!(
+            "{} {:#x}",
+            text(language, Text::SystemRequestNumber),
+            call.number
+        ));
+    });
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(text(language, Text::SystemRequestArguments)).color(MUTED));
+    egui::Grid::new("machine-system-call")
+        .num_columns(2)
+        .spacing([14.0, 4.0])
+        .show(ui, |ui| {
+            for argument in call.arguments {
+                ui.monospace(argument.register);
+                ui.monospace(format!("{:#018x}", argument.value));
+                ui.end_row();
+            }
+        });
+    if call.platform == SystemPlatform::WindowsX86_64 {
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(text(language, Text::SystemRequestWindowsNote)).color(MUTED));
+    }
+}
+
 /// The address space the run sees, region by region.
 fn regions(ui: &mut egui::Ui, machine: &Machine) {
     egui::Grid::new("machine-regions")
@@ -659,6 +704,7 @@ fn watchpoints(ui: &mut egui::Ui, machine: &Machine, language: Language) {
 
 #[cfg(test)]
 mod tests {
+    use desdec_core::emulate::system::{SystemArgument, SystemCall, SystemPlatform};
     use eframe::egui;
 
     use crate::{
@@ -716,6 +762,55 @@ mod tests {
                 && said.contains("xmm15"),
             "the general-purpose and XMM registers are on screen: {said}"
         );
+    }
+
+    #[test]
+    fn a_system_request_shows_its_abi_without_a_made_up_result() {
+        let call = SystemCall {
+            platform: SystemPlatform::LinuxX86_64,
+            number: 1,
+            name: Some("write"),
+            arguments: [
+                SystemArgument {
+                    register: "rdi",
+                    value: 2,
+                },
+                SystemArgument {
+                    register: "rsi",
+                    value: 0x401000,
+                },
+                SystemArgument {
+                    register: "rdx",
+                    value: 7,
+                },
+                SystemArgument {
+                    register: "r10",
+                    value: 0,
+                },
+                SystemArgument {
+                    register: "r8",
+                    value: 0,
+                },
+                SystemArgument {
+                    register: "r9",
+                    value: 0,
+                },
+            ],
+        };
+        let ctx = egui::Context::default();
+        let mut draw = |ctx: &egui::Context| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                super::system_call(ui, &call, crate::i18n::Language::French);
+            });
+        };
+        let _ = ctx.run(window_input(), &mut draw);
+        let output = ctx.run(window_input(), &mut draw);
+        let said: String = drawn(&output.shapes)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert!(said.contains("write") && said.contains("Linux x86-64"));
+        assert!(said.contains("n’invente aucun résultat"), "{said}");
     }
 
     /// The transport's back button undoes exactly one instruction, through the

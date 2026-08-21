@@ -34,6 +34,9 @@ pub mod condition;
 pub mod memory;
 /// The register file; see the module's own documentation.
 pub mod registers;
+/// System-call ABI decoding, without a host operating system; see the
+/// module's own documentation.
+pub mod system;
 mod x86;
 
 use std::{
@@ -44,7 +47,7 @@ use std::{
 use iced_x86::{Decoder, DecoderOptions, Formatter, GasFormatter};
 
 use crate::{
-    Analysis, Architecture,
+    Analysis, Architecture, BinaryFormat,
     emulate::{
         memory::{Access, Fault, Memory, Region},
         registers::Registers,
@@ -100,7 +103,13 @@ pub enum Stop {
     /// The interpreter does not carry out this instruction.
     Unsupported { at: u64, instruction: String },
     /// The program asked the operating system something, and there is none.
-    SystemCall { at: u64, instruction: String },
+    SystemCall {
+        at: u64,
+        instruction: String,
+        /// The request as its ABI registers describe it. It was observed, not
+        /// executed and not answered.
+        call: system::SystemCall,
+    },
     /// Execution reached a place the file maps no bytes to — the usual sign of
     /// a call into a library, whose code lives in a file that is not open.
     LeftTheImage { at: u64 },
@@ -326,6 +335,8 @@ pub struct Machine {
     pub memory: Memory,
     architecture: Architecture,
     bitness: u32,
+    /// The container tells which OS ABI the system-request registers use.
+    format: BinaryFormat,
     /// Where the run would start again from.
     entry_point: u64,
     /// The top of the allocated stack, which is where `rsp` starts.
@@ -353,9 +364,10 @@ impl Machine {
     #[must_use]
     pub fn new(analysis: &Analysis, file: Arc<[u8]>) -> Self {
         let memory = Memory::load(file, analysis);
-        Self::over(
+        Self::over_format(
             memory,
             analysis.summary.architecture,
+            analysis.summary.format,
             analysis.entry_point.unwrap_or_default(),
         )
     }
@@ -367,7 +379,16 @@ impl Machine {
     /// whole file needs: the caller decides what is mapped and where the run
     /// begins, and gets the same stack, the same sentinel and the same stops.
     #[must_use]
-    pub fn over(mut memory: Memory, architecture: Architecture, entry_point: u64) -> Self {
+    pub fn over(memory: Memory, architecture: Architecture, entry_point: u64) -> Self {
+        Self::over_format(memory, architecture, BinaryFormat::Unknown, entry_point)
+    }
+
+    fn over_format(
+        mut memory: Memory,
+        architecture: Architecture,
+        format: BinaryFormat,
+        entry_point: u64,
+    ) -> Self {
         let bitness = match architecture {
             Architecture::X86_64 => 64,
             Architecture::X86 => 32,
@@ -379,6 +400,7 @@ impl Machine {
             memory,
             architecture,
             bitness,
+            format,
             entry_point,
             stack_top,
             executed: 0,
@@ -801,6 +823,11 @@ impl Machine {
                     Refusal::SystemCall { text } => Stop::SystemCall {
                         at,
                         instruction: text,
+                        call: system::SystemCall::capture(
+                            self.format,
+                            self.bitness,
+                            &self.registers,
+                        ),
                     },
                     Refusal::Fault(fault) => Stop::Fault { at, fault },
                     Refusal::DivideError => Stop::DivideError { at },

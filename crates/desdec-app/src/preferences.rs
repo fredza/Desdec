@@ -27,6 +27,15 @@ pub enum DecompilerPreference {
     RetDec,
 }
 
+/// Where a newly opened binary is first selected in the disassembly.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DisassemblyStart {
+    EntryPoint,
+    #[default]
+    Main,
+    ProbableFunction,
+}
+
 impl DecompilerPreference {
     pub const ALL: &[Self] = &[Self::Builtin, Self::RzGhidra, Self::RetDec];
 
@@ -109,6 +118,7 @@ pub struct Preferences {
     /// the file at the address an instruction computes, and a reader who wants
     /// the listing and nothing else should be able to say so.
     pub show_operand_hints: bool,
+    pub disassembly_start: DisassemblyStart,
     pub persistence_enabled: bool,
     /// Which model, if any, the assistant asks. `None` by default.
     pub assistant: AssistantPreference,
@@ -183,6 +193,7 @@ impl Default for Preferences {
             show_toolbar: true,
             show_tooltips: true,
             show_operand_hints: true,
+            disassembly_start: DisassemblyStart::Main,
             persistence_enabled: true,
             assistant: AssistantPreference::None,
             assistant_model: String::new(),

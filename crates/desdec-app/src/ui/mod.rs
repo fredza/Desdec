@@ -49,17 +49,11 @@ pub fn section_title(label: &str) -> egui::RichText {
 /// layout falls back to a single column.
 pub const TWO_COLUMN_WIDTH: f32 = 900.0;
 
-/// How far each window steps aside from the one under it: enough that the
-/// title bar and the close button of the window underneath stay reachable.
-const CASCADE_STEP: f32 = 34.0;
-
-/// Where a window opens: in the middle, then stepped aside once for every
-/// window already on screen.
+/// Where an ordinary window opens: at the centre of the workspace.
 ///
-/// Windows egui is not told where to put land in the same corner, so a second
-/// one covers the first exactly and the reader is left with a stack they
-/// cannot see into. `step` is how many were already open, from
-/// [`crate::app::Dialogs::opening_step`].
+/// `step` is retained for all ordinary dialogs to use the same opening path,
+/// but deliberately does not move a window away from the centre: a centred
+/// answer is easier to find than a growing cascade.
 ///
 /// The size comes from the last time the window was laid out; the first
 /// opening has none, so `assumed` stands in and is corrected on the frame
@@ -70,23 +64,32 @@ pub fn opening_position(
     step: usize,
     assumed: egui::Vec2,
 ) -> egui::Pos2 {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "the step counts open windows, of which there are six"
-    )]
-    let offset = CASCADE_STEP * step as f32;
+    let _ = step;
     let size = ctx
         .memory(|memory| memory.area_rect(id))
         .map_or(assumed, |rect| rect.size());
     let screen = ctx.screen_rect();
     let centred = screen.center() - size / 2.0;
-    // Stepping a window off the screen would be worse than covering another,
-    // so the last of a long cascade is brought back inside.
+    // A modal answer should begin where the eye already expects it. Readers
+    // can still move it afterwards, but opening every ordinary dialog in the
+    // same predictable place is less surprising than a growing cascade.
     egui::pos2(
-        (centred.x + offset)
+        centred.x.min(screen.right() - size.x).max(screen.left()),
+        centred.y.min(screen.bottom() - size.y).max(screen.top()),
+    )
+}
+
+/// Where an inspection started from the disassembly opens: just below the
+/// pointer, while keeping the whole window on screen.
+pub fn under_cursor(ctx: &egui::Context, size: egui::Vec2) -> egui::Pos2 {
+    const GAP: f32 = 12.0;
+    let screen = ctx.screen_rect();
+    let pointer = ctx.pointer_latest_pos().unwrap_or(screen.center());
+    egui::pos2(
+        (pointer.x + GAP)
             .min(screen.right() - size.x)
             .max(screen.left()),
-        (centred.y + offset)
+        (pointer.y + GAP)
             .min(screen.bottom() - size.y)
             .max(screen.top()),
     )

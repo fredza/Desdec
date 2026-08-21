@@ -509,6 +509,9 @@ translations! {
     Cancel => ["Annuler", "Cancel", "Cancelar"],
     NoShortcut => ["Aucun raccourci", "No shortcut", "Sin atajo"],
     EntryPoint => ["Point d’entrée", "Entry point", "Punto de entrada"],
+    DisassemblyStart => ["Démarrer le désassemblage sur", "Start disassembly at", "Iniciar el desensamblado en"],
+    MainFunction => ["fonction main", "main function", "función main"],
+    ProbableFunction => ["fonction probable", "likely function", "función probable"],
     Entropy => ["Entropie", "Entropy", "Entropía"],
     Blocks => ["Blocs", "Blocks", "Bloques"],
     ControlFlow => ["Flot de contrôle", "Control flow", "Flujo de control"],
@@ -523,6 +526,21 @@ translations! {
         "Fall back to the built-in decompiler",
         "Volver al decompilador integrado",
     ],
+    RerunDecompiler => [
+        "Relancer le décompilateur sélectionné",
+        "Run the selected decompiler again",
+        "Volver a ejecutar el descompilador seleccionado",
+    ],
+    CopyPseudoCode => [
+        "Copier le pseudo-code affiché",
+        "Copy displayed pseudocode",
+        "Copiar el pseudocódigo mostrado",
+    ],
+    PseudoCodeCopied => [
+        "Pseudo-code copié",
+        "Pseudocode copied",
+        "Pseudocódigo copiado",
+    ],
     BuiltinFallbackNote => [
         "Le moteur choisi n’a rien produit. Voici la traduction intégrée, qui ne dépend d’aucune installation.",
         "The chosen engine produced nothing. Here is the built-in translation, which depends on nothing being installed.",
@@ -532,6 +550,11 @@ translations! {
         "Traduction déterministe du flot observé, sans code source inventé.",
         "Deterministic translation of the observed flow, with no invented source.",
         "Traducción determinista del flujo observado, sin código fuente inventado.",
+    ],
+    PseudoCodeContextHelp => [
+        "Clic droit ici pour le moteur, la copie et le désassemblage correspondant.",
+        "Right-click here for the engine, copy and corresponding disassembly.",
+        "Clic derecho aquí para el motor, la copia y el ensamblado correspondiente.",
     ],
     AssemblyPreview => ["Désassemblage correspondant", "Corresponding disassembly", "Ensamblado correspondiente"],
     JumpToAssembly => ["Sauter vers l’assembleur", "Jump to assembly", "Saltar al ensamblador"],
@@ -1330,6 +1353,19 @@ translations! {
     ],
     CallStack => ["Pile des appels", "Call stack", "Pila de llamadas"],
     ExecutionTrace => ["Ce qui s’est exécuté", "What has run", "Lo que se ha ejecutado"],
+    SystemRequest => ["Appel système observé", "Observed system call", "Llamada al sistema observada"],
+    SystemRequestExplained => [
+        "C’est l’état exact des registres à la frontière du système. Desdec ne lance pas l’appel, ne lit pas les pointeurs et n’invente aucun résultat.",
+        "This is the exact register state at the system boundary. Desdec does not make the call, read pointers or invent a result.",
+        "Este es el estado exacto de los registros en el límite del sistema. Desdec no realiza la llamada, no lee punteros ni inventa un resultado.",
+    ],
+    SystemRequestNumber => ["numéro", "number", "número"],
+    SystemRequestArguments => ["arguments", "arguments", "argumentos"],
+    SystemRequestWindowsNote => [
+        "Les numéros des services NT changent selon la version de Windows : Desdec les conserve sans leur attribuer un faux nom.",
+        "NT service numbers change with the Windows build: Desdec keeps them without giving them a false name.",
+        "Los números de servicio NT cambian según la compilación de Windows: Desdec los conserva sin darles un nombre falso.",
+    ],
     MappedRegions => ["Régions mappées", "Mapped regions", "Regiones mapeadas"],
     InstructionsExecuted => ["Instructions exécutées", "Instructions run", "Instrucciones ejecutadas"],
     CallDepth => ["Profondeur d’appel", "Call depth", "Profundidad de llamada"],
@@ -1464,6 +1500,31 @@ translations! {
     // copy was started, so the first question is whether to ask at all.
     // Where a function in the table came from, for a file that names none.
     // The call graph: how anything gets to a function, and what it reaches.
+    HowToReadFunctions => [
+        "Lire la vue Fonctions",
+        "How to read the Functions view",
+        "Cómo leer la vista Funciones",
+    ],
+    FunctionsGuideIntro => [
+        "Une fonction est une portion de code que le programme peut appeler comme une unité. Ce n’est pas automatiquement son intention : Desdec montre les preuves qui permettent de la délimiter.",
+        "A function is a piece of code the program can call as one unit. That does not automatically reveal its intent: Desdec shows the evidence that lets it draw its boundaries.",
+        "Una función es una porción de código que el programa puede llamar como una unidad. Eso no revela automáticamente su intención: Desdec muestra las pruebas que permiten delimitarla.",
+    ],
+    FunctionsGuideList => [
+        "1. Choisissez une ligne à gauche. « Trouvée par » dit si le fichier la nomme, si un appel la vise (fait), ou si son début ressemble seulement à un prologue de compilateur (hypothèse). La flèche ouvre les octets qui fondent cette lecture.",
+        "1. Choose a row on the left. “Found by” says whether the file names it, a call targets it (fact), or its start merely resembles a compiler prologue (hypothesis). The arrow opens the bytes that support this reading.",
+        "1. Elija una fila a la izquierda. «Encontrada por» indica si el archivo la nombra, si una llamada la apunta (hecho) o si su comienzo solo se parece a un prólogo del compilador (hipótesis). La flecha abre los bytes que sustentan esta lectura.",
+    ],
+    FunctionsGuideRelations => [
+        "2. À droite, lisez d’abord qui arrive ici, puis ce que cette fonction atteint. Les appels indirects et hors du fichier sont signalés : une absence de lien n’est jamais présentée comme une preuve qu’il n’existe rien.",
+        "2. On the right, first read what arrives here, then what this function reaches. Indirect and out-of-file calls are named: a missing link is never presented as proof that nothing exists.",
+        "2. A la derecha, lea primero qué llega aquí y después qué alcanza esta función. Se indican las llamadas indirectas y fuera del archivo: la falta de un enlace nunca se presenta como prueba de que no exista nada.",
+    ],
+    FunctionDetailGuide => [
+        "Le graphe de flot découpe ensuite la fonction en blocs : chaque bloc est une suite d’instructions sans embranchement au milieu ; les flèches disent où l’exécution peut continuer. Le pseudo-code est une traduction prudente du listing, pas le code source retrouvé.",
+        "The control-flow graph then splits the function into blocks: each block is instructions with no branch in the middle; arrows show where execution can continue. The pseudocode is a careful translation of the listing, not recovered source code.",
+        "El grafo de flujo divide después la función en bloques: cada bloque es una secuencia de instrucciones sin salto en medio; las flechas muestran dónde puede continuar la ejecución. El pseudocódigo es una traducción prudente del listado, no código fuente recuperado.",
+    ],
     Callers => ["Qui appelle celle-ci", "What calls this one", "Qué llama a esta"],
     Callees => ["Ce qu’elle appelle", "What it calls", "Lo que llama"],
     NothingCallsThis => [

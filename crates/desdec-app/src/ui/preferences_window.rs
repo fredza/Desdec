@@ -6,7 +6,10 @@ use crate::{
     app::{DesdecApp, Dialog, decompilation_cache_dir},
     commands::{Command, Shortcut},
     i18n::{Language, Text, text},
-    preferences::{AssistantPreference, DecompilerPreference, ThemePreference, accent, success},
+    preferences::{
+        AssistantPreference, DecompilerPreference, DisassemblyStart, ThemePreference, accent,
+        success,
+    },
     ui::{ERROR, MUTED, format_size},
 };
 
@@ -404,6 +407,22 @@ fn behaviour(app: &mut DesdecApp, ui: &mut egui::Ui) {
         if let Some(note) = note {
             ui.small(text(language, note));
         }
+    }
+
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(6.0);
+    ui.label(text(language, Text::DisassemblyStart));
+    for (choice, label) in [
+        (DisassemblyStart::EntryPoint, Text::EntryPoint),
+        (DisassemblyStart::Main, Text::MainFunction),
+        (DisassemblyStart::ProbableFunction, Text::ProbableFunction),
+    ] {
+        ui.radio_value(
+            &mut app.preferences.disassembly_start,
+            choice,
+            text(language, label),
+        );
     }
 
     ui.add_space(12.0);

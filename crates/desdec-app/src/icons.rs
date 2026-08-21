@@ -325,7 +325,8 @@ fn dump(pen: &Pen) {
     }
 }
 
-/// A pair of braces: the pseudo-code rebuilt from those instructions.
+/// Braces around uneven source lines: pseudo-C rather than a generic code
+/// block, visibly distinct from the address-and-opcode listing icon.
 fn decompile(pen: &Pen) {
     for (edge, inward) in [(0.0_f32, 1.0_f32), (1.0, -1.0)] {
         let spine = edge + inward * 0.22;
@@ -338,6 +339,9 @@ fn decompile(pen: &Pen) {
             (spine, 0.86),
             (spine + inward * 0.22, 1.0),
         ]);
+    }
+    for (y, end) in [(0.26_f32, 0.68_f32), (0.5, 0.78), (0.74, 0.6)] {
+        pen.line((0.35, y), (end, y));
     }
 }
 

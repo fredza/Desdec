@@ -445,6 +445,9 @@ mod tests {
             "clear the cache",
             "rizin + rz-ghidra",
             "retdec",
+            "run the selected decompiler again",
+            "corresponding disassembly",
+            "copy displayed pseudocode",
             "preferences",
         ] {
             assert!(

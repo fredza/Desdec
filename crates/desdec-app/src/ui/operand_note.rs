@@ -40,7 +40,8 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         .resizable(true)
         .default_width(ASSUMED_SIZE.x);
     if let Some(step) = app.dialogs.opening_step(Dialog::Operand) {
-        window = window.current_pos(crate::ui::opening_position(ctx, id, step, ASSUMED_SIZE));
+        let _ = step;
+        window = window.current_pos(crate::ui::under_cursor(ctx, ASSUMED_SIZE));
     }
     // The window says more than it used to, and an instruction naming three
     // registers makes it taller than some screens. It scrolls rather than

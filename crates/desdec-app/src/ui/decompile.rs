@@ -1,5 +1,6 @@
 use crate::{
     app::{DesdecApp, Dialog, PseudocodeAssembly, WorkspaceView},
+    commands::Command,
     i18n::{Language, Text, text},
     ui::{ERROR, MUTED, ROW_HEIGHT, card, syntax},
 };
@@ -29,15 +30,20 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
 /// The translation this tool makes itself, from the flow it decoded.
 fn builtin(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let language = app.preferences.language;
+    let actions = PseudocodeActions::from_app(app);
     let Some(analysis) = &app.analysis else {
         return;
     };
+    let mut chosen = None;
     card(ui, text(language, Text::PseudoCode), |ui| {
         if app.preferences.decompiler.engine().is_some() {
             ui.small(egui::RichText::new(text(language, Text::BuiltinFallbackNote)).color(MUTED));
             ui.add_space(4.0);
         }
-        ui.small(text(language, Text::PseudoCodeHelp));
+        let help = ui.small(text(language, Text::PseudoCodeHelp));
+        help.context_menu(|ui| {
+            chosen = pseudocode_menu(ui, language, actions);
+        });
         if analysis.instructions.is_empty() {
             ui.label(egui::RichText::new(text(language, Text::NoDisassembly)).color(MUTED));
             return;
@@ -59,6 +65,9 @@ fn builtin(app: &mut DesdecApp, ui: &mut egui::Ui) {
             app.pending_instruction_scroll = None;
         }
     });
+    if let Some(command) = chosen {
+        app.run_command(ui.ctx(), command);
+    }
 }
 
 /// Output of an external decompiler, started on demand.
@@ -88,6 +97,8 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
     let mut answered = false;
     let mut fall_back = false;
     let mut show_path = false;
+    let mut chosen = None;
+    let actions_for_menu = PseudocodeActions::from_app(app);
     card(ui, text(language, Text::ExternalPseudoCode), |ui| {
         ui.horizontal(|ui| {
             ui.small(text(language, Text::DecompiledBy));
@@ -112,6 +123,11 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
                 app.pseudocode_assembly = Some(PseudocodeAssembly::Function(address));
                 app.dialogs.open(Dialog::Assembly);
             }
+        });
+        let actions =
+            ui.small(egui::RichText::new(text(language, Text::PseudoCodeContextHelp)).color(MUTED));
+        actions.context_menu(|ui| {
+            chosen = pseudocode_menu(ui, language, actions_for_menu);
         });
         ui.add_space(8.0);
 
@@ -157,7 +173,11 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
             .auto_shrink([false, false])
             .show_rows(ui, row_height, lines.len(), |ui, rows| {
                 for line in &lines[rows] {
-                    ui.label(syntax::pseudo_code(ui, line, egui::Color32::TRANSPARENT));
+                    let response =
+                        ui.label(syntax::pseudo_code(ui, line, egui::Color32::TRANSPARENT));
+                    response.context_menu(|ui| {
+                        chosen = pseudocode_menu(ui, language, actions_for_menu);
+                    });
                 }
             });
     });
@@ -172,7 +192,73 @@ fn external(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
         app.preferences_tab = crate::ui::preferences_window::PreferencesTab::Decompiler;
         app.dialogs.open(crate::app::Dialog::Preferences);
     }
+    if let Some(command) = chosen {
+        app.run_command(ui.ctx(), command);
+    }
     answered
+}
+
+/// The context menu is a front-end to the command registry, never a private
+/// second set of actions. That keeps every useful pseudo-code action available
+/// from the palette and an assignable shortcut as well.
+#[derive(Clone, Copy)]
+struct PseudocodeActions {
+    rerun: bool,
+    assembly: bool,
+    copy: bool,
+}
+
+impl PseudocodeActions {
+    fn from_app(app: &DesdecApp) -> Self {
+        Self {
+            rerun: app.can_run(Command::RerunDecompilation),
+            assembly: app.can_run(Command::ShowDecompilationAssembly),
+            copy: app.can_run(Command::CopyPseudoCode),
+        }
+    }
+}
+
+fn pseudocode_menu(
+    ui: &mut egui::Ui,
+    language: Language,
+    actions: PseudocodeActions,
+) -> Option<Command> {
+    let mut chosen = None;
+    for (command, enabled) in [
+        (Command::RerunDecompilation, actions.rerun),
+        (Command::ShowDecompilationAssembly, actions.assembly),
+        (Command::CopyPseudoCode, actions.copy),
+    ] {
+        if ui
+            .add_enabled(enabled, egui::Button::new(command.label(language)))
+            .clicked()
+        {
+            chosen = Some(command);
+            ui.close_menu();
+            return chosen;
+        }
+    }
+    ui.separator();
+    for command in [
+        Command::DecompilerBuiltin,
+        Command::DecompilerRzGhidra,
+        Command::DecompilerRetDec,
+    ] {
+        if ui.button(command.label(language)).clicked() {
+            chosen = Some(command);
+            ui.close_menu();
+            return chosen;
+        }
+    }
+    ui.separator();
+    if ui
+        .button(Command::DecompilerPreferences.label(language))
+        .clicked()
+    {
+        chosen = Some(Command::DecompilerPreferences);
+        ui.close_menu();
+    }
+    chosen
 }
 
 /// Functions the engine can be pointed at: named, defined here, with an
@@ -593,6 +679,12 @@ pub(crate) fn pseudo_c(asm: &str) -> String {
         "and" | "andq" | "andl" => Some("&="),
         "or" | "orq" | "orl" => Some("|="),
         "xor" | "xorq" | "xorl" => Some("^="),
+        // The one-operand multiply form writes the implicit RDX:RAX pair and
+        // is intentionally left unsupported. This spelling has an explicit
+        // source and destination, so the C-like assignment is honest.
+        "imul" | "imulq" | "imull" => Some("*="),
+        "shl" | "sal" | "shlq" | "shll" => Some("<<="),
+        "shr" | "sar" | "shrq" | "sarl" => Some(">>="),
         _ => None,
     } {
         pair().map_or_else(
@@ -610,6 +702,18 @@ pub(crate) fn pseudo_c(asm: &str) -> String {
         format!("stack_push({});", c_value(operands))
     } else if opcode.starts_with("pop") {
         format!("{} = stack_pop();", c_value(operands))
+    } else if opcode.starts_with("inc") {
+        format!("{}++;", c_value(operands))
+    } else if opcode.starts_with("dec") {
+        format!("{}--;", c_value(operands))
+    } else if opcode.starts_with("neg") {
+        format!("{} = -{};", c_value(operands), c_value(operands))
+    } else if opcode.starts_with("not") {
+        format!("{} = ~{};", c_value(operands), c_value(operands))
+    } else if opcode == "nop" || opcode == "nopw" || opcode == "nopl" {
+        "/* no operation */".into()
+    } else if opcode == "syscall" || opcode == "sysenter" || opcode == "int" {
+        "/* system request: inspect the Machine trace */".into()
     } else {
         unknown(asm)
     }
@@ -696,6 +800,20 @@ mod tests {
 
     use super::*;
     use crate::testing::reference_analysis;
+
+    #[test]
+    fn the_local_dictionary_keeps_only_explicit_instruction_meaning() {
+        assert_eq!(pseudo_c("imulq $8, %rax"), "rax *= 8;");
+        assert_eq!(pseudo_c("not %eax"), "eax = ~eax;");
+        assert_eq!(pseudo_c("nop"), "/* no operation */");
+        assert_eq!(
+            pseudo_c("syscall"),
+            "/* system request: inspect the Machine trace */"
+        );
+        // A one-operand multiply has implicit registers, so claiming a C
+        // expression for it would invent information the decoded text lacks.
+        assert!(pseudo_c("imul %rcx").starts_with("/* unsupported:"));
+    }
 
     /// First decoded instruction of the reference binary.
     fn first_address() -> u64 {

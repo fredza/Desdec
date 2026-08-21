@@ -20,7 +20,9 @@ use crate::{
     i18n::{Language, Text, text},
     icons::Icon,
     patches::{Editor, Patches},
-    preferences::{DecompilerPreference, Preferences, ThemePreference, apply_theme},
+    preferences::{
+        DecompilerPreference, DisassemblyStart, Preferences, ThemePreference, apply_theme,
+    },
     ui::{self, preferences_window::PreferencesTab},
 };
 
@@ -798,6 +800,10 @@ impl DesdecApp {
             Command::WalkStepInto => return self.walk_lands(crate::walk::Step::Into).is_some(),
             Command::WalkStepOver => return self.walk_lands(crate::walk::Step::Over).is_some(),
             Command::WalkStepOut => return self.walk_lands(crate::walk::Step::Out).is_some(),
+            Command::RerunDecompilation => {
+                return self.preferences.decompiler.engine().is_some() && !self.external.running;
+            }
+            Command::ShowDecompilationAssembly => return self.selected_function.is_some(),
             _ => {}
         }
         // Choosing an engine always does something — it records the choice —
@@ -812,6 +818,38 @@ impl DesdecApp {
         self.preferences.decompiler = choice;
         // The shown text belongs to the previous engine.
         self.external = ExternalDecompilation::default();
+    }
+
+    /// Starts the chosen external engine again, deliberately bypassing the
+    /// cached answer. The old answer remains on disk; this only asks the
+    /// selected engine for a fresh observation.
+    fn rerun_decompilation(&mut self, ctx: &egui::Context) {
+        if self.preferences.decompiler.engine().is_none() || self.external.running {
+            return;
+        }
+        self.external = ExternalDecompilation::default();
+        self.request_decompilation_without_cache(ctx, self.selected_function);
+    }
+
+    /// What the pseudo-code pane currently represents, ready for a deliberate
+    /// copy action. The local translation shares the analysis instruction cap
+    /// with the pane, rather than creating a second unbounded operation.
+    fn displayed_pseudocode(&self) -> Option<String> {
+        if let Some(text) = &self.external.text {
+            return Some(text.clone());
+        }
+        let analysis = self.analysis.as_ref()?;
+        if analysis.instructions.is_empty() {
+            return None;
+        }
+        let mut result = String::from("void decompiled_entry(void) {\n");
+        for instruction in &analysis.instructions {
+            result.push_str("    ");
+            result.push_str(&crate::ui::decompile::pseudo_c(&instruction.text));
+            result.push('\n');
+        }
+        result.push('}');
+        Some(result)
     }
 
     /// Where this binary's notes are kept, and the digest that names them.
@@ -898,6 +936,36 @@ impl DesdecApp {
         let analysis = self.analysis.as_ref()?;
         let entry = analysis.entry_point?;
         analysis.instruction_index(entry).map(|_| entry)
+    }
+
+    fn disassembly_start(&self, choice: DisassemblyStart) -> Option<u64> {
+        let analysis = self.analysis.as_ref()?;
+        let decoded = |address| analysis.instruction_index(address).map(|_| address);
+        match choice {
+            DisassemblyStart::EntryPoint => analysis.entry_point.and_then(decoded),
+            DisassemblyStart::Main => self
+                .functions
+                .iter()
+                .find(|function| function.name == "main")
+                .and_then(|function| decoded(function.start))
+                .or_else(|| analysis.entry_point.and_then(decoded)),
+            DisassemblyStart::ProbableFunction => self
+                .functions
+                .iter()
+                .find(|function| function.found_by.is_some())
+                .or_else(|| self.functions.first())
+                .and_then(|function| decoded(function.start))
+                .or_else(|| analysis.entry_point.and_then(decoded)),
+        }
+    }
+
+    fn select_disassembly_start(&mut self, choice: DisassemblyStart) {
+        self.preferences.disassembly_start = choice;
+        if let Some(address) = self.disassembly_start(choice) {
+            self.selected_instruction = Some(address);
+            self.pending_instruction_scroll = Some(address);
+            self.active_view = WorkspaceView::Disassembly;
+        }
     }
 
     /// Where one step of the walk would land, from where the reader stands.
@@ -1193,6 +1261,27 @@ impl DesdecApp {
             Command::DecompilerBuiltin => self.set_decompiler(DecompilerPreference::Builtin),
             Command::DecompilerRzGhidra => self.set_decompiler(DecompilerPreference::RzGhidra),
             Command::DecompilerRetDec => self.set_decompiler(DecompilerPreference::RetDec),
+            Command::RerunDecompilation => {
+                self.open_view(command);
+                self.rerun_decompilation(ctx);
+            }
+            Command::ShowDecompilationAssembly => {
+                self.open_view(command);
+                if let Some(address) = self.selected_function {
+                    self.pseudocode_assembly = Some(PseudocodeAssembly::Function(address));
+                    self.dialogs.open(Dialog::Assembly);
+                }
+            }
+            Command::CopyPseudoCode => {
+                self.open_view(command);
+                if let Some(pseudocode) = self.displayed_pseudocode() {
+                    self.copy_to_clipboard(ctx, &pseudocode, Text::PseudoCodeCopied);
+                }
+            }
+            Command::DecompilerPreferences => {
+                self.preferences_tab = PreferencesTab::Decompiler;
+                self.dialogs.open(Dialog::Preferences);
+            }
             Command::ToggleDecompilationCache => {
                 self.preferences.cache_decompilations = !self.preferences.cache_decompilations;
             }
@@ -1211,6 +1300,9 @@ impl DesdecApp {
             | Command::WalkBack
             | Command::WalkToEntry
             | Command::WalkClear => self.run_walk_command(command),
+            Command::DisassemblyStartEntry => self.select_disassembly_start(DisassemblyStart::EntryPoint),
+            Command::DisassemblyStartMain => self.select_disassembly_start(DisassemblyStart::Main),
+            Command::DisassemblyStartProbable => self.select_disassembly_start(DisassemblyStart::ProbableFunction),
             Command::MachineRun
             | Command::MachineStepInto
             | Command::MachineStepOver
@@ -1459,6 +1551,8 @@ impl DesdecApp {
                 self.file_bytes = prepared.file_bytes;
                 self.xrefs = prepared.xrefs;
                 self.analysis = Some(prepared.analysis);
+                self.selected_instruction =
+                    self.disassembly_start(self.preferences.disassembly_start);
                 self.error = None;
                 // Whatever was worked out about these bytes last time.
                 self.annotations = self.stored_annotations().unwrap_or_default();
@@ -1771,6 +1865,19 @@ impl DesdecApp {
     /// Starts the selected external decompiler, unless its result is already
     /// on screen. Does nothing when the built-in engine is selected.
     pub fn request_decompilation(&mut self, ctx: &egui::Context, address: Option<u64>) {
+        self.request_decompilation_with_cache(ctx, address, true);
+    }
+
+    fn request_decompilation_without_cache(&mut self, ctx: &egui::Context, address: Option<u64>) {
+        self.request_decompilation_with_cache(ctx, address, false);
+    }
+
+    fn request_decompilation_with_cache(
+        &mut self,
+        ctx: &egui::Context,
+        address: Option<u64>,
+        use_cache: bool,
+    ) {
         let choice = self.preferences.decompiler;
         let Some(engine) = choice.engine() else {
             self.external = ExternalDecompilation::default();
@@ -1790,7 +1897,7 @@ impl DesdecApp {
         // A cached answer is the same text the engine produced for these exact
         // bytes, so it is shown straight away rather than paying the engine's
         // start-up again.
-        if let Some(cached) = self.cached_decompilation(engine, address) {
+        if use_cache && let Some(cached) = self.cached_decompilation(engine, address) {
             self.external = ExternalDecompilation {
                 source: Some((choice, address)),
                 text: Some(cached),
@@ -2857,6 +2964,24 @@ mod tests {
         assert!(!app.dialogs.is_open(Dialog::Preferences));
 
         assert!(!app.dismiss_topmost_dialog());
+    }
+
+    #[test]
+    fn disassembly_start_commands_select_and_remember_the_requested_landmark() {
+        let mut app = crate::testing::opened_app(WorkspaceView::Overview);
+        let expected = app.disassembly_start(DisassemblyStart::ProbableFunction);
+
+        app.select_disassembly_start(DisassemblyStart::ProbableFunction);
+
+        assert_eq!(
+            app.preferences.disassembly_start,
+            DisassemblyStart::ProbableFunction
+        );
+        assert_eq!(app.selected_instruction, expected);
+        assert_eq!(app.pending_instruction_scroll, expected);
+        if expected.is_some() {
+            assert_eq!(app.active_view, WorkspaceView::Disassembly);
+        }
     }
 
     /// A press on the workspace behind the windows closes the topmost one, and
