@@ -10,3 +10,8 @@ captures_moi/
 # Le journal de collaboration reste local : il relaie le travail entre
 # sessions, il ne fait pas partie de ce que le dépôt publie.
 docs/ai-collaboration/
+
+# Une copie locale des sources de x64dbg, consultée pour la parité des
+# fonctions : soixante-dix mégaoctets et son propre dépôt git, qui n'ont
+# rien à faire dans celui-ci.
+/x64dbg/
