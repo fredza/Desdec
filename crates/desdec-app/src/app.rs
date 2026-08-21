@@ -335,7 +335,13 @@ pub enum PseudocodeAssembly {
 
 /// The history stays useful without letting a long-lived preferences file grow
 /// indefinitely. New successful analyses are inserted at the front.
-const RECENT_BINARY_LIMIT: usize = 12;
+///
+/// Twelve of them filled the menu's whole height and pushed the views out of
+/// sight, which is the opposite of what a shortcut is for: nobody scrolls a
+/// side panel looking for the file they opened nine binaries ago. Five is
+/// what a glance takes in, and the file dialog opens on the last directory
+/// used for anything older.
+const RECENT_BINARY_LIMIT: usize = 5;
 
 /// Work handed to background threads so the interface never blocks on the file
 /// system or on a native dialog.
@@ -687,10 +693,13 @@ pub struct DesdecApp {
 
 impl DesdecApp {
     pub fn new(creation_context: &eframe::CreationContext<'_>) -> Self {
-        let preferences: Preferences = creation_context
+        let mut preferences: Preferences = creation_context
             .storage
             .and_then(|storage| eframe::get_value(storage, PREFERENCES_KEY))
             .unwrap_or_default();
+        // A file written when the history was longer would otherwise keep its
+        // extra entries until the next binary is opened.
+        preferences.recent_binaries.truncate(RECENT_BINARY_LIMIT);
         apply_theme(&creation_context.egui_ctx, preferences.theme);
         let mut app = Self {
             persisted_preferences: preferences.clone(),
