@@ -746,6 +746,8 @@ mod tests {
             sections: Vec::new(),
             strings: Vec::new(),
             symbols: Vec::new(),
+            import_slots: Vec::new(),
+            network: crate::analysis::NetworkUse::default(),
             instructions: listing
                 .iter()
                 .map(|(address, text)| Instruction {

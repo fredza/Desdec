@@ -78,6 +78,14 @@ pub struct Cpu<'a> {
     /// Whether the code being run is sixty-four bit. It decides the width of a
     /// push, of a return address, and of the default operand size.
     pub bitness: u32,
+    /// Where a branch read its target from, when it read one from memory.
+    ///
+    /// Set as the branch is carried out rather than worked out afterwards: the
+    /// address it read is the one its registers held then, and a call has
+    /// moved the stack pointer by the time anything could ask again. It is
+    /// what names the call, since a slot no loader has filled in holds zero
+    /// and the address branched to says nothing at all.
+    pub branched_through: Option<u64>,
 }
 
 impl Cpu<'_> {
@@ -1017,6 +1025,7 @@ impl Cpu<'_> {
             OpKind::Memory => {
                 let size = instruction.memory_size().size().clamp(1, 8);
                 let address = self.effective_address(instruction, 0);
+                self.branched_through = Some(address);
                 self.load(address, size)
             }
             // A far branch changes the code segment, and there is no segment

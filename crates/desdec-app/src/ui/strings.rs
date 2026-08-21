@@ -628,6 +628,8 @@ mod tests {
                 },
             ],
             symbols: Vec::new(),
+            import_slots: Vec::new(),
+            network: desdec_core::NetworkUse::default(),
             instructions: vec![Instruction {
                 address: 0x5000,
                 bytes: desdec_core::InstructionBytes::new(&[0x48, 0x8d, 0x05]).expect("short"),

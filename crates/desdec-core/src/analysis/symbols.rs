@@ -242,7 +242,10 @@ fn pe(file: &[u8]) -> Vec<Symbol> {
 }
 
 /// The header fields needed to walk a PE's directories.
-struct PeHeaders {
+///
+/// Read here and shared with [`super::imports`], which walks the same import
+/// directory for the addresses this one takes the names from.
+pub(crate) struct PeHeaders {
     optional: usize,
     /// Where the image is mapped, so an export's address matches the
     /// disassembly rather than being a bare offset.
@@ -255,7 +258,17 @@ struct PeHeaders {
 }
 
 impl PeHeaders {
-    fn read(file: &[u8]) -> Option<Self> {
+    /// Where the image is mapped.
+    pub(crate) const fn image_base(&self) -> u64 {
+        self.image_base
+    }
+
+    /// Whether addresses in this image are eight bytes wide rather than four.
+    pub(crate) const fn wide(&self) -> bool {
+        self.plus
+    }
+
+    pub(crate) fn read(file: &[u8]) -> Option<Self> {
         let order = Endianness::Little;
         let signature = read_u32(file, 0x3c, order)? as usize;
         if read_u32(file, signature, order)? != 0x0000_4550 {
@@ -299,7 +312,12 @@ impl PeHeaders {
     }
 
     /// One of the sixteen directories the optional header points at.
-    fn directory(&self, file: &[u8], order: Endianness, index: usize) -> Option<(u32, u32)> {
+    pub(crate) fn directory(
+        &self,
+        file: &[u8],
+        order: Endianness,
+        index: usize,
+    ) -> Option<(u32, u32)> {
         let at = self.optional + if self.plus { 112 } else { 96 } + index * 8;
         let address = read_u32(file, at, order)?;
         let size = read_u32(file, at + 4, order)?;
@@ -311,7 +329,7 @@ impl PeHeaders {
     /// The two differ: a section is padded on disk differently from memory, so
     /// reading a directory at its virtual address would land on the wrong
     /// bytes for everything past the first section.
-    fn offset_of(&self, address: u32) -> Option<usize> {
+    pub(crate) fn offset_of(&self, address: u32) -> Option<usize> {
         self.sections.iter().find_map(|(start, size, raw_at, raw)| {
             let span = (*size).max(*raw);
             let within = address >= *start && address < start.saturating_add(span);
