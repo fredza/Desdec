@@ -90,18 +90,29 @@ par un chemin à vous, et ne sont lancés qu'une fois l'un d'eux sélectionné.
 
 Le script d'installation télécharge l'archive publiée pour votre machine,
 vérifie son SHA-256 *et* sa signature, et ce n'est qu'ensuite qu'il pose le
-binaire dans `~/.local/bin` :
+binaire. Sur Linux et macOS (Apple Silicon) :
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.sh -o install.sh
 less install.sh   # il est court, et vous allez l'exécuter
-bash install.sh
+bash install.sh   # installe dans ~/.local/bin
 ```
 
-`--prefix` installe ailleurs, `--version v0.3.36` choisit une version
-précise, `--from-source` compile sur place, et `--help` donne le reste. Une
-version dont la somme ou la signature ne correspond pas est jetée, et non
-installée avec un avertissement au-dessus.
+Sur Windows (x86-64), le même script en PowerShell — aucun shell POSIX requis :
+
+```powershell
+irm https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.ps1 -OutFile install.ps1
+notepad install.ps1   # il est court, et vous allez l'exécuter
+.\install.ps1        # installe dans %LOCALAPPDATA%\Programs\Desdec
+```
+
+Les deux acceptent `--version` / `-Version v0.3.36` pour une version précise,
+`--prefix` / `-Prefix` pour installer ailleurs, et `--from-source` /
+`-FromSource` pour compiler sur place ; `--help` et `Get-Help .\install.ps1`
+donnent le reste. Une version dont la somme ou la signature ne correspond pas
+est jetée, et non installée avec un avertissement au-dessus. Vérifier une
+signature demande `gpg` — Gpg4win sous Windows — et sans lui le script
+s'arrête plutôt que d'installer ce qu'il n'a pas pu vérifier.
 
 ### Depuis les sources
 

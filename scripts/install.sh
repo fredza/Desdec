@@ -125,7 +125,9 @@ latest_tag() {
     json_field "$body"
 }
 
-workspace="$(mktemp -d)"
+# BSD mktemp — the one on macOS — wants a template where GNU mktemp is happy
+# without one, and this script has to work on both.
+workspace="$(mktemp -d 2>/dev/null || mktemp -d -t desdec)"
 trap 'rm -rf "$workspace"' EXIT
 
 # Puts one built binary in place. Written to a temporary name in the target
@@ -194,10 +196,13 @@ install_from_release() {
     say "Checking the SHA-256"
     (
         cd "$workspace"
+        # sha256sum on Linux, shasum on macOS. Neither is asked for an
+        # option beyond --check: the output is dropped here instead, because
+        # the two disagree about how to be quiet.
         if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum --check --status "$asset.sha256"
+            sha256sum --check "$asset.sha256" >/dev/null 2>&1
         elif command -v shasum >/dev/null 2>&1; then
-            shasum -a 256 --check --status "$asset.sha256"
+            shasum -a 256 --check "$asset.sha256" >/dev/null 2>&1
         else
             die "neither sha256sum nor shasum is installed"
         fi

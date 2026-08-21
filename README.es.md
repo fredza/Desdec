@@ -90,19 +90,31 @@ una ruta propia, y solo se ejecutan una vez que se selecciona uno.
 ## Instalar y ejecutar
 
 El script de instalación descarga el archivo publicado para su máquina,
-comprueba su SHA-256 *y* su firma, y solo entonces coloca el binario en
-`~/.local/bin`:
+comprueba su SHA-256 *y* su firma, y solo entonces coloca el binario. En Linux
+y macOS (Apple Silicon):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.sh -o install.sh
 less install.sh   # es corto, y está a punto de ejecutarlo
-bash install.sh
+bash install.sh   # instala en ~/.local/bin
 ```
 
-`--prefix` instala en otro sitio, `--version v0.3.36` elige una versión
-concreta, `--from-source` compila aquí mismo, y `--help` enumera el resto.
-Una versión cuya suma o firma no coincide se descarta, en lugar de instalarse
-con un aviso encima.
+En Windows (x86-64), el mismo script en PowerShell — sin necesidad de un shell
+POSIX:
+
+```powershell
+irm https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.ps1 -OutFile install.ps1
+notepad install.ps1   # es corto, y está a punto de ejecutarlo
+.\install.ps1        # instala en %LOCALAPPDATA%\Programs\Desdec
+```
+
+Ambos aceptan `--version` / `-Version v0.3.36` para una versión concreta,
+`--prefix` / `-Prefix` para instalar en otro sitio, y `--from-source` /
+`-FromSource` para compilar aquí mismo; `--help` y `Get-Help .\install.ps1`
+enumeran el resto. Una versión cuya suma o firma no coincide se descarta, en
+lugar de instalarse con un aviso encima. Comprobar una firma necesita `gpg`
+—Gpg4win en Windows— y sin él el script se detiene en vez de instalar algo que
+no ha podido comprobar.
 
 ### Desde las fuentes
 

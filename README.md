@@ -89,19 +89,30 @@ your own, and are only ever started once you select one.
 ## Install and run
 
 The install script downloads the archive published for your machine, checks
-its SHA-256 *and* its signature, and only then puts the binary in
-`~/.local/bin`:
+its SHA-256 *and* its signature, and only then puts the binary in place. On
+Linux and macOS (Apple Silicon):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.sh -o install.sh
 less install.sh   # it is short, and you are about to run it
-bash install.sh
+bash install.sh   # installs into ~/.local/bin
 ```
 
-`--prefix` installs somewhere else, `--version v0.3.36` picks a particular
-release, `--from-source` builds it here instead, and `--help` lists the rest.
+On Windows (x86-64), the same script in PowerShell — no POSIX shell needed:
+
+```powershell
+irm https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.ps1 -OutFile install.ps1
+notepad install.ps1   # it is short, and you are about to run it
+.\install.ps1        # installs into %LOCALAPPDATA%\Programs\Desdec
+```
+
+Both take `--version` / `-Version v0.3.36` for a particular release,
+`--prefix` / `-Prefix` for somewhere else, and `--from-source` / `-FromSource`
+to build it here instead; `--help` and `Get-Help .\install.ps1` list the rest.
 A release whose checksum or signature does not match is discarded rather than
-installed with a warning above it.
+installed with a warning above it. Checking a signature needs `gpg` — Gpg4win
+on Windows — and without it the script stops rather than install something it
+could not check.
 
 ### From source
 
