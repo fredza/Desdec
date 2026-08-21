@@ -44,9 +44,11 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         .resizable(true)
         .default_size(ASSUMED_SIZE)
         .min_width(420.0);
-    if let Some(step) = app.dialogs.opening_step(Dialog::Plugins) {
-        window = window.current_pos(crate::ui::opening_position(ctx, id, step, ASSUMED_SIZE));
-    }
+    window = crate::ui::centred(
+        window,
+        ctx,
+        app.dialogs.opening_step(Dialog::Plugins).is_some(),
+    );
     let mut action = None;
     window.show(ctx, |ui| {
         action = contents(app, ui);

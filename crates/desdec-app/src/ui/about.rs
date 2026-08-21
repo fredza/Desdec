@@ -3,7 +3,6 @@ use eframe::egui;
 use crate::{
     app::{DesdecApp, Dialog},
     i18n::Text,
-    ui::opening_position,
 };
 
 /// Where the source and the licences live. Written once here and shown in the
@@ -22,9 +21,6 @@ pub const AUTHOR: &str = "Frédéric Zawalski @2026 bdom";
 /// character.
 pub const SIGNING_KEY: &str = "C9A3 1D07 46E0 65C4 E2EA  33F6 08FA 1D81 8A91 F329";
 
-/// Size assumed the first time the window opens, before egui has measured it.
-const ASSUMED_SIZE: egui::Vec2 = egui::vec2(400.0, 260.0);
-
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     if !app.dialogs.is_open(Dialog::About) {
         return;
@@ -37,9 +33,11 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         .id(id)
         .open(&mut open)
         .collapsible(false);
-    if let Some(step) = app.dialogs.opening_step(Dialog::About) {
-        window = window.current_pos(opening_position(ctx, id, step, ASSUMED_SIZE));
-    }
+    window = crate::ui::centred(
+        window,
+        ctx,
+        app.dialogs.opening_step(Dialog::About).is_some(),
+    );
     window.show(ctx, |ui| {
         ui.heading("Desdec");
         ui.small(version_line());

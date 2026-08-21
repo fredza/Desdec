@@ -29,9 +29,11 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         .default_size(SIZE)
         .min_width(360.0)
         .min_height(260.0);
-    if let Some(step) = app.dialogs.opening_step(Dialog::CommandPalette) {
-        window = window.current_pos(crate::ui::opening_position(ctx, id, step, SIZE));
-    }
+    window = crate::ui::centred(
+        window,
+        ctx,
+        app.dialogs.opening_step(Dialog::CommandPalette).is_some(),
+    );
     window.show(ctx, |ui| {
         chosen = contents(app, ui);
     });

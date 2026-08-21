@@ -49,34 +49,33 @@ pub fn section_title(label: &str) -> egui::RichText {
 /// layout falls back to a single column.
 pub const TWO_COLUMN_WIDTH: f32 = 900.0;
 
-/// Where an ordinary window opens: at the centre of the workspace.
+/// Opens a window at the exact centre of the workspace.
 ///
-/// `step` is retained for all ordinary dialogs to use the same opening path,
-/// but deliberately does not move a window away from the centre: a centred
-/// answer is easier to find than a growing cascade.
+/// Centring by pivot rather than by arithmetic means the window never has to
+/// be measured first: a dialog lands centred on the very frame it appears,
+/// instead of opening off-centre and jumping into place once egui has laid it
+/// out. The reader can move it afterwards; only the opening is decided here.
 ///
-/// The size comes from the last time the window was laid out; the first
-/// opening has none, so `assumed` stands in and is corrected on the frame
-/// after — a window has to be measured before it can be centred.
-pub fn opening_position(
+/// Every dialog opens this way except the two that answer a question about one
+/// particular line — the corresponding disassembly and the operand inspection.
+/// Those open beside the pointer, where the eye already is.
+///
+/// The pivot is set on every frame, not only on the opening one: egui stores a
+/// window's position as the pivot point it was last given, so a window placed
+/// by its centre and then drawn without a pivot would have that centre read
+/// back as its top-left corner and jump down and to the right.
+#[must_use]
+pub fn centred<'a>(
+    window: egui::Window<'a>,
     ctx: &egui::Context,
-    id: egui::Id,
-    step: usize,
-    assumed: egui::Vec2,
-) -> egui::Pos2 {
-    let _ = step;
-    let size = ctx
-        .memory(|memory| memory.area_rect(id))
-        .map_or(assumed, |rect| rect.size());
-    let screen = ctx.screen_rect();
-    let centred = screen.center() - size / 2.0;
-    // A modal answer should begin where the eye already expects it. Readers
-    // can still move it afterwards, but opening every ordinary dialog in the
-    // same predictable place is less surprising than a growing cascade.
-    egui::pos2(
-        centred.x.min(screen.right() - size.x).max(screen.left()),
-        centred.y.min(screen.bottom() - size.y).max(screen.top()),
-    )
+    opening: bool,
+) -> egui::Window<'a> {
+    let window = window.pivot(egui::Align2::CENTER_CENTER);
+    if opening {
+        window.current_pos(ctx.screen_rect().center())
+    } else {
+        window
+    }
 }
 
 /// Where an inspection started from the disassembly opens: just below the

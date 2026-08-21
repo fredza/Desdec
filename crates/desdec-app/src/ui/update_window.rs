@@ -49,9 +49,11 @@ pub fn consent(app: &mut DesdecApp, ctx: &egui::Context) {
         .collapsible(false)
         .resizable(false)
         .default_width(SIZE.x);
-    if let Some(step) = app.dialogs.opening_step(Dialog::UpdateConsent) {
-        window = window.current_pos(crate::ui::opening_position(ctx, id, step, SIZE));
-    }
+    window = crate::ui::centred(
+        window,
+        ctx,
+        app.dialogs.opening_step(Dialog::UpdateConsent).is_some(),
+    );
     window.show(ctx, |ui| {
         consent_banner(ui, language, tint);
         ui.add_space(10.0);
@@ -104,9 +106,11 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         .collapsible(false)
         .resizable(true)
         .default_width(SIZE.x);
-    if let Some(step) = app.dialogs.opening_step(Dialog::Update) {
-        window = window.current_pos(crate::ui::opening_position(ctx, id, step, SIZE));
-    }
+    window = crate::ui::centred(
+        window,
+        ctx,
+        app.dialogs.opening_step(Dialog::Update).is_some(),
+    );
     window.show(ctx, |ui| {
         ui.set_min_width(SIZE.x);
         match &app.update {

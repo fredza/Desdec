@@ -549,8 +549,11 @@ fn show_assembly_preview(app: &mut DesdecApp, ctx: &egui::Context) {
         .collapsible(false)
         .resizable(true)
         .default_width(ASSEMBLY_SIZE.x);
-    if let Some(step) = app.dialogs.opening_step(Dialog::Assembly) {
-        window = window.current_pos(crate::ui::opening_position(ctx, id, step, ASSEMBLY_SIZE));
+    // The one window that is not centred: it answers about the pseudo-code
+    // line just clicked, so it opens beside the pointer rather than over the
+    // very listing the reader is comparing it against.
+    if app.dialogs.opening_step(Dialog::Assembly).is_some() {
+        window = window.current_pos(crate::ui::under_cursor(ctx, ASSEMBLY_SIZE));
     }
     window.show(ctx, |ui| {
         if rows.is_empty() {

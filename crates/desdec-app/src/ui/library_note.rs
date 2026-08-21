@@ -14,8 +14,6 @@ use crate::{
 };
 
 const WIDTH: f32 = 430.0;
-/// Height assumed before the window has been laid out once.
-const ASSUMED_HEIGHT: f32 = 155.0;
 
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     if !app.dialogs.is_open(Dialog::Library) {
@@ -37,19 +35,11 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         .collapsible(false)
         .resizable(true)
         .default_width(WIDTH);
-    // Ordinary dialogs open at the workspace centre. Operand inspection from
-    // the disassembly is the one deliberate, pointer-local exception.
+    // Ordinary dialogs open at the workspace centre. The windows answering
+    // about one disassembly line are the deliberate, pointer-local exceptions.
     let step = app.dialogs.opening_step(Dialog::Library);
     app.explaining_library_at = None;
-    if let Some(step) = step {
-        window = window.current_pos(crate::ui::opening_position(
-            ctx,
-            id,
-            step,
-            // egui adds the window frame around the requested content width.
-            egui::vec2(WIDTH + 10.0, ASSUMED_HEIGHT),
-        ));
-    }
+    window = crate::ui::centred(window, ctx, step.is_some());
     window.show(ctx, |ui| {
         ui.label(egui::RichText::new(&library).monospace().strong());
         ui.add_space(10.0);

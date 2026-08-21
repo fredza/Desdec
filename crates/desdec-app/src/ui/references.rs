@@ -40,9 +40,11 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         .collapsible(false)
         .resizable(true)
         .default_size(ASSUMED_SIZE);
-    if let Some(step) = app.dialogs.opening_step(Dialog::References) {
-        window = window.current_pos(crate::ui::opening_position(ctx, id, step, ASSUMED_SIZE));
-    }
+    window = crate::ui::centred(
+        window,
+        ctx,
+        app.dialogs.opening_step(Dialog::References).is_some(),
+    );
     let mut go_to = None;
     window.show(ctx, |ui| {
         go_to = contents(app, ui, address);
