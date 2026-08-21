@@ -32,6 +32,15 @@ const NOTE: egui::Color32 = egui::Color32::from_rgb(94, 158, 236);
 /// the arrows, in that order from the edge.
 const GUTTER_WIDTH: f32 = 36.0;
 
+/// A thin, clickable overview at the far right of the two code readings.
+/// It is an overview ruler, not a miniature listing: hexadecimal at that size
+/// says nothing, whereas position and the reader's marks still do.
+const OVERVIEW_WIDTH: f32 = 16.0;
+
+/// Search hits are warm, so they do not merge with a note, bookmark or the
+/// Machine's green/red state.
+const SEARCH_MARK: egui::Color32 = egui::Color32::from_rgb(241, 169, 75);
+
 /// Where the note dot sits in the gutter, from its left edge, and how big it
 /// is. Outside the arrows' lanes on purpose: a mark that a jump can be drawn
 /// through is one the reader has to look twice at.
@@ -154,46 +163,82 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
     ui.add_space(8.0);
     let scroll_target = app.pending_instruction_scroll;
     let attention = decompile::active_attention(ui.ctx(), &mut app.instruction_attention);
+    // Preserve the last completed search rather than re-running it while this
+    // view is drawn. The ruler only needs its decoded addresses.
+    let search_addresses: Vec<u64> = app.search.result_addresses().collect();
+    let overview_width =
+        (ui.available_width() - OVERVIEW_WIDTH - ui.spacing().item_spacing.x).max(0.0);
+    let overview_height = ui.available_height();
     let mut asked = Asked::default();
-    let selected_instruction = &mut app.selected_instruction;
-    let pending_scroll = &mut app.pending_instruction_scroll;
-    // These are two distinct readings of the code, not adjacent fields of one
-    // table. A clear gutter makes it possible to follow a long instruction
-    // line without the pseudo-C beside it joining it visually.
-    const PSEUDOCODE_GUTTER: f32 = 36.0;
-    let ordinary_spacing = ui.spacing().item_spacing;
-    ui.spacing_mut().item_spacing.x = PSEUDOCODE_GUTTER;
-    ui.columns(2, |columns| {
-        // `columns` inherits the spacing used for its gutter. Restore the
-        // usual compact spacing inside each column itself.
-        columns[0].spacing_mut().item_spacing = ordinary_spacing;
-        columns[1].spacing_mut().item_spacing = ordinary_spacing;
-        columns[1].strong(text(language, Text::PseudoCode));
-        columns[1].small(text(language, Text::PseudoCodeHelp));
-        // Clicking a pseudo-code line here only moves the selection: the
-        // assembly it stands for is already in the left column, so the address
-        // the panel reports has no window to open.
-        let _selected_by_click = decompile::panel(
-            &mut columns[1],
-            analysis,
-            selected_instruction,
-            scroll_target,
-            pending_scroll,
-            attention,
-        );
-        asked = instructions(
-            &mut columns[0],
-            analysis,
-            selected_instruction,
-            scroll_target,
-            pending_scroll,
-            attention,
-            &listing,
-        );
-    });
-    ui.spacing_mut().item_spacing = ordinary_spacing;
-    if *pending_scroll == scroll_target {
-        *pending_scroll = None;
+    let mut overview_jump = None;
+    {
+        let selected_instruction = &mut app.selected_instruction;
+        let pending_scroll = &mut app.pending_instruction_scroll;
+        let mut visible_rows = 0..0;
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(overview_width, overview_height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    // These are two distinct readings of the code, not
+                    // adjacent fields of one table. A clear gutter makes it
+                    // possible to follow a long instruction line without the
+                    // pseudo-C beside it joining it visually.
+                    const PSEUDOCODE_GUTTER: f32 = 36.0;
+                    let ordinary_spacing = ui.spacing().item_spacing;
+                    ui.spacing_mut().item_spacing.x = PSEUDOCODE_GUTTER;
+                    ui.columns(2, |columns| {
+                        // `columns` inherits the spacing used for its gutter.
+                        // Restore the usual compact spacing inside each
+                        // column itself.
+                        columns[0].spacing_mut().item_spacing = ordinary_spacing;
+                        columns[1].spacing_mut().item_spacing = ordinary_spacing;
+                        columns[1].strong(text(language, Text::PseudoCode));
+                        columns[1].small(text(language, Text::PseudoCodeHelp));
+                        // Clicking a pseudo-code line here only moves the
+                        // selection: the assembly it stands for is already in
+                        // the left column, so the address it reports has no
+                        // window to open.
+                        let _selected_by_click = decompile::panel(
+                            &mut columns[1],
+                            analysis,
+                            selected_instruction,
+                            scroll_target,
+                            pending_scroll,
+                            attention,
+                        );
+                        let result = instructions(
+                            &mut columns[0],
+                            analysis,
+                            selected_instruction,
+                            scroll_target,
+                            pending_scroll,
+                            attention,
+                            &listing,
+                        );
+                        asked = result.asked;
+                        visible_rows = result.visible_rows;
+                    });
+                    ui.spacing_mut().item_spacing = ordinary_spacing;
+                },
+            );
+            overview_jump = overview(
+                ui,
+                analysis,
+                &listing,
+                &visible_rows,
+                *selected_instruction,
+                attention,
+                &search_addresses,
+                text(language, Text::DisassemblyOverview),
+            );
+        });
+        if *pending_scroll == scroll_target {
+            *pending_scroll = None;
+        }
+    }
+    if let Some(address) = overview_jump {
+        app.go_to_address(ui.ctx(), address);
     }
     action.inspect = asked.inspect;
     apply(app, &asked);
@@ -418,6 +463,13 @@ fn step_with_arrow_keys(app: &mut DesdecApp, ctx: &egui::Context) {
     ctx.request_repaint();
 }
 
+/// What the virtualised listing drew this frame, including the rows represented
+/// by the overview ruler's viewport.
+struct InstructionListing {
+    asked: Asked,
+    visible_rows: std::ops::Range<usize>,
+}
+
 fn instructions(
     ui: &mut egui::Ui,
     analysis: &Analysis,
@@ -426,9 +478,10 @@ fn instructions(
     pending_scroll: &mut Option<u64>,
     attention: Option<u64>,
     listing: &Listing,
-) -> Asked {
+) -> InstructionListing {
     let language = listing.language;
     let mut asked = Asked::default();
+    let mut visible_rows = 0..0;
     decompile::ensure_selected_instruction(analysis, selected_instruction);
     // Only the visible rows are laid out: a decoded binary reaches a hundred
     // thousand instructions, and a widget for each took seconds per frame.
@@ -449,6 +502,7 @@ fn instructions(
     let total_rows = LEADING + analysis.instructions.len() + listing.sections.len();
     area.auto_shrink([false, false])
         .show_rows(ui, ROW_HEIGHT, total_rows, |ui, rows| {
+            visible_rows = rows.clone();
             let body = window(&analysis.instructions, listing.sections, &rows, LEADING);
             // Where each row's gutter cell ended up, so the arrows can be
             // drawn over the whole listing once it is laid out. Positions
@@ -502,7 +556,190 @@ fn instructions(
                 });
             draw_jumps(ui, &instructions, &gutters, *selected_instruction);
         });
-    asked
+    InstructionListing {
+        asked,
+        visible_rows,
+    }
+}
+
+/// Draws the thin overview ruler at the right edge of the disassembly.
+///
+/// It carries only positions and deliberately uses the listing's row map: a
+/// section heading is a row in the virtualiser, so omitting it here would make
+/// a click drift farther from its target with every section passed.
+#[allow(clippy::too_many_arguments)]
+fn overview(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    listing: &Listing,
+    visible_rows: &std::ops::Range<usize>,
+    selected: Option<u64>,
+    attention: Option<u64>,
+    search_addresses: &[u64],
+    tooltip: &str,
+) -> Option<u64> {
+    let total_rows = LEADING + analysis.instructions.len() + listing.sections.len();
+    let height = ui.available_height().max(ROW_HEIGHT * 8.0);
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(OVERVIEW_WIDTH, height),
+        egui::Sense::click_and_drag(),
+    );
+    let response = response.on_hover_text(tooltip);
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, ui.visuals().faint_bg_color);
+    painter.rect_stroke(
+        rect,
+        3.0,
+        ui.visuals().window_stroke,
+        egui::StrokeKind::Inside,
+    );
+
+    let row_of_address = |address| {
+        analysis
+            .instruction_index(address)
+            .map(|index| row_of(listing.sections, LEADING, index))
+    };
+
+    // The rectangle is the reader's viewport; it is deliberately translucent
+    // so marks within it remain visible.
+    if !visible_rows.is_empty() {
+        let start = overview_y(rect, visible_rows.start, total_rows);
+        let end = overview_y(rect, visible_rows.end.saturating_sub(1), total_rows);
+        let viewport = egui::Rect::from_x_y_ranges(
+            (rect.left() + 1.0)..=(rect.right() - 1.0),
+            (start - 1.0)..=(end + 1.0).max(start + 3.0),
+        );
+        painter.rect_filled(
+            viewport,
+            1.0,
+            ui.visuals().selection.bg_fill.gamma_multiply(0.35),
+        );
+        painter.rect_stroke(
+            viewport,
+            1.0,
+            ui.visuals().selection.stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    // A note and a bookmark share one row; the bookmark is the stronger mark.
+    for (address, annotation) in listing.notes.iter() {
+        if let Some(row) = row_of_address(address) {
+            let color = if annotation.bookmarked {
+                listing.accent
+            } else {
+                NOTE
+            };
+            overview_mark(painter, rect, row, total_rows, color, 2.0);
+        }
+    }
+    for address in search_addresses {
+        if let Some(row) = row_of_address(*address) {
+            overview_mark(painter, rect, row, total_rows, SEARCH_MARK, 1.5);
+        }
+    }
+    if let Some(machine) = listing.machine {
+        for (address, _) in machine.breakpoints() {
+            if let Some(row) = row_of_address(address) {
+                overview_mark(
+                    painter,
+                    rect,
+                    row,
+                    total_rows,
+                    crate::ui::machine::BREAKPOINT,
+                    2.5,
+                );
+            }
+        }
+        if let Some(row) = row_of_address(machine.instruction_pointer()) {
+            overview_mark(
+                painter,
+                rect,
+                row,
+                total_rows,
+                crate::ui::machine::CURRENT,
+                3.0,
+            );
+        }
+    }
+    if let Some(row) = attention.and_then(row_of_address) {
+        overview_mark(painter, rect, row, total_rows, SEARCH_MARK, 3.0);
+    }
+    if let Some(row) = selected.and_then(row_of_address) {
+        overview_mark(
+            painter,
+            rect,
+            row,
+            total_rows,
+            ui.visuals().selection.bg_fill,
+            3.0,
+        );
+    }
+
+    response
+        .interact_pointer_pos()
+        .filter(|_| response.clicked() || response.dragged())
+        .and_then(|pointer| {
+            let row = overview_row(rect, pointer.y, total_rows);
+            instruction_at_overview_row(analysis, listing.sections, row)
+                .map(|instruction| instruction.address)
+        })
+}
+
+/// The first instruction at or below an overview row. It is found through the
+/// same section-aware row map that laid out the virtualised listing, rather
+/// than by subtracting a fixed number of headings.
+fn instruction_at_overview_row<'a>(
+    analysis: &'a Analysis,
+    sections: &[usize],
+    row: usize,
+) -> Option<&'a Instruction> {
+    let mut low = 0;
+    let mut high = analysis.instructions.len();
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if row_of(sections, LEADING, middle) < row {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    analysis
+        .instructions
+        .get(low.min(analysis.instructions.len().saturating_sub(1)))
+}
+
+/// The ruler is a continuous position control, clamped so a click near either
+/// end always selects a decoded instruction rather than a row beyond it.
+fn overview_row(rect: egui::Rect, y: f32, total_rows: usize) -> usize {
+    if total_rows <= 1 || rect.height() <= 0.0 {
+        return 0;
+    }
+    let fraction = ((y - rect.top()) / rect.height()).clamp(0.0, 1.0);
+    (fraction * (total_rows.saturating_sub(1)) as f32).round() as usize
+}
+
+fn overview_y(rect: egui::Rect, row: usize, total_rows: usize) -> f32 {
+    let last = total_rows.saturating_sub(1).max(1);
+    rect.top() + rect.height() * (row.min(last) as f32 / last as f32)
+}
+
+fn overview_mark(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    row: usize,
+    total_rows: usize,
+    color: egui::Color32,
+    width: f32,
+) {
+    let y = overview_y(rect, row, total_rows);
+    painter.line_segment(
+        [
+            egui::pos2(rect.left() + 2.0, y),
+            egui::pos2(rect.right() - 2.0, y),
+        ],
+        egui::Stroke::new(width, color),
+    );
 }
 
 /// Where each section begins in the listing: one instruction index per
@@ -1321,7 +1558,10 @@ fn stack_cell(
 mod tests {
     use eframe::egui;
 
-    use super::{JUMP, is_jump, jump_target, lanes, row_of, run_marks, section_starts};
+    use super::{
+        JUMP, LEADING, instruction_at_overview_row, is_jump, jump_target, lanes, overview_row,
+        row_of, run_marks, section_starts,
+    };
     use crate::{
         app::{Dialog, WorkspaceView},
         commands::Command,
@@ -1331,6 +1571,29 @@ mod tests {
         },
         ui::views,
     };
+
+    #[test]
+    fn the_overview_clamps_its_ends_and_lands_on_decoded_code() {
+        let rect = egui::Rect::from_min_size(egui::pos2(20.0, 100.0), egui::vec2(16.0, 300.0));
+        let analysis = reference_analysis();
+        let sections = section_starts(analysis);
+        let total = LEADING + analysis.instructions.len() + sections.len();
+
+        assert_eq!(overview_row(rect, -1_000.0, total), 0);
+        assert_eq!(overview_row(rect, 1_000.0, total), total.saturating_sub(1));
+        assert!(
+            instruction_at_overview_row(analysis, &sections, overview_row(rect, rect.top(), total))
+                .is_some()
+        );
+        assert!(
+            instruction_at_overview_row(
+                analysis,
+                &sections,
+                overview_row(rect, rect.bottom(), total),
+            )
+            .is_some()
+        );
+    }
 
     /// The listing must not walk sideways as the reader scrolls.
     ///

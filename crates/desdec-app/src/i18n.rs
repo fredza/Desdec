@@ -810,6 +810,11 @@ translations! {
         "The ↑ and ↓ keys step from one instruction to the next; the green arrows join each jump to the instruction it lands on.",
         "Las teclas ↑ y ↓ pasan de una instrucción a la siguiente; las flechas verdes unen cada salto con la instrucción en la que cae.",
     ],
+    DisassemblyOverview => [
+        "Aperçu du listing : cliquez ou faites glisser pour aller à cette zone. Il marque la zone visible, la sélection, les recherches, vos notes, signets, points d’arrêt et la position de la Machine.",
+        "Listing overview: click or drag to go to that area. It marks the visible area, selection, searches, your notes, bookmarks, breakpoints and the Machine position.",
+        "Vista general del listado: haga clic o arrastre para ir a esa zona. Marca la zona visible, la selección, búsquedas, notas, marcadores, puntos de interrupción y la posición de la Máquina.",
+    ],
     TargetInstruction => ["Instruction visée", "Instruction there", "Instrucción destino"],
     MoreWithRightClick => [
         "Clic droit : l’analyse complète de l’opérande.",

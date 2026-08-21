@@ -31,6 +31,15 @@ pub struct State {
     asked: Option<(Mode, String)>,
 }
 
+impl State {
+    /// Addresses from the last completed search, for the disassembly overview.
+    /// A result in unmapped data has no decoded row and is deliberately left
+    /// out by its caller rather than being attached to a nearby instruction.
+    pub(crate) fn result_addresses(&self) -> impl Iterator<Item = u64> + '_ {
+        self.results.hits.iter().filter_map(|hit| hit.address)
+    }
+}
+
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     if !app.dialogs.is_open(Dialog::Search) {
         return;
