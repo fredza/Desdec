@@ -11,7 +11,7 @@ use eframe::egui;
 
 use crate::{
     i18n::{Language, Text, text},
-    ui::{ERROR, MUTED, card, format_size},
+    ui::{ERROR, MUTED, card, format_size, monospace_value},
 };
 
 /// Extra identity rows, added to the file card already open in a `Grid`.
@@ -36,7 +36,7 @@ pub fn identity_rows(ui: &mut egui::Ui, analysis: &Analysis, language: Language)
 
     if let Some(interpreter) = &details.interpreter {
         ui.strong(text(language, Text::Interpreter));
-        ui.monospace(interpreter);
+        monospace_value(ui, interpreter);
         ui.end_row();
     }
 
@@ -92,7 +92,7 @@ fn source_language_row(ui: &mut egui::Ui, analysis: &Analysis, language: Languag
         .find_map(|found| found.toolchain.as_ref())
     {
         ui.strong(text(language, Text::Toolchain));
-        ui.label(egui::RichText::new(toolchain).monospace());
+        monospace_value(ui, toolchain);
         ui.end_row();
     }
 }
@@ -200,8 +200,13 @@ pub fn digest_row(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
     ui.add_space(8.0);
     ui.strong(text(language, Text::Digest));
     match analysis.sha256 {
+        // Wrapped rather than truncated: half a digest answers nothing, and
+        // the reader is here to compare it against another one. Sixty-four
+        // characters take two lines in a narrow card, which is the price.
         Some(digest) => {
-            ui.monospace(hash::to_hex(&digest));
+            ui.add(
+                egui::Label::new(egui::RichText::new(hash::to_hex(&digest)).monospace()).wrap(),
+            );
         }
         None => {
             ui.label(egui::RichText::new(text(language, Text::DigestWithheld)).color(MUTED));
@@ -345,7 +350,7 @@ pub fn libraries_card(
         }
         for (position, library) in analysis.details.linked_libraries.iter().enumerate() {
             ui.horizontal(|ui| {
-                ui.monospace(library);
+                monospace_value(ui, library);
                 if !explain {
                     return;
                 }
@@ -421,7 +426,7 @@ fn imported_functions(
                 return;
             }
             for function in &entry.functions {
-                ui.monospace(function);
+                monospace_value(ui, function);
             }
             if entry.truncated {
                 ui.small(egui::RichText::new(text(language, Text::ImportsTruncated)).color(ERROR));
@@ -437,7 +442,12 @@ fn is_the_native_api(library: &str) -> bool {
 
 pub fn mapping_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
     card(ui, text(language, Text::LoadMapping), |ui| {
-        ui.small(text(language, Text::LoadMappingHelp));
+        // Wrapped rather than laid out on one line: half a window is narrower
+        // than this sentence, and the end of it was being cut off.
+        ui.add(
+            egui::Label::new(egui::RichText::new(text(language, Text::LoadMappingHelp)).small())
+                .wrap(),
+        );
         ui.add_space(8.0);
 
         if analysis.details.segments.is_empty() {
@@ -446,9 +456,12 @@ pub fn mapping_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) 
         }
 
         // Five columns in half a window: let the table scroll sideways rather
-        // than push the card past the column it lives in.
+        // than push the card past the column it lives in. Held to the width it
+        // is given in both directions, so the table that does not fit gets a
+        // scrollbar instead of reaching past the card.
         egui::ScrollArea::horizontal()
             .id_salt("expert_mapping_scroll")
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 egui::Grid::new("expert_mapping")
                     .num_columns(5)

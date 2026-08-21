@@ -7,7 +7,7 @@ use crate::{
     preferences::accent,
     ui::{
         ERROR, MUTED, assistant, card, columns, decompile, disassembly, dump, expert, format_size,
-        functions, machine, patches_view, segments, strings, yara,
+        functions, machine, monospace_value, patches_view, segments, strings, yara,
     },
 };
 
@@ -297,7 +297,10 @@ fn file_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
             .spacing([24.0, 10.0])
             .show(ui, |ui| {
                 ui.strong(text(language, Text::Path));
-                ui.monospace(summary.path.display().to_string());
+                // Truncated rather than laid out whole: a path is as long as
+                // the reader's directories happen to be, and one laid out
+                // plainly used to carry this card past its column.
+                monospace_value(ui, &summary.path.display().to_string());
                 ui.end_row();
 
                 ui.strong(text(language, Text::Format));
