@@ -157,7 +157,17 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
     let mut asked = Asked::default();
     let selected_instruction = &mut app.selected_instruction;
     let pending_scroll = &mut app.pending_instruction_scroll;
+    // These are two distinct readings of the code, not adjacent fields of one
+    // table. A clear gutter makes it possible to follow a long instruction
+    // line without the pseudo-C beside it joining it visually.
+    const PSEUDOCODE_GUTTER: f32 = 36.0;
+    let ordinary_spacing = ui.spacing().item_spacing;
+    ui.spacing_mut().item_spacing.x = PSEUDOCODE_GUTTER;
     ui.columns(2, |columns| {
+        // `columns` inherits the spacing used for its gutter. Restore the
+        // usual compact spacing inside each column itself.
+        columns[0].spacing_mut().item_spacing = ordinary_spacing;
+        columns[1].spacing_mut().item_spacing = ordinary_spacing;
         columns[1].strong(text(language, Text::PseudoCode));
         columns[1].small(text(language, Text::PseudoCodeHelp));
         // Clicking a pseudo-code line here only moves the selection: the
@@ -181,6 +191,7 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
             &listing,
         );
     });
+    ui.spacing_mut().item_spacing = ordinary_spacing;
     if *pending_scroll == scroll_target {
         *pending_scroll = None;
     }
