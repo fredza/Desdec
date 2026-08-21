@@ -5,7 +5,7 @@
 Release and pre-release versions are signed with a private key; this is currently required.
 The public key is distributed free of charge with the binary.
 
-Desdec is a local, open-source binary explorer for reading executables you are
+Desdec is a local, free-to-use binary explorer for reading executables you are
 allowed to read. It opens an ELF, PE or Mach-O file, tells you what is inside
 it, and never runs it on your machine.
 
@@ -207,10 +207,11 @@ DESDEC_ICON_SHEET=/tmp/icons.svg cargo test -p desdec-app icon_sheet
 
 ## Licence
 
-Apache-2.0 OR MIT, at your option: [LICENSE-APACHE](LICENSE-APACHE) and
-[LICENSE-MIT](LICENSE-MIT). Both are offered from the About window as well, so
-the terms are reachable from the application itself.
+Desdec is distributed under the [PolyForm Noncommercial 1.0.0](LICENSE).
+It may be used, copied, changed and redistributed for noncommercial purposes;
+selling it or using it commercially is not permitted. The terms are also
+offered from the About window.
 
 Unless you state otherwise, any contribution you deliberately submit for
-inclusion in this work shall be dual-licensed as above, with no additional
-terms or conditions.
+inclusion in this work shall be licensed under PolyForm Noncommercial 1.0.0,
+with no additional terms or conditions.

@@ -283,9 +283,9 @@ translations! {
     ],
     Repository => ["Dépôt du projet", "Project repository", "Repositorio del proyecto"],
     LicenceLine => [
-        "Sous licence Apache-2.0 ou MIT, au choix.",
-        "Licensed under Apache-2.0 or MIT, at your option.",
-        "Bajo licencia Apache-2.0 o MIT, a su elección.",
+        "PolyForm Noncommercial 1.0.0 : utilisation non commerciale uniquement.",
+        "PolyForm Noncommercial 1.0.0: noncommercial use only.",
+        "PolyForm Noncommercial 1.0.0: solo uso no comercial.",
     ],
     SignedBy => ["Versions signées par", "Releases signed by", "Versiones firmadas por"],
     SigningKeyHint => [
@@ -437,9 +437,9 @@ translations! {
     ],
     AboutTitle => ["À propos de Desdec", "About Desdec", "Acerca de Desdec"],
     AboutDescription => [
-        "Explorateur de binaires open source, léger et pédagogique.",
-        "A lightweight, open-source and educational binary explorer.",
-        "Un explorador de binarios ligero, educativo y de código abierto.",
+        "Explorateur de binaires léger, pédagogique et libre d’usage non commercial.",
+        "A lightweight, educational binary explorer free for noncommercial use.",
+        "Un explorador de binarios ligero y educativo, gratuito para uso no comercial.",
     ],
     CannotInspect => ["Impossible d’analyser", "Could not inspect", "No se pudo analizar"],
     Shortcuts => ["Raccourcis", "Shortcuts", "Atajos"],

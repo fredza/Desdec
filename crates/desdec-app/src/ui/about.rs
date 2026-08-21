@@ -59,12 +59,8 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             ui.small(app.t(Text::LicenceLine));
             ui.hyperlink_to(
-                egui::RichText::new("Apache-2.0").small(),
-                format!("{REPOSITORY}/blob/main/LICENSE-APACHE"),
-            );
-            ui.hyperlink_to(
-                egui::RichText::new("MIT").small(),
-                format!("{REPOSITORY}/blob/main/LICENSE-MIT"),
+                egui::RichText::new("PolyForm Noncommercial 1.0.0").small(),
+                format!("{REPOSITORY}/blob/main/LICENSE"),
             );
         });
 
@@ -163,8 +159,10 @@ mod tests {
             let output = ctx.run(crate::testing::window_input(), |ctx| show(&mut app, ctx));
             let drawn = crate::testing::drawn_text(&output.shapes);
             assert!(drawn.contains(REPOSITORY), "{language:?}: no repository");
-            assert!(drawn.contains("Apache-2.0"), "{language:?}: no Apache link");
-            assert!(drawn.contains("MIT"), "{language:?}: no MIT link");
+            assert!(
+                drawn.contains("PolyForm Noncommercial 1.0.0"),
+                "{language:?}: no PolyForm link"
+            );
         }
     }
 
