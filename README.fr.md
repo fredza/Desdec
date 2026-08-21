@@ -88,6 +88,23 @@ par un chemin à vous, et ne sont lancés qu'une fois l'un d'eux sélectionné.
 
 ## Installer et lancer
 
+Le script d'installation télécharge l'archive publiée pour votre machine,
+vérifie son SHA-256 *et* sa signature, et ce n'est qu'ensuite qu'il pose le
+binaire dans `~/.local/bin` :
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.sh -o install.sh
+less install.sh   # il est court, et vous allez l'exécuter
+bash install.sh
+```
+
+`--prefix` installe ailleurs, `--version v0.3.36` choisit une version
+précise, `--from-source` compile sur place, et `--help` donne le reste. Une
+version dont la somme ou la signature ne correspond pas est jetée, et non
+installée avec un avertissement au-dessus.
+
+### Depuis les sources
+
 Rust 1.85 ou plus récent.
 
 ```sh

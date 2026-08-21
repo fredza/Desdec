@@ -89,6 +89,23 @@ una ruta propia, y solo se ejecutan una vez que se selecciona uno.
 
 ## Instalar y ejecutar
 
+El script de instalación descarga el archivo publicado para su máquina,
+comprueba su SHA-256 *y* su firma, y solo entonces coloca el binario en
+`~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.sh -o install.sh
+less install.sh   # es corto, y está a punto de ejecutarlo
+bash install.sh
+```
+
+`--prefix` instala en otro sitio, `--version v0.3.36` elige una versión
+concreta, `--from-source` compila aquí mismo, y `--help` enumera el resto.
+Una versión cuya suma o firma no coincide se descarta, en lugar de instalarse
+con un aviso encima.
+
+### Desde las fuentes
+
 Rust 1.85 o posterior.
 
 ```sh
