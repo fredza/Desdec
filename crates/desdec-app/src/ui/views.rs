@@ -120,7 +120,7 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
         }
         WorkspaceView::Segments => segments::show(ui, analysis, language),
         WorkspaceView::Strings => {
-            let copy = strings::show(
+            let action = strings::show(
                 ui,
                 analysis,
                 &app.string_references,
@@ -128,15 +128,12 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 &mut app.strings_hide_unmapped,
                 &mut app.strings_hide_unreferenced,
                 &mut app.selected_string,
-                &mut app.selected_instruction,
-                &mut app.pending_instruction_scroll,
-                &mut app.instruction_attention,
-                &mut app.active_view,
                 language,
             );
-            if let Some(value) = copy {
+            if let Some(value) = action.copy {
                 app.copy_to_clipboard(ui.ctx(), &value, Text::AddressCopied);
             }
+            go_to = action.go_to;
         }
         WorkspaceView::Functions => {
             go_to = functions::show(

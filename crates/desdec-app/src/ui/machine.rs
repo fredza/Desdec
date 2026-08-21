@@ -126,7 +126,7 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 },
             );
         });
-    apply(app, asked);
+    apply(app, ui.ctx(), asked);
 }
 
 /// What the reader asked of one breakpoint, acted on once the borrow the panes
@@ -146,11 +146,9 @@ struct BreakpointEdit {
 }
 
 /// Acts on what a row of the breakpoint pane asked for.
-fn apply(app: &mut DesdecApp, asked: BreakpointEdit) {
+fn apply(app: &mut DesdecApp, ctx: &egui::Context, asked: BreakpointEdit) {
     if let Some(address) = asked.show {
-        app.selected_instruction = Some(address);
-        app.pending_instruction_scroll = Some(address);
-        app.active_view = crate::app::WorkspaceView::Disassembly;
+        app.go_to_address(ctx, address);
     }
     let language = app.preferences.language;
     let Some(machine) = app.machine.as_mut() else {
@@ -854,6 +852,7 @@ mod tests {
 
         super::apply(
             &mut app,
+            &ctx,
             super::BreakpointEdit {
                 condition: Some((entry, String::from("rax == 1"))),
                 ..super::BreakpointEdit::default()
@@ -869,6 +868,7 @@ mod tests {
         let before = app.journal.entries().len();
         super::apply(
             &mut app,
+            &ctx,
             super::BreakpointEdit {
                 condition: Some((entry, String::from("rax == "))),
                 ..super::BreakpointEdit::default()
@@ -884,6 +884,39 @@ mod tests {
         assert!(
             app.journal.entries().len() > before,
             "and the reader is told, rather than left with a field that did nothing"
+        );
+    }
+
+    /// The breakpoint pane is one of several callers of the listing.  It
+    /// must use the shared navigation route: otherwise it would select an
+    /// instruction without scrolling the pseudo-code alongside it or giving
+    /// the reader the transient marker that says where the jump landed.
+    #[test]
+    fn showing_a_breakpoint_uses_the_shared_disassembly_navigation() {
+        let ctx = egui::Context::default();
+        let mut app = crate::testing::emulatable_sample().opened(WorkspaceView::Machine);
+        let address = app
+            .analysis
+            .as_ref()
+            .and_then(|analysis| analysis.entry_point)
+            .expect("the fixture has an entry point");
+
+        super::apply(
+            &mut app,
+            &ctx,
+            super::BreakpointEdit {
+                show: Some(address),
+                ..super::BreakpointEdit::default()
+            },
+        );
+
+        assert_eq!(app.active_view, WorkspaceView::Disassembly);
+        assert_eq!(app.selected_instruction, Some(address));
+        assert_eq!(app.pending_instruction_scroll, Some(address));
+        assert!(
+            app.instruction_attention
+                .is_some_and(|(marked, _)| marked == address),
+            "callers share the same visible landing marker"
         );
     }
 

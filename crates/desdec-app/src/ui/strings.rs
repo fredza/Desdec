@@ -4,10 +4,21 @@ use desdec_core::{Analysis, ExtractedString, Instruction};
 use eframe::egui;
 
 use crate::{
-    app::WorkspaceView,
     i18n::{Language, Text, text},
     ui::{MUTED, ROW_HEIGHT, card},
 };
+
+/// What a strings card asked of the workspace.
+///
+/// The card itself deliberately does not change the shared instruction
+/// selection.  Its caller routes this request through `go_to_address`, the
+/// one navigation gateway that keeps every caller, the listing and its
+/// pseudo-code counterpart on the same instruction.
+#[derive(Default)]
+pub struct Action {
+    pub copy: Option<String>,
+    pub go_to: Option<u64>,
+}
 
 #[expect(
     clippy::too_many_arguments,
@@ -21,16 +32,12 @@ pub fn show(
     hide_unmapped: &mut bool,
     hide_unreferenced: &mut bool,
     selected_string: &mut Option<u64>,
-    selected_instruction: &mut Option<u64>,
-    pending_instruction_scroll: &mut Option<u64>,
-    instruction_attention: &mut Option<(u64, f64)>,
-    active_view: &mut WorkspaceView,
     language: Language,
-) -> Option<String> {
-    let mut copy = None;
+) -> Action {
+    let mut action = Action::default();
     if analysis.strings.is_empty() {
         ui.label(text(language, Text::NoStrings));
-        return copy;
+        return action;
     }
 
     let matches = matching(
@@ -57,17 +64,7 @@ pub fn show(
             .iter()
             .find(|string| string.file_offset == offset)
     }) {
-        copy = reference_card(
-            ui,
-            analysis,
-            references,
-            string,
-            selected_instruction,
-            pending_instruction_scroll,
-            instruction_attention,
-            active_view,
-            language,
-        );
+        action = reference_card(ui, analysis, references, string, language);
         ui.add_space(8.0);
     }
 
@@ -96,7 +93,7 @@ pub fn show(
                     }
                 });
         });
-    copy
+    action
 }
 
 fn header(
@@ -344,22 +341,14 @@ const REFERENCES_HEIGHT: f32 = 180.0;
 /// The instructions that name the selected string, and the way to each.
 ///
 /// Returns an address the reader asked to have on the clipboard.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the card reaches the disassembly, which needs its selection and its scrolling"
-)]
 fn reference_card(
     ui: &mut egui::Ui,
     analysis: &Analysis,
     references: &CodeReferences,
     string: &ExtractedString,
-    selected_instruction: &mut Option<u64>,
-    pending_instruction_scroll: &mut Option<u64>,
-    instruction_attention: &mut Option<(u64, f64)>,
-    active_view: &mut WorkspaceView,
     language: Language,
-) -> Option<String> {
-    let mut copy = None;
+) -> Action {
+    let mut action = Action::default();
     let mut jump = None;
 
     let count = string_address(analysis, string)
@@ -410,7 +399,7 @@ fn reference_card(
                             ui.close_menu();
                         }
                         if ui.button(text(language, Text::CopyAddress)).clicked() {
-                            copy = Some(format!("{:#018x}", instruction.address));
+                            action.copy = Some(format!("{:#018x}", instruction.address));
                             ui.close_menu();
                         }
                     });
@@ -419,13 +408,9 @@ fn reference_card(
     });
 
     if let Some(address) = jump {
-        *selected_instruction = Some(address);
-        *pending_instruction_scroll = Some(address);
-        *instruction_attention = Some((address, ui.ctx().input(|input| input.time) + 3.0));
-        *active_view = WorkspaceView::Disassembly;
-        ui.ctx().request_repaint();
+        action.go_to = Some(address);
     }
-    copy
+    action
 }
 
 /// One reference: where it is, in which section, what it does, and the button

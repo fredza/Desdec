@@ -1,5 +1,5 @@
 use crate::{
-    app::{DesdecApp, Dialog, PseudocodeAssembly, WorkspaceView},
+    app::{DesdecApp, Dialog, PseudocodeAssembly},
     commands::Command,
     i18n::{Language, Text, text},
     ui::{ERROR, MUTED, ROW_HEIGHT, card, syntax},
@@ -599,10 +599,7 @@ fn show_assembly_preview(app: &mut DesdecApp, ctx: &egui::Context) {
         app.pseudocode_assembly = None;
     }
     if let Some(address) = jump {
-        app.selected_instruction = Some(address);
-        app.pending_instruction_scroll = Some(address);
-        app.instruction_attention = Some((address, ctx.input(|input| input.time) + 3.0));
-        app.active_view = WorkspaceView::Disassembly;
+        app.go_to_address(ctx, address);
         app.dialogs.close(Dialog::Assembly);
         app.pseudocode_assembly = None;
         ctx.request_repaint();
