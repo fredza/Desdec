@@ -223,6 +223,45 @@ pub fn drawn(shapes: &[eframe::egui::epaint::ClippedShape]) -> Vec<(String, efra
     out
 }
 
+/// Every string a frame drew, with where it landed and the colour it was
+/// painted in.
+///
+/// The colour is part of what a warning *is*: a red line saying a file reaches
+/// the network and a grey one saying it are not the same answer, and only the
+/// shapes tell them apart. Read from the layout job rather than from the
+/// galley's fallback, which is not what a coloured `RichText` fills in.
+pub fn drawn_in_colour(
+    shapes: &[eframe::egui::epaint::ClippedShape],
+) -> Vec<(String, eframe::egui::Color32)> {
+    fn walk(shape: &eframe::egui::Shape, out: &mut Vec<(String, eframe::egui::Color32)>) {
+        match shape {
+            eframe::egui::Shape::Text(text) => {
+                out.push((
+                    text.galley.text().to_owned(),
+                    text.galley
+                        .job
+                        .sections
+                        .first()
+                        .map(|section| section.format.color)
+                        .filter(|colour| *colour != eframe::egui::Color32::PLACEHOLDER)
+                        .unwrap_or(text.fallback_color),
+                ));
+            }
+            eframe::egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    walk(shape, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in shapes {
+        walk(&clipped.shape, &mut out);
+    }
+    out
+}
+
 /// The text of everything a frame drew, joined.
 pub fn drawn_text(shapes: &[eframe::egui::epaint::ClippedShape]) -> String {
     drawn(shapes).into_iter().map(|(text, _)| text).collect()
@@ -286,7 +325,7 @@ mod window_sheet {
         // something worth looking at, since an empty field says nothing about
         // what the window does with what is typed in it.
         match std::env::var("DESDEC_WINDOW").as_deref() {
-            Ok("expression") => {
+            Ok("expression" | "expression-idle") => {
                 app.dialogs.close(Dialog::Plugins);
                 app.dialogs.close(Dialog::Console);
                 app.expression.source = String::from("[rsp]:8 + 0x20");
@@ -295,6 +334,18 @@ mod window_sheet {
                     crate::ui::expression::watch_for_a_sheet(&mut app);
                 }
                 app.expression.source = String::from("[rsp]:8 + 0x20");
+                // With the machine started, which is the state the window is
+                // worth looking at in: without one every row reads "no value",
+                // which says what the window refuses to invent but nothing at
+                // all about what it answers. `DESDEC_WINDOW=expression-idle`
+                // for the other one.
+                if !std::env::var("DESDEC_WINDOW").is_ok_and(|window| window.ends_with("-idle"))
+                    && let Some(machine) = app.machine()
+                {
+                    for _ in 0..12 {
+                        machine.step_one();
+                    }
+                }
                 app.dialogs.open(Dialog::Expression);
             }
             Ok("trace") => {
@@ -463,6 +514,26 @@ mod frame_sheet {
             .unwrap_or(WorkspaceView::Overview)
     }
 
+    /// The colour a galley is really painted in.
+    ///
+    /// `fallback_color` is only what a galley falls back *on*: a `RichText`
+    /// that names a colour puts it in the sections of the layout job instead,
+    /// so reading the fallback showed a warning painted red as ordinary grey
+    /// — the same blindness as the text backgrounds this sheet used to miss.
+    /// The first section's colour is taken, which is the whole galley's
+    /// whenever one was named.
+    fn text_colour(text: &egui::epaint::TextShape) -> egui::Color32 {
+        text.galley
+            .job
+            .sections
+            .first()
+            .map(|section| section.format.color)
+            .filter(|colour| *colour != egui::Color32::PLACEHOLDER)
+            .or(Some(text.fallback_color))
+            .filter(|colour| *colour != egui::Color32::PLACEHOLDER)
+            .unwrap_or(egui::Color32::WHITE)
+    }
+
     pub fn colour(c: egui::Color32) -> String {
         format!(
             "rgba({},{},{},{})",
@@ -514,11 +585,7 @@ mod frame_sheet {
         // made a paragraph look like a single line running off the right edge
         // — a rendering fault that was not there, which hides the ones that
         // are.
-        let shade = colour(if text.fallback_color == egui::Color32::PLACEHOLDER {
-            egui::Color32::WHITE
-        } else {
-            text.fallback_color
-        });
+        let shade = colour(text_colour(text));
         for row in &text.galley.rows {
             let content = row
                 .text()

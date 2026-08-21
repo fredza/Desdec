@@ -58,11 +58,25 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let pages = machine.memory.written_pages();
     let stop = machine.stop().cloned();
     let rewindable = machine.rewindable();
+    // A call that left for nowhere read its target from a slot, and the file
+    // says whose address belongs there even though nothing has written it.
+    let import = match &stop {
+        Some(Stop::UnresolvedCall {
+            through: Some(slot),
+            ..
+        }) => app
+            .analysis
+            .as_ref()
+            .and_then(|analysis| analysis.import_at(*slot))
+            .map(str::to_owned),
+        _ => None,
+    };
 
     state_line(
         ui,
         language,
         stop.as_ref(),
+        import.as_deref(),
         &Counts {
             pointer,
             executed,
@@ -293,7 +307,13 @@ struct Counts {
 }
 
 /// One line saying where the run is and why it is not running.
-fn state_line(ui: &mut egui::Ui, language: Language, stop: Option<&Stop>, counts: &Counts) {
+fn state_line(
+    ui: &mut egui::Ui,
+    language: Language,
+    stop: Option<&Stop>,
+    import: Option<&str>,
+    counts: &Counts,
+) {
     let Counts {
         pointer,
         executed,
@@ -331,7 +351,7 @@ fn state_line(ui: &mut egui::Ui, language: Language, stop: Option<&Stop>, counts
         }
         None => {}
         Some(stop) => {
-            let (sentence, grave) = explain(stop, language);
+            let (sentence, grave) = explain(stop, import, language);
             let colour = if grave { ERROR } else { MUTED };
             ui.label(egui::RichText::new(sentence).color(colour));
         }
@@ -340,7 +360,7 @@ fn state_line(ui: &mut egui::Ui, language: Language, stop: Option<&Stop>, counts
 
 /// What a stop says, in the reader's language, and whether it ended the run
 /// for good rather than merely paused it.
-fn explain(stop: &Stop, language: Language) -> (String, bool) {
+fn explain(stop: &Stop, import: Option<&str>, language: Language) -> (String, bool) {
     let say = |item: Text| text(language, item).to_owned();
     match stop {
         Stop::Breakpoint { address } => (
@@ -391,10 +411,22 @@ fn explain(stop: &Stop, language: Language) -> (String, bool) {
             format!("{} — {at:#018x}", say(Text::StoppedLeftImage)),
             true,
         ),
-        Stop::UnresolvedCall { at } => (
-            format!("{} — {at:#018x}", say(Text::StoppedUnresolvedCall)),
-            true,
-        ),
+        Stop::UnresolvedCall { at, from, .. } => {
+            // The address left for is zero every time, so what is worth
+            // printing is the call site — where the reader has to go — and the
+            // import whose address the slot it read is still missing.
+            let site = match from {
+                Some((from, instruction)) => format!("{instruction} ({from:#018x})"),
+                None => format!("{at:#018x}"),
+            };
+            let named = import
+                .map(|import| format!(" → {import}"))
+                .unwrap_or_default();
+            (
+                format!("{} — {site}{named}", say(Text::StoppedUnresolvedCall)),
+                true,
+            )
+        }
         Stop::Fault { at, fault } => {
             let (what, address) = match fault {
                 Fault::Unmapped { address } => (Text::StoppedFaultUnmapped, address),
@@ -721,6 +753,7 @@ fn watchpoints(ui: &mut egui::Ui, machine: &Machine, language: Language) {
 
 #[cfg(test)]
 mod tests {
+    use desdec_core::emulate::Stop;
     use desdec_core::emulate::system::{SystemArgument, SystemCall, SystemPlatform};
     use eframe::egui;
 
@@ -828,6 +861,54 @@ mod tests {
             .collect();
         assert!(said.contains("write") && said.contains("Linux x86-64"));
         assert!(said.contains("n’invente aucun résultat"), "{said}");
+    }
+
+    /// The address an unresolved call leaves for is zero every time, and the
+    /// line above already says it. What the reader cannot see anywhere else is
+    /// which instruction went there and what it was a call to, so that is what
+    /// the sentence carries.
+    #[test]
+    fn an_unresolved_call_names_the_instruction_that_made_it_and_the_import() {
+        let stop = Stop::UnresolvedCall {
+            at: 0,
+            from: Some((0x23e8, String::from("call qword ptr [4FF0h]"))),
+            through: Some(0x4ff0),
+        };
+        let (said, grave) = super::explain(
+            &stop,
+            Some("__libc_start_main"),
+            crate::i18n::Language::French,
+        );
+        assert!(
+            said.contains("call qword ptr [4FF0h]")
+                && said.contains("0x00000000000023e8")
+                && said.contains("__libc_start_main"),
+            "{said}"
+        );
+        assert!(grave, "the run cannot be carried on from there");
+
+        // A file that names nothing for that slot is said as it was before,
+        // rather than with an invented name or an empty arrow.
+        let (said, _) = super::explain(&stop, None, crate::i18n::Language::French);
+        assert!(said.ends_with("(0x00000000000023e8)"), "{said}");
+    }
+
+    /// The name the line ends with comes out of the file being read, not out
+    /// of a table written here: a sample that imports something is analysed,
+    /// and asked what belongs at one of its slots.
+    #[test]
+    fn the_import_a_stopped_call_was_to_is_read_from_the_file() {
+        let sample = crate::testing::samples()
+            .into_iter()
+            .find(|sample| !sample.analysis.import_slots.is_empty())
+            .expect("a fixture that imports something");
+        let slot = sample.analysis.import_slots[0].clone();
+        assert_eq!(sample.analysis.import_at(slot.address), Some(&*slot.name));
+        assert_eq!(
+            sample.analysis.import_at(slot.address.wrapping_add(1)),
+            None,
+            "an address that is no slot names nothing"
+        );
     }
 
     /// The transport's back button undoes exactly one instruction, through the

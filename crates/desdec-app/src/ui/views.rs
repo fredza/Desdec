@@ -1,4 +1,4 @@
-use desdec_core::{Analysis, entropy};
+use desdec_core::{Analysis, NetworkUse, entropy};
 use eframe::egui;
 
 use crate::{
@@ -267,6 +267,12 @@ fn expert_layout(
 /// Warnings come first: they change how everything below should be read.
 fn alerts(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
     let mut shown = false;
+    // First of the lot: what a program can do to the outside is the thing a
+    // reader most wants to know before reading anything else about it.
+    if !analysis.network.is_silent() {
+        network_alert(ui, &analysis.network, language);
+        shown = true;
+    }
     if analysis.suggests_packing() {
         card(ui, text(language, Text::DenseCodeWarning), |ui| {
             ui.small(text(language, Text::DenseCodeHint));
@@ -292,6 +298,92 @@ fn alerts(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
     if shown {
         ui.add_space(12.0);
     }
+}
+
+/// The red flag: this file can reach the network.
+///
+/// Loud on purpose, and honest about what it is: a statement read out of the
+/// file, with the names it was read from listed underneath. A reader who can
+/// see the evidence can judge it — and can tell the flag from a guess.
+fn network_alert(ui: &mut egui::Ui, network: &NetworkUse, language: Language) {
+    let says = match (network.sends(), network.receives()) {
+        (true, true) => Text::NetworkSendsAndReceives,
+        (true, false) => Text::NetworkSends,
+        (false, true) => Text::NetworkReceives,
+        // Sockets or a network library, with nothing naming a read or a write:
+        // the road is there, and what goes down it is not stated.
+        (false, false) => Text::NetworkOpens,
+    };
+    ui.group(|ui| {
+        ui.set_width(ui.available_width());
+        ui.vertical(|ui| {
+            // `horizontal`, never `horizontal_wrapped`: a wrapped row draws
+            // every one of its parts at the same place in egui 0.31.
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("⬤").color(ERROR));
+                ui.label(
+                    egui::RichText::new(text(language, Text::NetworkAlert))
+                        .color(ERROR)
+                        .strong(),
+                );
+                ui.label(egui::RichText::new(text(language, says)).color(ERROR));
+            });
+            ui.add_space(6.0);
+            ui.small(egui::RichText::new(text(language, Text::NetworkIsNotARun)).color(MUTED));
+            if !network.names.is_empty() {
+                ui.add_space(6.0);
+                evidence_row(ui, text(language, Text::NetworkEvidence), &joined(network));
+            }
+            if !network.libraries.is_empty() {
+                ui.add_space(4.0);
+                evidence_row(
+                    ui,
+                    text(language, Text::NetworkLibraries),
+                    &network.libraries.join(" · "),
+                );
+            }
+        });
+    });
+}
+
+/// The names an alert was read from, on one line that wraps rather than one
+/// that grows: a file may name a hundred of them.
+fn evidence_row(ui: &mut egui::Ui, title: &str, names: &str) {
+    ui.horizontal(|ui| {
+        ui.small(egui::RichText::new(title).color(MUTED));
+    });
+    ui.add(egui::Label::new(egui::RichText::new(names).monospace().small()).wrap());
+}
+
+/// The names an alert was read from, as many as a reader will actually read.
+///
+/// Shortest first, and each one cut: `send` and `getaddrinfo` say what they
+/// are at a glance, while a mangled Rust symbol runs past eighty characters
+/// and a row of those says nothing at all. The rest are counted rather than
+/// listed — the whole of them is in the symbols view.
+fn joined(network: &NetworkUse) -> String {
+    const SHOWN: usize = 12;
+    const LONGEST: usize = 44;
+
+    let mut names: Vec<&str> = network
+        .names
+        .iter()
+        .map(|found| found.name.as_str())
+        .collect();
+    names.sort_by_key(|name| (name.chars().count(), *name));
+    let mut said: Vec<String> = names
+        .iter()
+        .take(SHOWN)
+        .map(|name| match name.char_indices().nth(LONGEST) {
+            Some((cut, _)) => format!("{}…", &name[..cut]),
+            None => (*name).to_owned(),
+        })
+        .collect();
+    let rest = names.len().saturating_sub(SHOWN);
+    if rest > 0 {
+        said.push(format!("+{rest}"));
+    }
+    said.join(" · ")
 }
 
 /// What the file is, including its loader-level identity.
@@ -465,7 +557,147 @@ fn entropy_color(ratio: f32) -> egui::Color32 {
 
 #[cfg(test)]
 mod tests {
-    use super::code_may_be_obfuscated;
+    use desdec_core::{NetworkName, NetworkUse, Reach};
+    use eframe::egui;
+
+    use super::{ERROR, code_may_be_obfuscated};
+    use crate::{
+        i18n::{Language, Text, text},
+        testing::{drawn, drawn_in_colour, window_input},
+    };
+
+    fn networked(names: &[(&str, Reach)], libraries: &[&str]) -> NetworkUse {
+        NetworkUse {
+            names: names
+                .iter()
+                .map(|(name, reach)| NetworkName {
+                    name: String::from(*name),
+                    reach: *reach,
+                })
+                .collect(),
+            libraries: libraries.iter().map(|name| String::from(*name)).collect(),
+        }
+    }
+
+    /// Draws the alert alone, and answers with every string it painted and the
+    /// colour each was painted in.
+    fn alert(network: &NetworkUse) -> Vec<(String, egui::Color32)> {
+        let ctx = egui::Context::default();
+        let mut draw = |ctx: &egui::Context| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                super::network_alert(ui, network, Language::French);
+            });
+        };
+        let _ = ctx.run(window_input(), &mut draw);
+        let output = ctx.run(window_input(), &mut draw);
+        drawn_in_colour(&output.shapes)
+    }
+
+    /// The flag has to be red to be a flag: painted like every other line it
+    /// says the same words and none of the warning.
+    #[test]
+    fn a_file_that_reaches_the_network_is_flagged_in_red() {
+        let painted = alert(&networked(
+            &[("socket", Reach::Connect), ("send", Reach::Send)],
+            &["libcurl.so.4"],
+        ));
+        let said: String = painted.iter().map(|(text, _)| text.as_str()).collect();
+        assert!(
+            said.contains(text(Language::French, Text::NetworkAlert)),
+            "{said}"
+        );
+        assert!(
+            said.contains("socket") && said.contains("libcurl.so.4"),
+            "the evidence is shown, so the reader can judge the flag: {said}"
+        );
+        assert!(
+            painted
+                .iter()
+                .filter(|(_, colour)| *colour == ERROR)
+                .count()
+                >= 2,
+            "the mark and its sentence are both red: {painted:?}"
+        );
+    }
+
+    /// What it says depends on what was found: a file that only opens a
+    /// connection must not be reported as one that sends and receives.
+    #[test]
+    fn the_sentence_says_only_what_the_names_found_say() {
+        let opens: String = alert(&networked(&[("socket", Reach::Connect)], &[]))
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert!(
+            opens.contains(text(Language::French, Text::NetworkOpens)),
+            "{opens}"
+        );
+
+        let both: String = alert(&networked(&[("curl_easy_perform", Reach::Protocol)], &[]))
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert!(
+            both.contains(text(Language::French, Text::NetworkSendsAndReceives)),
+            "{both}"
+        );
+    }
+
+    /// The same fault the machine view carries a test for: a row that wraps
+    /// paints all of its parts at one place in egui 0.31.
+    #[test]
+    fn nothing_in_the_alert_is_drawn_on_top_of_anything_else() {
+        let ctx = egui::Context::default();
+        let network = networked(&[("socket", Reach::Connect)], &["libcurl.so.4"]);
+        let mut draw = |ctx: &egui::Context| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                super::network_alert(ui, &network, Language::French);
+            });
+        };
+        let _ = ctx.run(window_input(), &mut draw);
+        let output = ctx.run(window_input(), &mut draw);
+        let mut seen: Vec<egui::Pos2> = Vec::new();
+        for (said, at) in drawn(&output.shapes) {
+            assert!(
+                !seen.contains(&at),
+                "{said:?} is drawn on top of something else"
+            );
+            seen.push(at);
+        }
+    }
+
+    /// A long name is cut rather than allowed to push the row past the card,
+    /// and what does not fit is counted.
+    #[test]
+    fn the_evidence_is_short_names_first_and_the_rest_counted() {
+        let long = "_RNvMNtNtCse_3std3net3tcp9TcpStream7connectCsabcdef_0123456789abcdef";
+        let mut names = vec![("send", Reach::Send), (long, Reach::Connect)];
+        for filler in [
+            "recv",
+            "socket",
+            "connect",
+            "bind",
+            "listen",
+            "accept",
+            "sendto",
+            "recvfrom",
+            "sendmsg",
+            "recvmsg",
+            "getaddrinfo",
+        ] {
+            names.push((filler, Reach::Connect));
+        }
+        let said = super::joined(&networked(&names, &[]));
+        assert!(
+            said.starts_with("bind · recv · send"),
+            "shortest first: {said}"
+        );
+        assert!(said.ends_with("+1"), "what is left over is counted: {said}");
+        assert!(
+            !said.contains(long),
+            "the long one is not shown whole: {said}"
+        );
+    }
 
     #[test]
     fn global_entropy_above_seven_marks_code_as_possibly_obfuscated() {

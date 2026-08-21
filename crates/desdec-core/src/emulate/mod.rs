@@ -118,7 +118,20 @@ pub enum Stop {
     /// Distinguished from [`Self::LeftTheImage`] because its cause is always
     /// the same one and is worth naming: the call went through a table that
     /// only a loader fills in, and nothing has.
-    UnresolvedCall { at: u64 },
+    UnresolvedCall {
+        at: u64,
+        /// The instruction that left for there, and where it stands.
+        ///
+        /// The address left for is zero every time and names nothing on its
+        /// own; the call site is the thing a reader can go and look at.
+        from: Option<(u64, String)>,
+        /// The slot the target was read from, when it was read from one.
+        ///
+        /// This is what the call can be named by: the file's relocations say
+        /// which import belongs at that address, even though nothing has
+        /// written it there. See [`crate::analysis::imports`].
+        through: Option<u64>,
+    },
     /// A read or a write could not be carried out.
     Fault { at: u64, fault: Fault },
     /// A division with no answer, or one too large to store.
@@ -155,7 +168,7 @@ impl Stop {
             | Self::Unsupported { at, .. }
             | Self::SystemCall { at, .. }
             | Self::LeftTheImage { at }
-            | Self::UnresolvedCall { at }
+            | Self::UnresolvedCall { at, .. }
             | Self::Fault { at, .. }
             | Self::DivideError { at }
             | Self::Halted { at, .. }
@@ -365,6 +378,10 @@ pub struct Machine {
     depth: i64,
     /// The calls made and not yet returned from, outermost first.
     frames: Vec<Frame>,
+    /// Where the last instruction read its branch target from, when it read
+    /// one from memory. Written afresh by every instruction, so it belongs to
+    /// the one that just ran and to no other.
+    left_through: Option<u64>,
     /// How to put back each of the last few instructions, newest last.
     rewind: VecDeque<Undo>,
 }
@@ -424,6 +441,7 @@ impl Machine {
             trace: VecDeque::new(),
             depth: 0,
             frames: Vec::new(),
+            left_through: None,
             rewind: VecDeque::new(),
         };
         machine.restart();
@@ -460,6 +478,7 @@ impl Machine {
         self.trace.clear();
         self.depth = 0;
         self.frames.clear();
+        self.left_through = None;
         self.rewind.clear();
         // The pass counts are of this run, not of the reader's session: a
         // breakpoint that had gone by nine hundred times has gone by none.
@@ -492,6 +511,7 @@ impl Machine {
             registers: &mut self.registers,
             memory: &mut self.memory,
             bitness: self.bitness,
+            branched_through: None,
         }
     }
 
@@ -846,8 +866,13 @@ impl Machine {
             registers: &mut self.registers,
             memory: &mut self.memory,
             bitness: self.bitness,
+            branched_through: None,
         };
         let outcome = cpu.execute(&instruction, &text);
+        // Kept for the instruction after this one: a branch through a slot is
+        // only worth naming once the target turns out to be nowhere, and that
+        // is found out when the next instruction fails to decode.
+        self.left_through = cpu.branched_through;
         let overwritten = self.memory.take_recording();
         self.executed = self.executed.saturating_add(1);
         self.record(at, text.clone());
@@ -949,7 +974,14 @@ impl Machine {
             // not map is what a call into a library looks like from here, and
             // saying so is more use than "read fault at 0x…".
             self.stop = Some(if at < memory::PAGE {
-                Stop::UnresolvedCall { at }
+                Stop::UnresolvedCall {
+                    at,
+                    from: self
+                        .trace
+                        .back()
+                        .map(|entry| (entry.address, entry.text.clone())),
+                    through: self.left_through,
+                }
             } else if self.memory.region_at(at).is_none() {
                 Stop::LeftTheImage { at }
             } else {
@@ -1050,6 +1082,7 @@ impl Machine {
         }
         self.depth = 0;
         self.frames.clear();
+        self.left_through = None;
         self.rewind.clear();
     }
 }
@@ -2214,6 +2247,52 @@ mod tests {
         });
         assert!(
             matches!(machine.stop(), Some(Stop::LeftTheImage { at: 0x9000_0000 })),
+            "got {:?}",
+            machine.stop()
+        );
+    }
+
+    #[test]
+    fn a_call_through_an_unfilled_table_names_the_call_site_and_the_slot() {
+        // A call through the table of external calls, as it stands with no
+        // loader to fill it in: the slot holds zero, so the call goes to the
+        // first page. Zero is the same answer every time, so what the stop has
+        // to carry is the instruction that went there and the slot it read —
+        // which is what the file's relocations name an import by.
+        let program = |code: &mut CodeAssembler| {
+            code.nop().unwrap();
+            code.call(qword_ptr(DATA)).unwrap();
+        };
+        let call_site = addresses(program)[1];
+        let machine = run(program);
+        assert!(
+            matches!(
+                machine.stop(),
+                Some(Stop::UnresolvedCall {
+                    at: 0,
+                    from: Some((from, _)),
+                    through: Some(DATA),
+                }) if *from == call_site
+            ),
+            "got {:?}",
+            machine.stop()
+        );
+    }
+
+    #[test]
+    fn a_call_that_read_no_slot_reports_none_rather_than_an_invented_one() {
+        // Through a register, which is not a place in the file: there is no
+        // slot to name, and the stop says so instead of naming the last one
+        // some other instruction happened to read.
+        let machine = run(|code| {
+            code.mov(rax, 0_i64).unwrap();
+            code.call(rax).unwrap();
+        });
+        assert!(
+            matches!(
+                machine.stop(),
+                Some(Stop::UnresolvedCall { through: None, .. })
+            ),
             "got {:?}",
             machine.stop()
         );

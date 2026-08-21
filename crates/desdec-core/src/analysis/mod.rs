@@ -28,7 +28,9 @@ pub mod entropy;
 pub mod flags;
 pub mod flow;
 pub mod hash;
+pub mod imports;
 pub mod language;
+pub mod network;
 pub mod operand;
 pub mod sections;
 pub mod stack;
@@ -37,7 +39,9 @@ pub mod symbols;
 
 pub use details::{BinaryDetails, FileKind, Hardening, ImportedLibrary, Relro, Segment};
 pub use disassembly::{Decoded, Instruction, InstructionBytes, decode_one};
+pub use imports::ImportSlot;
 pub use language::{Confidence, LanguageEvidence, SourceLanguage};
+pub use network::{NetworkName, NetworkUse, Reach};
 pub use operand::{LastWrite, Target};
 pub use sections::{Permissions, Section};
 pub use stack::{StackSlot, StackState, Trace};
@@ -72,6 +76,13 @@ pub struct Analysis {
     pub sections: Vec<Section>,
     pub strings: Vec<ExtractedString>,
     pub symbols: Vec<Symbol>,
+    /// Where each imported name is expected to be filled in, by address.
+    ///
+    /// What names a call that goes through a slot rather than to a place in
+    /// this file: the emulator has no loader, so every such slot holds zero
+    /// and the call itself says nothing about what it was a call to. Sorted by
+    /// address, which is what lets [`Self::import_at`] look one up.
+    pub import_slots: Vec<ImportSlot>,
     /// Decoded instructions, ordered by address.
     pub instructions: Vec<Instruction>,
     /// Set when executable bytes were never read — a file larger than
@@ -81,6 +92,12 @@ pub struct Analysis {
     pub code_truncated: bool,
     /// Loader-level facts: file kind, mapping, dependencies, hardening.
     pub details: BinaryDetails,
+    /// What the file says about reaching the network: the names it calls for
+    /// it, and the libraries whose business it is.
+    ///
+    /// A statement about the file, not about a run — Desdec executes nothing —
+    /// so it says the program *can* send and receive, never that it did.
+    pub network: NetworkUse,
     /// What the file says about the language it was built from, strongest
     /// evidence first. Empty when it says nothing.
     pub languages: Vec<LanguageEvidence>,
@@ -97,6 +114,19 @@ pub struct Analysis {
 }
 
 impl Analysis {
+    /// The imported name that belongs at an address, when one does.
+    ///
+    /// What turns a call that left for nowhere into a call to something
+    /// nameable: the slot it read is empty, and the file says whose address
+    /// the loader would have written there.
+    #[must_use]
+    pub fn import_at(&self, address: u64) -> Option<&str> {
+        self.import_slots
+            .binary_search_by(|slot| slot.address.cmp(&address))
+            .ok()
+            .map(|found| self.import_slots[found].name.as_str())
+    }
+
     /// Sections carrying executable code.
     pub fn executable_sections(&self) -> impl Iterator<Item = &Section> {
         self.sections
@@ -330,11 +360,13 @@ fn sequentially(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
 
     let strings = strings::extract(bytes);
     let symbols = symbols::extract(bytes, format);
+    let import_slots = imports::extract(bytes, format);
     let sections = sections::parse(bytes, format);
     let code = disassembly::decode(bytes, format, architecture, &sections);
     let mut details = details::parse(bytes, format);
     details::note_stack_canary(&mut details, &strings);
     let languages = language::detect(bytes, &sections, &symbols, &details);
+    let network = network::extract(&symbols, &details);
 
     Analysis {
         summary: summary(path, size, bytes),
@@ -342,8 +374,10 @@ fn sequentially(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
         sections,
         strings,
         symbols,
+        import_slots,
         instructions: code.instructions,
         code_truncated: code.truncated,
+        network,
         details,
         languages,
         sha256: (!truncated).then(|| hash::sha256(bytes)),
@@ -372,6 +406,7 @@ fn concurrently(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
             (strings, details)
         });
         let symbols = scope.spawn(move || symbols::extract(bytes, format));
+        let import_slots = scope.spawn(move || imports::extract(bytes, format));
         let entry_point = scope.spawn(move || sections::entry_point(bytes, format));
         // Decoding needs the section table, so it follows it on this thread.
         let code = scope.spawn(move || {
@@ -386,14 +421,17 @@ fn concurrently(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
         // Reads the three results above, so it waits for them rather than
         // running as a seventh thread.
         let languages = language::detect(bytes, &sections, &symbols, &details);
+        let network = network::extract(&symbols, &details);
         Analysis {
             summary: summary(path, size, bytes),
             entry_point: join(entry_point),
             sections,
             strings,
             symbols,
+            import_slots: join(import_slots),
             instructions: decoded.instructions,
             code_truncated: decoded.truncated,
+            network,
             details,
             languages,
             sha256: join(digest),
