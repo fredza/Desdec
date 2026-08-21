@@ -18,7 +18,7 @@
 //!   register points, and no register has a value here. The walk stops and
 //!   says so.
 
-use desdec_core::{Analysis, operand};
+use desdec_core::{Analysis, flow::{self, Kind}, operand};
 
 /// How far a single press moves the walk.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,48 +48,17 @@ pub enum Move {
     End,
 }
 
-/// What an instruction does to the flow, before its operands are read.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Kind {
-    /// Leaves an address behind to come back to.
-    Call,
-    /// Goes back to one.
-    Return,
-    /// Always leaves for somewhere else.
-    Jump,
-    /// Leaves only if a condition holds, which is not knowable here.
-    Conditional,
-    /// Falls through to the next instruction.
-    Ordinary,
-}
-
-fn kind(mnemonic: &str) -> Kind {
-    if mnemonic.starts_with("ret") || mnemonic == "eret" {
-        return Kind::Return;
-    }
-    if mnemonic.starts_with("call") || matches!(mnemonic, "bl" | "blr") {
-        return Kind::Call;
-    }
-    if mnemonic.starts_with("jmp") || matches!(mnemonic, "b" | "br") {
-        return Kind::Jump;
-    }
-    if mnemonic.starts_with('j')
-        || mnemonic.starts_with("b.")
-        || matches!(mnemonic, "cbz" | "cbnz" | "tbz" | "tbnz")
-    {
-        return Kind::Conditional;
-    }
-    Kind::Ordinary
-}
-
 /// Where the flow goes from one instruction, given what its operand resolves
 /// to and which instruction follows it in the listing.
 ///
 /// Kept free of the analysis so every rule can be read — and tested — as what
-/// it is: a decision about one instruction.
+/// it is: a decision about one instruction. What the mnemonic *does* is
+/// [`desdec_core::flow`]'s answer, shared with the code that cuts a function
+/// into basic blocks: the walk and the graph must never disagree about
+/// whether an instruction branches.
 fn decide(mnemonic: &str, target: Option<u64>, next: Option<u64>, over: bool) -> Move {
     let fall_through = || next.map_or(Move::End, Move::Next);
-    match kind(mnemonic) {
+    match flow::kind(mnemonic) {
         Kind::Return => Move::Return,
         // What stepping over is for: the body of a call is skipped, and a
         // condition this tool cannot evaluate is not guessed at. Both carry

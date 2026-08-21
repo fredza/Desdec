@@ -20,6 +20,7 @@ mod i18n;
 mod icons;
 mod journal;
 mod libraries;
+mod names;
 mod patches;
 mod plugins;
 mod preferences;

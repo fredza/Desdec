@@ -1,11 +1,8 @@
 //! Named functions, their basic blocks, and a local control-flow view.
 
-use std::{
-    collections::{BTreeSet, HashMap},
-    ops::Range,
-};
+use std::{collections::HashMap, ops::Range};
 
-use desdec_core::{Analysis, Instruction, Symbol, discover};
+use desdec_core::{Analysis, Instruction, Symbol, blocks::{self, BasicBlock}, discover};
 use eframe::egui;
 
 use crate::{
@@ -37,7 +34,7 @@ pub struct Function {
     /// view says which reason it was: a reader must be able to tell an address
     /// something calls from a shape that looked like a beginning.
     pub found_by: Option<discover::Evidence>,
-    blocks: Vec<BasicBlock>,
+    pub blocks: Vec<BasicBlock>,
 }
 
 impl Function {
@@ -46,24 +43,11 @@ impl Function {
     }
 
     /// The decoded body, read back from the analysis it indexes.
-    fn body<'a>(&self, analysis: &'a Analysis) -> &'a [Instruction] {
+    pub fn body<'a>(&self, analysis: &'a Analysis) -> &'a [Instruction] {
         analysis
             .instructions
             .get(self.instructions.clone())
             .unwrap_or_default()
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct BasicBlock {
-    start: u64,
-    instructions: Range<usize>,
-    successors: Vec<u64>,
-}
-
-impl BasicBlock {
-    fn instruction_count(&self) -> usize {
-        self.instructions.len()
     }
 }
 
@@ -571,6 +555,16 @@ fn control_flow_graph(
             ui.label(egui::RichText::new(text(language, Text::NoFunctionBody)).color(MUTED));
             return;
         }
+        // This pane is a map of the shape, small enough to sit beside the
+        // pseudo-code and to light it up as the pointer moves. Reading the
+        // instructions in the blocks is what the graph view is for, and this
+        // says where it is rather than trying to be it.
+        ui.label(
+            egui::RichText::new(text(language, Text::GraphViewIsThere))
+                .small()
+                .color(MUTED),
+        );
+        ui.add_space(6.0);
 
         egui::ScrollArea::both()
             .id_salt(("control_flow", function.start))
@@ -620,7 +614,7 @@ fn control_flow_graph(
                         continue;
                     };
                     for successor in &block.successors {
-                        let Some(target) = positions.get(successor) else {
+                        let Some(target) = positions.get(&successor.address) else {
                             continue;
                         };
                         let from = source.center_bottom();
@@ -845,129 +839,11 @@ pub fn all(analysis: &Analysis) -> Vec<Function> {
                 start,
                 end,
                 found_by: *found_by,
-                blocks: basic_blocks(&analysis.instructions[instructions.clone()]),
+                blocks: blocks::of(&analysis.instructions[instructions.clone()]),
                 instructions,
             }
         })
         .collect()
-}
-
-fn basic_blocks(instructions: &[Instruction]) -> Vec<BasicBlock> {
-    if instructions.is_empty() {
-        return Vec::new();
-    }
-    let indices: HashMap<u64, usize> = instructions
-        .iter()
-        .enumerate()
-        .map(|(index, instruction)| (instruction.address, index))
-        .collect();
-    let mut leaders = BTreeSet::from([0]);
-    for (index, instruction) in instructions.iter().enumerate() {
-        if let Some(target) = branch_target(instruction).and_then(|address| indices.get(&address)) {
-            leaders.insert(*target);
-        }
-        if ends_block(instruction) && index + 1 < instructions.len() {
-            leaders.insert(index + 1);
-        }
-    }
-    let leaders: Vec<usize> = leaders.into_iter().collect();
-    let block_by_address: HashMap<u64, usize> = leaders
-        .iter()
-        .enumerate()
-        .map(|(block, index)| (instructions[*index].address, block))
-        .collect();
-
-    leaders
-        .iter()
-        .enumerate()
-        .map(|(block_index, start_index)| {
-            let end_index = leaders
-                .get(block_index + 1)
-                .copied()
-                .unwrap_or(instructions.len());
-            let last = &instructions[end_index - 1];
-            let mut successors = Vec::new();
-            if is_conditional_branch(last) {
-                push_branch_target(&mut successors, last, &block_by_address);
-                push_fallthrough(&mut successors, block_index, &leaders, instructions);
-            } else if is_unconditional_jump(last) {
-                push_branch_target(&mut successors, last, &block_by_address);
-            } else if !is_return(last) {
-                push_fallthrough(&mut successors, block_index, &leaders, instructions);
-            }
-            BasicBlock {
-                start: instructions[*start_index].address,
-                instructions: *start_index..end_index,
-                successors,
-            }
-        })
-        .collect()
-}
-
-fn push_branch_target(
-    successors: &mut Vec<u64>,
-    instruction: &Instruction,
-    blocks: &HashMap<u64, usize>,
-) {
-    if let Some(target) = branch_target(instruction).filter(|address| blocks.contains_key(address))
-    {
-        successors.push(target);
-    }
-}
-
-fn push_fallthrough(
-    successors: &mut Vec<u64>,
-    block_index: usize,
-    leaders: &[usize],
-    instructions: &[Instruction],
-) {
-    if let Some(next) = leaders.get(block_index + 1) {
-        successors.push(instructions[*next].address);
-    }
-}
-
-fn ends_block(instruction: &Instruction) -> bool {
-    is_conditional_branch(instruction)
-        || is_unconditional_jump(instruction)
-        || is_return(instruction)
-}
-
-fn is_conditional_branch(instruction: &Instruction) -> bool {
-    let opcode = opcode(instruction);
-    (opcode.starts_with('j') && !opcode.starts_with("jmp")) || opcode.starts_with("loop")
-}
-
-fn is_unconditional_jump(instruction: &Instruction) -> bool {
-    opcode(instruction).starts_with("jmp")
-}
-
-fn is_return(instruction: &Instruction) -> bool {
-    opcode(instruction).starts_with("ret")
-}
-
-fn opcode(instruction: &Instruction) -> &str {
-    instruction
-        .text
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-}
-
-fn branch_target(instruction: &Instruction) -> Option<u64> {
-    instruction
-        .text
-        .split_whitespace()
-        .skip(1)
-        .find_map(|part| {
-            let candidate = part.trim_matches(|character: char| {
-                !character.is_ascii_hexdigit() && !matches!(character, 'x' | 'X' | 'h' | 'H')
-            });
-            let hexadecimal = candidate
-                .strip_prefix("0x")
-                .or_else(|| candidate.strip_prefix("0X"))
-                .or_else(|| candidate.strip_suffix(['h', 'H']))?;
-            u64::from_str_radix(hexadecimal, 16).ok()
-        })
 }
 
 #[cfg(test)]
@@ -1218,21 +1094,33 @@ mod tests {
         assert_eq!(entry(&empty, analysis), None);
     }
 
+    /// The blocks a function is cut into are [`desdec_core::blocks`]'s, and
+    /// this reads them through a `Function` the way the view does.
+    ///
+    /// Written in the syntax the decoder actually produces — GAS, so `0x1006`
+    /// and not the MASM `1006h` this once used: cutting a function into blocks
+    /// is now done in one place for the whole tool, against the text that
+    /// place is given.
     #[test]
     fn conditional_branch_creates_two_successors() {
         let instructions = [
             instruction(0x1000, "cmp %eax,%eax"),
-            instruction(0x1002, "je 1006h"),
+            instruction(0x1002, "je 0x1006"),
             instruction(0x1004, "ret"),
             instruction(0x1006, "ret"),
         ];
-        let blocks = basic_blocks(&instructions);
+        let blocks = blocks::of(&instructions);
 
         assert_eq!(blocks.len(), 3);
         assert_eq!(blocks[0].instructions, 0..2);
         assert_eq!(blocks[1].instructions, 2..3);
         assert_eq!(blocks[2].instructions, 3..4);
-        assert_eq!(blocks[0].successors, [0x1006, 0x1004]);
+        let out: Vec<u64> = blocks[0]
+            .successors
+            .iter()
+            .map(|successor| successor.address)
+            .collect();
+        assert_eq!(out, [0x1006, 0x1004], "the taken arm first");
         assert!(blocks[1].successors.is_empty());
         assert!(blocks[2].successors.is_empty());
     }

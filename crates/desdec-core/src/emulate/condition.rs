@@ -21,7 +21,18 @@
 //! no value does not stop the run. `&&` still short-circuits, so
 //! `rax != 0 && [rax]:1 == 1` is safe to write and means what it looks like.
 
-use crate::emulate::{memory::Memory, registers::Registers};
+use crate::emulate::{
+    memory::Memory,
+    registers::{Flag, Registers},
+};
+
+/// What a name that is not a register or a flag may stand for.
+///
+/// The file's own names for its addresses: a function, an imported routine, a
+/// label the reader gave an address. Passed in rather than held here because
+/// the emulator knows nothing of symbol tables, and because what a name means
+/// is a property of the file being read, not of the language.
+pub type Names<'a> = dyn Fn(&str) -> Option<u64> + 'a;
 
 /// Why an expression could not be read.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,6 +73,8 @@ pub enum Expression {
     Register(iced_x86::Register),
     /// The instruction pointer, which is not a general register.
     Pointer,
+    /// One bit of the flags register, by the name the manuals give it.
+    Flag(Flag),
     /// `[address]`, read as `width` bytes.
     Load {
         address: Box<Self>,
@@ -134,9 +147,26 @@ impl Expression {
     /// One of [`ParseError`], each carrying the position in the text so the
     /// interface can point at it.
     pub fn parse(source: &str) -> Result<Self, ParseError> {
+        Self::parse_naming(source, &|_| None)
+    }
+
+    /// The same, with the file's own names for its addresses in reach.
+    ///
+    /// A name is resolved as it is read rather than as the expression is
+    /// evaluated, which keeps the one property that makes this language
+    /// pleasant to type into: a name that stands for nothing is refused on the
+    /// spot, by name and position, instead of quietly having no value later.
+    /// Nothing an emulated run does moves a symbol, so the address a name
+    /// stood for when it was typed is the address it stands for afterwards.
+    ///
+    /// # Errors
+    ///
+    /// One of [`ParseError`], as [`Self::parse`].
+    pub fn parse_naming(source: &str, names: &Names<'_>) -> Result<Self, ParseError> {
         let mut parser = Parser {
             text: source.as_bytes(),
             at: 0,
+            names,
         };
         parser.spaces();
         let expression = parser.expression(0)?;
@@ -158,6 +188,7 @@ impl Expression {
             Self::Number(value) => *value,
             Self::Register(register) => registers.get(*register),
             Self::Pointer => registers.instruction_pointer,
+            Self::Flag(flag) => u64::from(registers.flag(*flag)),
             Self::Load { address, width } => {
                 let at = address.value(registers, memory)?;
                 let mut bytes = [0_u8; 8];
@@ -250,6 +281,9 @@ fn apply(operator: Binary, left: u64, right: u64) -> u64 {
 struct Parser<'a> {
     text: &'a [u8],
     at: usize,
+    /// What the file calls its addresses, for the names that are neither a
+    /// register nor a flag.
+    names: &'a Names<'a>,
 }
 
 impl Parser<'_> {
@@ -453,14 +487,44 @@ impl Parser<'_> {
         while matches!(self.peek(), Some(byte) if byte.is_ascii_alphanumeric() || byte == b'_') {
             self.at += 1;
         }
-        let name = String::from_utf8_lossy(&self.text[start..self.at]).to_lowercase();
+        let written = String::from_utf8_lossy(&self.text[start..self.at]).into_owned();
+        let name = written.to_lowercase();
         if name == "rip" || name == "eip" || name == "pc" {
             return Ok(Expression::Pointer);
         }
-        register_named(&name)
-            .map(Expression::Register)
-            .ok_or(ParseError::UnknownName { at: start, name })
+        if let Some(register) = register_named(&name) {
+            return Ok(Expression::Register(register));
+        }
+        if let Some(flag) = flag_named(&name) {
+            return Ok(Expression::Flag(flag));
+        }
+        // The file's own names last, and matched as they were written before
+        // as they were lowered: a symbol table distinguishes `Read` from
+        // `read`, and lowering first would answer for the wrong one.
+        if let Some(address) = (self.names)(&written).or_else(|| (self.names)(&name)) {
+            return Ok(Expression::Number(address));
+        }
+        Err(ParseError::UnknownName { at: start, name })
     }
+}
+
+/// The flag a name refers to, by the two-letter names the manuals use.
+///
+/// `df` is here with the rest even though no reader writes a condition on the
+/// direction flag: leaving one out would make it the single name that reads
+/// like a typo rather than like a flag.
+#[must_use]
+pub fn flag_named(name: &str) -> Option<Flag> {
+    Some(match name {
+        "cf" => Flag::Carry,
+        "pf" => Flag::Parity,
+        "af" => Flag::Adjust,
+        "zf" => Flag::Zero,
+        "sf" => Flag::Sign,
+        "df" => Flag::Direction,
+        "of" => Flag::Overflow,
+        _ => return None,
+    })
 }
 
 /// The register a name refers to, whatever width it names.
@@ -573,6 +637,65 @@ mod tests {
         }];
         let memory = Memory::from_sections(Arc::from(Vec::new()), &sections);
         (Registers::new(), memory)
+    }
+
+    /// A flag written into the register file is the value the name reads.
+    #[test]
+    fn a_flag_is_read_by_the_name_the_manuals_give_it() {
+        let (mut registers, memory) = state();
+        registers.set_flag(Flag::Zero, true);
+        registers.set_flag(Flag::Carry, false);
+        assert!(holds("zf", &registers, &memory));
+        assert!(holds("zf == 1 && cf == 0", &registers, &memory));
+        assert!(!holds("cf", &registers, &memory));
+    }
+
+    /// A name the file gives an address stands for that address, and one it
+    /// does not give is refused where it was written rather than read as zero.
+    #[test]
+    fn a_name_the_file_gives_an_address_stands_for_it() {
+        let names = |name: &str| match name {
+            "main" => Some(0x1400),
+            _ => None,
+        };
+        let parsed = Expression::parse_naming("main + 4", &names).expect("parses");
+        let (registers, memory) = state();
+        assert_eq!(parsed.value(&registers, &memory), Some(0x1404));
+
+        let refused = Expression::parse_naming("nowhere", &names).expect_err("is refused");
+        assert!(matches!(refused, ParseError::UnknownName { name, .. } if name == "nowhere"));
+        // And without a table there are no names at all, which is what every
+        // caller that has no file behind it gets.
+        assert!(Expression::parse("main").is_err());
+    }
+
+    /// A symbol table tells `Read` from `read`; lowering the name first would
+    /// answer for whichever of them happened to be written in lower case.
+    #[test]
+    fn a_name_is_matched_as_it_was_written_before_it_is_lowered() {
+        let names = |name: &str| match name {
+            "Read" => Some(0x2000),
+            "read" => Some(0x3000),
+            _ => None,
+        };
+        let (registers, memory) = state();
+        let value = |source: &str| {
+            Expression::parse_naming(source, &names)
+                .expect("parses")
+                .value(&registers, &memory)
+        };
+        assert_eq!(value("Read"), Some(0x2000));
+        assert_eq!(value("read"), Some(0x3000));
+    }
+
+    /// A register is still a register, whatever the file calls its addresses.
+    #[test]
+    fn a_name_the_machine_holds_is_never_shadowed_by_the_file_s() {
+        let names = |_: &str| Some(0x9999);
+        let (mut registers, memory) = state();
+        registers.set(Register::RAX, 7);
+        let parsed = Expression::parse_naming("rax", &names).expect("parses");
+        assert_eq!(parsed.value(&registers, &memory), Some(7));
     }
 
     fn holds(source: &str, registers: &Registers, memory: &Memory) -> bool {

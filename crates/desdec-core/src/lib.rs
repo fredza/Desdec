@@ -27,8 +27,8 @@ pub use analysis::{
     ExtractedString, FileKind, Hardening, ImportedLibrary, Instruction, InstructionBytes,
     LanguageEvidence, LastWrite, Permissions, Relro, Section, Segment, SourceLanguage, StackSlot,
     StackState, StringEncoding, Symbol, Target, Trace, analyse_bytes, analyse_path,
-    analyse_path_cancellable, analyse_path_with_bytes_cancellable, decode_one, discover, entropy,
-    flags, hash, language, operand, stack, strings,
+    analyse_path_cancellable, analyse_path_with_bytes_cancellable, blocks, decode_one, discover,
+    entropy, flags, flow, hash, language, operand, stack, strings,
 };
 pub use binary::{Architecture, BinaryFormat, BinarySummary, Endianness, inspect_path};
 pub use patch::{Patch, PatchError};

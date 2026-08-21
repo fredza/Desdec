@@ -1343,6 +1343,79 @@ translations! {
         "Desdec runs the binary on a processor it builds itself: the registers, the memory, the stack and the breakpoints are real, and no byte of the file reaches your machine's processor. A system call, a missing library or an instruction that is not emulated stops the run and is named.",
         "Desdec ejecuta el binario en un procesador que él mismo construye: los registros, la memoria, la pila y los puntos de interrupción son reales, y ningún byte del archivo llega al procesador de su máquina. Una llamada al sistema, una biblioteca ausente o una instrucción no emulada detienen la ejecución y se nombran.",
     ],
+    // The graph view: one function drawn as its control flow, which is
+    // x64dbg's graph. Every wording here says what the drawing states and
+    // nothing beyond it.
+    Graph => ["Graphe", "Graph", "Grafo"],
+    GraphViewIsThere => [
+        "La vue Graphe (Ctrl+9) dessine les mêmes blocs avec leurs instructions.",
+        "The Graph view (Ctrl+9) draws the same blocks with their instructions in them.",
+        "La vista Grafo (Ctrl+9) dibuja los mismos bloques con sus instrucciones.",
+    ],
+    GraphHelp => [
+        "Glisser pour déplacer, molette pour zoomer, clic sur un bloc pour l’ouvrir dans le listing.",
+        "Drag to move, scroll to zoom, click a block to open it in the listing.",
+        "Arrastre para mover, rueda para ampliar, clic en un bloque para abrirlo en el listado.",
+    ],
+    BlockReturns => [
+        "retourne à l’appelant",
+        "returns to the caller",
+        "vuelve a quien llamó",
+    ],
+    FlowLeavesHere => [
+        "part d’ici sans que le listing dise où",
+        "leaves here, and the listing does not say where",
+        "sale de aquí sin que el listado diga adónde",
+    ],
+    // Conditional tracing: running until the state says so, rather than
+    // pressing a step key until it does.
+    TraceUntil => ["Tracer jusqu’à", "Trace until", "Trazar hasta"],
+    TraceUntilHelp => [
+        "La course avance jusqu’à ce que la condition soit vraie, ou jusqu’au nombre d’instructions indiqué. La condition est posée à l’état de la machine et ne le change jamais.",
+        "The run carries on until the condition holds, or until the number of instructions given. The condition is asked of the machine's state and never changes it.",
+        "La ejecución continúa hasta que la condición se cumpla, o hasta el número de instrucciones indicado. La condición se pregunta al estado de la máquina y nunca lo cambia.",
+    ],
+    TraceLimit => ["Au plus", "At most", "Como máximo"],
+    TraceStarted => [
+        "Trace conditionnelle lancée",
+        "Conditional trace started",
+        "Trazado condicional iniciado",
+    ],
+    TraceReachedItsLimit => [
+        "La condition n’a jamais été vraie dans la limite donnée.",
+        "The condition never held within the limit given.",
+        "La condición nunca se cumplió dentro del límite dado.",
+    ],
+    // The expression window: x64dbg's calculator, over the same language the
+    // breakpoint conditions are written in.
+    Expression => ["Expression", "Expression", "Expresión"],
+    ExpressionHelp => [
+        "Registres, drapeaux, noms du fichier, et la mémoire par [adresse]:taille. Rien ici n’exécute quoi que ce soit : l’expression est posée à l’état de la machine émulée.",
+        "Registers, flags, the file's own names, and memory through [address]:width. Nothing here runs anything: the expression is asked of the emulated machine's state.",
+        "Registros, banderas, los nombres del archivo, y la memoria mediante [dirección]:tamaño. Nada aquí ejecuta nada: la expresión se pregunta al estado de la máquina emulada.",
+    ],
+    ExpressionHasNoValue => [
+        "Sans valeur : une partie n’a pas pu être lue.",
+        "No value: part of it could not be read.",
+        "Sin valor: una parte no pudo leerse.",
+    ],
+    ExpressionNeedsAMachine => [
+        "Les registres n’ont de valeur qu’une fois la machine démarrée (Ctrl+8).",
+        "The registers only have values once the machine has started (Ctrl+8).",
+        "Los registros solo tienen valor una vez iniciada la máquina (Ctrl+8).",
+    ],
+    Unsigned => ["Non signé", "Unsigned", "Sin signo"],
+    Signed => ["Signé", "Signed", "Con signo"],
+    Binary => ["Binaire", "Binary", "Binario"],
+    GoToThisAddress => ["Aller à cette adresse", "Go to this address", "Ir a esta dirección"],
+    // Watches: expressions read again at every pause.
+    Watches => ["Expressions suivies", "Watches", "Expresiones seguidas"],
+    AddWatch => ["Suivre", "Watch", "Seguir"],
+    NoWatches => [
+        "Aucune expression suivie. Écrivez-en une pour la relire à chaque pause.",
+        "No watches. Write an expression to have it read again at every pause.",
+        "Ninguna expresión seguida. Escriba una para releerla en cada pausa.",
+    ],
     Run => ["Exécuter", "Run", "Ejecutar"],
     Restart => ["Recommencer", "Restart", "Reiniciar"],
     RunToCursor => ["Exécuter jusqu’au curseur", "Run to cursor", "Ejecutar hasta el cursor"],

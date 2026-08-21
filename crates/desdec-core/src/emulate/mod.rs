@@ -269,12 +269,26 @@ impl Breakpoint {
     /// breakpoint is left exactly as it was: a condition that does not parse
     /// never replaces one that does.
     pub fn set_condition(&mut self, source: &str) -> Result<(), condition::ParseError> {
+        self.set_condition_naming(source, &|_| None)
+    }
+
+    /// The same, with the file's own names for its addresses in reach, so a
+    /// condition can be written about `main` rather than about `0x1a40`.
+    ///
+    /// # Errors
+    ///
+    /// [`condition::ParseError`], as [`Self::set_condition`].
+    pub fn set_condition_naming(
+        &mut self,
+        source: &str,
+        names: &condition::Names<'_>,
+    ) -> Result<(), condition::ParseError> {
         if source.trim().is_empty() {
             self.condition.clear();
             self.parsed = None;
             return Ok(());
         }
-        let parsed = condition::Expression::parse(source)?;
+        let parsed = condition::Expression::parse_naming(source, names)?;
         source.clone_into(&mut self.condition);
         self.parsed = Some(parsed);
         Ok(())
@@ -715,6 +729,52 @@ impl Machine {
         if self.stop.is_none() {
             self.stop = Some(Stop::OutOfBudget);
         }
+        self.stop.as_ref()
+    }
+
+    /// Runs until a condition holds, a breakpoint stops it, or a limit is
+    /// reached. What x64dbg calls a conditional trace.
+    ///
+    /// The condition is asked before each instruction, so what stops the run
+    /// is the state the reader described — `zf == 1`, `[rsp]:8 == 0`, `rip ==
+    /// main` — rather than an address they had to work out first. It is asked
+    /// of the state and never changes it: see [`condition`].
+    ///
+    /// `limit` is how many instructions to carry out at most, so a condition
+    /// that never holds costs what the reader agreed to rather than the whole
+    /// budget. It is held to [`RUN_BUDGET`], which is what one press is worth
+    /// however large a number is typed.
+    ///
+    /// A condition with no value — one reading memory nothing maps — does not
+    /// stop the run, exactly as a breakpoint's does not.
+    pub fn run_until(&mut self, condition: &condition::Expression, limit: u64) -> Option<&Stop> {
+        if !self.can_continue() {
+            return self.stop.as_ref();
+        }
+        self.stop = None;
+        for turn in 0..limit.min(RUN_BUDGET) {
+            // Not on the first turn, for the same reason `run` carries out the
+            // instruction it is stopped on: a trace started where the
+            // condition already holds must move, or pressing the button does
+            // nothing at all.
+            if turn > 0 {
+                if condition.holds(&self.registers, &self.memory) {
+                    self.stop = Some(Stop::Paused);
+                    return self.stop.as_ref();
+                }
+                if self.paused_by_breakpoint() {
+                    return self.stop.as_ref();
+                }
+            }
+            self.execute_one();
+            if self.stop.is_some() {
+                return self.stop.as_ref();
+            }
+        }
+        // Told apart from a run that simply has more to do: the reader set the
+        // limit, and what they need to know is that it was reached with the
+        // condition never having held.
+        self.stop = Some(Stop::OutOfBudget);
         self.stop.as_ref()
     }
 
@@ -1729,6 +1789,66 @@ mod tests {
             4,
             "stopped on the turn the condition names, not on the first"
         );
+    }
+
+    /// A conditional trace stops on the state, without a breakpoint having to
+    /// be worked out and placed first.
+    #[test]
+    fn a_conditional_trace_stops_where_the_state_says_rather_than_at_an_address() {
+        let program = |code: &mut CodeAssembler| {
+            let top = code.create_label();
+            code.mov(rcx, 10_i64).unwrap();
+            code.set_label(&mut { top }).unwrap();
+            code.dec(rcx).unwrap();
+            code.jne(top).unwrap();
+            code.ret().unwrap();
+        };
+        let mut machine = machine(program);
+        let condition = super::condition::Expression::parse("rcx == 3").expect("parses");
+
+        machine.run_until(&condition, 10_000);
+        assert_eq!(machine.stop(), Some(&Stop::Paused));
+        assert_eq!(machine.registers.get(Register::RCX), 3);
+    }
+
+    /// The limit is what the reader agreed to spend on a condition that may
+    /// never hold, and reaching it is said rather than swallowed.
+    #[test]
+    fn a_conditional_trace_that_never_holds_stops_at_the_limit_it_was_given() {
+        let program = |code: &mut CodeAssembler| {
+            let top = code.create_label();
+            code.mov(rcx, 10_i64).unwrap();
+            code.set_label(&mut { top }).unwrap();
+            code.dec(rcx).unwrap();
+            code.jne(top).unwrap();
+            code.ret().unwrap();
+        };
+        let mut machine = machine(program);
+        let condition = super::condition::Expression::parse("rcx == 99").expect("parses");
+
+        machine.run_until(&condition, 6);
+        assert_eq!(machine.stop(), Some(&Stop::OutOfBudget));
+        assert_eq!(machine.executed(), 6, "exactly what it was allowed");
+        // And it carries on from where it stopped, as a budget that ran out
+        // always does.
+        assert!(machine.can_continue());
+    }
+
+    /// A trace begun where the condition already holds has to move, or the
+    /// button does nothing at all.
+    #[test]
+    fn a_conditional_trace_moves_even_when_it_starts_where_the_condition_holds() {
+        let program = |code: &mut CodeAssembler| {
+            code.mov(rax, 1_i64).unwrap();
+            code.mov(rbx, 2_i64).unwrap();
+            code.ret().unwrap();
+        };
+        let mut machine = machine(program);
+        // True before a single instruction has run: rax is zero at the start.
+        let condition = super::condition::Expression::parse("rax == 0").expect("parses");
+
+        machine.run_until(&condition, 10_000);
+        assert!(machine.executed() > 0, "the trace moved");
     }
 
     /// A condition that never holds never stops, and the run finishes.

@@ -138,6 +138,16 @@ commands! {
     // The one a debugger attached to a process cannot offer at all.
     MachineStepBack => [Machine, StepBackOne], Some(Shortcut::ctrl(KeyName::F11)),
     MachineToggleBreakpoint => [Machine, ToggleBreakpoint], Some(Shortcut::ctrl(KeyName::F2)),
+    // Running until the state says so, rather than pressing a step key until
+    // it does. x64dbg's conditional trace, over the same language its
+    // breakpoint conditions are written in.
+    MachineTraceUntil => [Machine, TraceUntil], Some(Shortcut::ctrl_shift(KeyName::F11)),
+    // One function drawn as its control flow. Its own view rather than a pane,
+    // because a graph wants the whole workspace.
+    Graph => [Graph], Some(Shortcut::ctrl(KeyName::Num9)),
+    // The reader's own arithmetic over the machine's state: x64dbg's
+    // calculator, in the language its conditions are already written in.
+    Expression => [Expression], Some(Shortcut::ctrl_shift(KeyName::E)),
     // Looking for a newer release. Never on a shortcut by default: it reaches
     // the network, and a key that does that should be one the reader chose.
     CheckForUpdates => [Updates, CheckForUpdates], None,
@@ -282,7 +292,11 @@ impl Command {
             | Self::MachineStepOver
             | Self::MachineStepOut
             | Self::MachineRestart
-            | Self::MachineStepBack => WorkspaceView::Machine,
+            | Self::MachineStepBack
+            // A conditional trace is a run: it leaves the reader looking at
+            // where the run now stands.
+            | Self::MachineTraceUntil => WorkspaceView::Machine,
+            Self::Graph => WorkspaceView::Graph,
             _ => return None,
         })
     }

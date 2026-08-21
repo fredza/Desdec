@@ -65,6 +65,8 @@ pub enum WorkspaceView {
     /// The emulated processor: registers, memory, breakpoints and a run; see
     /// [`desdec_core::emulate`].
     Machine,
+    /// One function drawn as its control flow; see [`crate::ui::graph`].
+    Graph,
     Patches,
     Yara,
 }
@@ -80,6 +82,7 @@ impl WorkspaceView {
         Self::Dump,
         Self::Assistant,
         Self::Machine,
+        Self::Graph,
         Self::Patches,
         Self::Yara,
     ];
@@ -95,6 +98,7 @@ impl WorkspaceView {
             Self::Dump => Text::Dump,
             Self::Assistant => Text::AiAssistance,
             Self::Machine => Text::Machine,
+            Self::Graph => Text::Graph,
             Self::Patches => Text::Patches,
             Self::Yara => Text::Yara,
         }
@@ -113,6 +117,7 @@ impl WorkspaceView {
             Self::Dump => Icon::Dump,
             Self::Assistant => Icon::Assistant,
             Self::Machine => Icon::Machine,
+            Self::Graph => Icon::Graph,
             Self::Patches => Icon::Patches,
             Self::Yara => Icon::Yara,
         }
@@ -131,6 +136,7 @@ impl WorkspaceView {
             Self::Dump => Command::Dump,
             Self::Assistant => Command::AiAssistance,
             Self::Machine => Command::Machine,
+            Self::Graph => Command::Graph,
             Self::Patches => Command::Patches,
             Self::Yara => Command::Yara,
         }
@@ -142,7 +148,7 @@ impl WorkspaceView {
         match self {
             Self::Overview | Self::Segments | Self::Functions | Self::Strings => None,
             Self::Disassembly | Self::Decompile | Self::Dump | Self::Assistant => None,
-            Self::Machine | Self::Patches | Self::Yara => None,
+            Self::Machine | Self::Graph | Self::Patches | Self::Yara => None,
         }
     }
 }
@@ -180,10 +186,14 @@ pub enum Dialog {
     UpdateConsent,
     /// A newer release, what it changes, and the download of it.
     Update,
+    /// The reader's own arithmetic over the machine's state.
+    Expression,
+    /// A run carried on until a condition holds.
+    TraceUntil,
 }
 
 impl Dialog {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::CommandPalette,
         Self::Preferences,
         Self::About,
@@ -198,6 +208,8 @@ impl Dialog {
         Self::Plugins,
         Self::UpdateConsent,
         Self::Update,
+        Self::Expression,
+        Self::TraceUntil,
     ];
 
     const fn index(self) -> usize {
@@ -225,6 +237,10 @@ impl Dialog {
                 | Self::Console
                 | Self::Plugins
                 | Self::Update
+                // An expression is written over several tries, against a
+                // machine the reader is stepping in the view behind: a press
+                // there is how they change what it will answer.
+                | Self::Expression
         )
     }
 }
@@ -383,6 +399,7 @@ struct PreparedInspection {
     listing_columns: crate::ui::disassembly::Columns,
     callgraph: crate::callgraph::Graph,
     xrefs: crate::xrefs::Index,
+    names: crate::names::Table,
 }
 
 impl PreparedInspection {
@@ -395,6 +412,7 @@ impl PreparedInspection {
         let listing_columns = crate::ui::disassembly::Columns::of(&analysis, &stack);
         let callgraph = crate::callgraph::Graph::of(&analysis, &functions);
         let xrefs = crate::xrefs::Index::of(&analysis, &bytes);
+        let names = crate::names::Table::of(&analysis, &functions);
         Self {
             analysis,
             file_bytes: bytes,
@@ -405,6 +423,7 @@ impl PreparedInspection {
             listing_columns,
             callgraph,
             xrefs,
+            names,
         }
     }
 }
@@ -595,6 +614,17 @@ pub struct DesdecApp {
     /// Which platform's rule says where a function's arguments are, for a run
     /// started at a function rather than at the entry point.
     pub machine_convention: desdec_core::emulate::Convention,
+    /// Where the graph view has been panned and zoomed to.
+    pub graph: crate::ui::graph::View,
+    /// The expression window: what is written in it, and what it answered.
+    pub expression: crate::ui::expression::State,
+    /// The reader's own expressions, read again at every pause.
+    pub watches: Vec<crate::ui::expression::Watch>,
+    /// The conditional trace: what to run until, and for how long at most.
+    pub trace_until: crate::ui::trace_until::State,
+    /// The file's own names for its addresses, indexed once per binary so an
+    /// expression can be written about `main` rather than about `0x1a40`.
+    pub names: crate::names::Table,
     /// Where each section begins in the listing, indexed once per binary.
     ///
     /// Derived from the analysis, like the stack and the function index, and
@@ -1323,6 +1353,14 @@ impl DesdecApp {
             // Opening the view is the same act as asking for a run: it is what
             // builds the machine, and it goes through the one path that does.
             | Command::Machine => self.run_machine_command(command),
+            Command::MachineTraceUntil => {
+                self.select_view(WorkspaceView::Machine);
+                self.dialogs.open(Dialog::TraceUntil);
+            }
+            // The graph draws the function already selected, so opening it
+            // moves nothing else.
+            Command::Graph => self.select_view(WorkspaceView::Graph),
+            Command::Expression => self.dialogs.open(Dialog::Expression),
             Command::AskAboutBinary => {
                 self.open_view(command);
                 self.request_assistance(ctx, assistant::Question::Binary);
@@ -1559,6 +1597,7 @@ impl DesdecApp {
                 self.callgraph = prepared.callgraph;
                 self.file_bytes = prepared.file_bytes;
                 self.xrefs = prepared.xrefs;
+                self.names = prepared.names;
                 self.analysis = Some(prepared.analysis);
                 self.selected_instruction =
                     self.disassembly_start(self.preferences.disassembly_start);
@@ -2629,6 +2668,12 @@ impl DesdecApp {
         self.listing_columns = crate::ui::disassembly::Columns::default();
         self.callgraph = crate::callgraph::Graph::default();
         self.xrefs = crate::xrefs::Index::default();
+        self.names = crate::names::Table::default();
+        // The graph is placed for one function's blocks and the watches are
+        // written about one file's addresses; neither means anything for the
+        // next binary opened.
+        self.graph = crate::ui::graph::View::default();
+        self.watches.clear();
         self.references_address = None;
         self.search = crate::ui::search::State::default();
         self.dump = crate::ui::dump::State::default();
@@ -2912,6 +2957,8 @@ impl DesdecApp {
         ui::annotation::show(self, ctx);
         ui::references::show(self, ctx);
         ui::search::show(self, ctx);
+        ui::expression::show(self, ctx);
+        ui::trace_until::show(self, ctx);
         ui::script::show(self, ctx);
         ui::plugins::show(self, ctx);
         ui::update_window::consent(self, ctx);
@@ -3586,6 +3633,7 @@ mod tests {
             WorkspaceView::Strings,
             WorkspaceView::Assistant,
             WorkspaceView::Machine,
+            WorkspaceView::Graph,
             WorkspaceView::Patches,
             WorkspaceView::Yara,
         ];

@@ -168,9 +168,16 @@ fn apply(app: &mut DesdecApp, ctx: &egui::Context, asked: BreakpointEdit) {
         breakpoint.skip = skip;
     }
     if let Some((address, source)) = asked.condition {
-        let refused = machine
-            .breakpoint_mut(address)
-            .and_then(|breakpoint| breakpoint.set_condition(&source).err());
+        // The file's own names are in reach here, so a condition can be
+        // written about `main` rather than about the number it stands for.
+        // Borrowed from a different field than the machine, which is what lets
+        // both be held at once.
+        let names = &app.names;
+        let refused = machine.breakpoint_mut(address).and_then(|breakpoint| {
+            breakpoint
+                .set_condition_naming(&source, &|name| names.address_of(name))
+                .err()
+        });
         if let Some(error) = refused {
             // Said out loud rather than swallowed: the condition the reader
             // typed is not the one the run is using, and they have to be told
@@ -201,6 +208,7 @@ fn transport(app: &mut DesdecApp, ui: &mut egui::Ui) {
         (Icon::Breakpoint, Command::MachineToggleBreakpoint),
         (Icon::Restart, Command::MachineRestart),
     ];
+    let language = app.preferences.language;
     let mut chosen = None;
     ui.horizontal(|ui| {
         for (icon, command) in buttons {
@@ -211,6 +219,17 @@ fn transport(app: &mut DesdecApp, ui: &mut egui::Ui) {
                     chosen = Some(*command);
                 }
             });
+        }
+        // Written out rather than drawn: it opens a window to be filled in,
+        // which is a different act from the presses beside it, and a glyph for
+        // "run until something I am about to describe" would be a riddle.
+        ui.separator();
+        if ui
+            .button(text(language, Text::TraceUntil))
+            .on_hover_text(text(language, Text::TraceUntilHelp))
+            .clicked()
+        {
+            chosen = Some(Command::MachineTraceUntil);
         }
     });
     if let Some(command) = chosen {

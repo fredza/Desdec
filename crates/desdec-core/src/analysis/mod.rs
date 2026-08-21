@@ -20,11 +20,13 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+pub mod blocks;
 pub mod details;
 pub mod disassembly;
 pub mod discover;
 pub mod entropy;
 pub mod flags;
+pub mod flow;
 pub mod hash;
 pub mod language;
 pub mod operand;

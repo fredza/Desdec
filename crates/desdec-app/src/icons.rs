@@ -44,6 +44,8 @@ pub enum Icon {
     WalkClear,
     /// The emulated processor, and the transport of a run on it.
     Machine,
+    /// One function drawn as its control flow.
+    Graph,
     Run,
     Restart,
     Breakpoint,
@@ -185,6 +187,7 @@ pub fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::
         Icon::WalkOut => walk_out(&pen),
         Icon::WalkClear => walk_clear(&pen),
         Icon::Machine => machine(&pen),
+        Icon::Graph => graph(&pen),
         Icon::Run => run(&pen),
         Icon::Restart => restart(&pen),
         Icon::Breakpoint => breakpoint(&pen),
@@ -550,6 +553,16 @@ fn machine(pen: &Pen) {
         pen.line((0.06, offset), (0.26, offset));
         pen.line((0.74, offset), (0.94, offset));
     }
+}
+
+/// A block above two, joined by the arrows between them: the smallest shape
+/// this view is for, which is a test and its two arms.
+fn graph(pen: &Pen) {
+    pen.boxed((0.32, 0.06), (0.68, 0.3), 1.0);
+    pen.boxed((0.04, 0.7), (0.4, 0.94), 1.0);
+    pen.boxed((0.6, 0.7), (0.96, 0.94), 1.0);
+    pen.line((0.42, 0.3), (0.22, 0.7));
+    pen.line((0.58, 0.3), (0.78, 0.7));
 }
 
 /// The tape deck's play, for a run that carries on until something stops it.

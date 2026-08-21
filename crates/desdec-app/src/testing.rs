@@ -281,6 +281,30 @@ mod window_sheet {
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins"),
         );
         app.dialogs.open(Dialog::Plugins);
+        // The two windows the expression language is written into, on demand:
+        // `DESDEC_WINDOW=expression` or `=trace`. Both are filled in with
+        // something worth looking at, since an empty field says nothing about
+        // what the window does with what is typed in it.
+        match std::env::var("DESDEC_WINDOW").as_deref() {
+            Ok("expression") => {
+                app.dialogs.close(Dialog::Plugins);
+                app.dialogs.close(Dialog::Console);
+                app.expression.source = String::from("[rsp]:8 + 0x20");
+                for watch in ["rsp", "rax * 2", "zf"] {
+                    app.expression.source = watch.to_owned();
+                    crate::ui::expression::watch_for_a_sheet(&mut app);
+                }
+                app.expression.source = String::from("[rsp]:8 + 0x20");
+                app.dialogs.open(Dialog::Expression);
+            }
+            Ok("trace") => {
+                app.dialogs.close(Dialog::Plugins);
+                app.dialogs.close(Dialog::Console);
+                app.trace_until.condition = String::from("rax == 0 && [rsp]:8 != 0");
+                app.dialogs.open(Dialog::TraceUntil);
+            }
+            _ => {}
+        }
         // The update windows, on demand: they are the two a reader meets
         // without having gone looking for them, so they are the two most worth
         // looking at. `DESDEC_UPDATE=consent` or `=offer`.

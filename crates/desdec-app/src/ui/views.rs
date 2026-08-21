@@ -7,7 +7,7 @@ use crate::{
     preferences::accent,
     ui::{
         ERROR, MUTED, assistant, card, columns, decompile, disassembly, dump, expert, format_size,
-        functions, machine, monospace_value, patches_view, segments, strings, yara,
+        functions, graph, machine, monospace_value, patches_view, segments, strings, yara,
     },
 };
 
@@ -56,6 +56,13 @@ fn whole_application_view(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
         }
         WorkspaceView::Machine => {
             machine::show(app, ui);
+            true
+        }
+        // The graph reads the function index and the analysis together, and
+        // moves the workspace when a block is clicked, so it takes the whole
+        // application like the views above it.
+        WorkspaceView::Graph => {
+            graph::show_in(app, ui);
             true
         }
         WorkspaceView::Disassembly => {
