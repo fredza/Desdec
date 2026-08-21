@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "desdec-app"
-version = "0.3.36"
+version = "0.3.40"
 dependencies = [
  "desdec-core",
  "eframe",
@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "desdec-core"
-version = "0.3.36"
+version = "0.3.40"
 dependencies = [
  "capstone",
  "iced-x86",
