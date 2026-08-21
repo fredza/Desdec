@@ -58,11 +58,19 @@ jobs:
     name: Linux x86_64
     needs: version
     runs-on: ubuntu-24.04
+    env:
+      # rust-cache restores whole dependency trees between jobs.  sccache adds
+      # the smaller-grained layer: it reuses rustc outputs when only an
+      # unrelated crate or a workflow step changed.
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
+      - name: Cache Rust compiler outputs
+        uses: mozilla-actions/sccache-action@v0.0.11
       # Every job here compiled the whole dependency tree from nothing, twice
       # over — capstone, iced-x86, eframe, rhai — and then the workspace in
       # debug for the tests and again in release for the artifact. That is
@@ -93,11 +101,16 @@ jobs:
     name: Windows x86_64
     needs: version
     runs-on: windows-2025
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+      - name: Cache Rust compiler outputs
+        uses: mozilla-actions/sccache-action@v0.0.11
       # Every job here compiled the whole dependency tree from nothing, twice
       # over — capstone, iced-x86, eframe, rhai — and then the workspace in
       # debug for the tests and again in release for the artifact. That is
@@ -139,11 +152,16 @@ jobs:
     name: macOS ARM64
     needs: version
     runs-on: macos-15
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+      - name: Cache Rust compiler outputs
+        uses: mozilla-actions/sccache-action@v0.0.11
       # Every job here compiled the whole dependency tree from nothing, twice
       # over — capstone, iced-x86, eframe, rhai — and then the workspace in
       # debug for the tests and again in release for the artifact. That is
