@@ -5,7 +5,7 @@
 Les versions release et pré-release sont signées avec une clef privée, c'est obligatoire actuellement.
 La clef publique est distribuée gratuitement avec le binaire.  
 
-Desdec est un explorateur de binaires local, libre d'usage, fait pour lire les
+Desdec est un explorateur de binaires local et open source, fait pour lire les
 exécutables qu'on a le droit de lire. Il ouvre un fichier ELF, PE ou Mach-O,
 dit ce qu'il contient, et ne l'exécute jamais sur votre machine.
 
@@ -215,11 +215,10 @@ DESDEC_ICON_SHEET=/tmp/icons.svg cargo test -p desdec-app icon_sheet
 
 ## Licence
 
-Desdec est distribué sous [PolyForm Noncommercial 1.0.0](LICENSE). Son usage,
-sa copie, sa modification et sa redistribution sont permis à des fins non
-commerciales ; sa vente ou son usage commercial sont interdits. Les termes
-sont également accessibles depuis la fenêtre À propos.
+Apache-2.0 OU MIT, au choix : [LICENSE-APACHE](LICENSE-APACHE) et
+[LICENSE-MIT](LICENSE-MIT). Les deux sont également accessibles depuis la
+fenêtre À propos, afin que les termes soient atteignables depuis l'application.
 
 Sauf mention contraire de votre part, toute contribution que vous soumettez
-délibérément pour inclusion dans ce travail sera placée sous PolyForm
-Noncommercial 1.0.0, sans terme ni condition supplémentaire.
+délibérément pour inclusion dans ce travail sera doublement licenciée comme
+ci-dessus, sans terme ni condition supplémentaire.
