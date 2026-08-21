@@ -219,7 +219,7 @@ impl Default for Preferences {
 }
 
 pub fn apply_theme(ctx: &egui::Context, preference: ThemePreference) {
-    let visuals = match preference {
+    let mut visuals = match preference {
         ThemePreference::System => match ctx.system_theme() {
             Some(egui::Theme::Light) => light_visuals(),
             Some(egui::Theme::Dark) | None => dark_visuals(),
@@ -228,7 +228,65 @@ pub fn apply_theme(ctx: &egui::Context, preference: ThemePreference) {
         ThemePreference::Light => light_visuals(),
         ThemePreference::Catppuccin => catppuccin_visuals(),
     };
+    dress_windows(&mut visuals);
     ctx.set_visuals(visuals);
+    // Compared before it is written: `apply_theme` runs every frame while the
+    // theme follows the system, and replacing the style each time would churn
+    // for nothing.
+    let margin = egui::Margin::same(WINDOW_MARGIN);
+    if ctx.style().spacing.window_margin != margin {
+        ctx.all_styles_mut(|style| style.spacing.window_margin = margin);
+    }
+}
+
+/// The dialogs' own trim: rounded corners, a lifted shadow and a rim that
+/// separates a window from whatever it covers.
+///
+/// A dialog is a sheet laid over the workspace, and the eye needs to be told
+/// so. Squared-off corners against a flat backdrop read as a hole punched in
+/// the panel rather than as something sitting on top of it, and the listings
+/// underneath are busy enough that a window without a rim dissolves into
+/// them. The values stay modest: this is a disassembler, not a phone.
+const WINDOW_CORNER: u8 = 10;
+const WINDOW_MARGIN: i8 = 14;
+
+fn dress_windows(visuals: &mut egui::Visuals) {
+    visuals.window_corner_radius = egui::CornerRadius::same(WINDOW_CORNER);
+    visuals.menu_corner_radius = egui::CornerRadius::same(8);
+    // Light themes carry a lighter shadow: the same black that reads as depth
+    // over a dark panel reads as dirt over a white one.
+    let dark = visuals.dark_mode;
+    visuals.window_shadow = egui::epaint::Shadow {
+        offset: [0, 10],
+        blur: if dark { 32 } else { 24 },
+        spread: 0,
+        color: egui::Color32::from_black_alpha(if dark { 96 } else { 40 }),
+    };
+    visuals.popup_shadow = egui::epaint::Shadow {
+        offset: [0, 6],
+        blur: 18,
+        spread: 0,
+        color: egui::Color32::from_black_alpha(if dark { 80 } else { 32 }),
+    };
+    visuals.window_stroke = egui::Stroke::new(
+        1.0_f32,
+        if dark {
+            egui::Color32::from_rgb(62, 70, 94)
+        } else {
+            egui::Color32::from_rgb(212, 219, 232)
+        },
+    );
+    // Buttons and fields follow the windows rather than staying square inside
+    // a rounded frame.
+    for widget in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.open,
+    ] {
+        widget.corner_radius = egui::CornerRadius::same(6);
+    }
 }
 
 /// Semantic colours shared by every widget of a theme.
