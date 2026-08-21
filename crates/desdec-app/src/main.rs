@@ -1,5 +1,15 @@
 //! Native entry point of the Desdec binary explorer.
 
+// Built without this, a Windows binary is a console application: the window
+// opens with a black terminal behind it that nothing ever writes to, because
+// nothing here prints — the path given on the command line is read in
+// `DesdecApp::new` and answered in the window. The one message that would
+// have reached that console is the error `main` returns when the window
+// cannot be created at all, so the console stays in a debug build, which is
+// what `Platform binaries` publishes beside each release for exactly that
+// kind of diagnosis.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use eframe::egui;
 
 mod annotations;
