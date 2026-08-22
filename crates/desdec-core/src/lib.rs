@@ -17,6 +17,9 @@ pub mod emulate;
 pub mod fixtures;
 pub mod parallel;
 pub mod patch;
+/// Types the reader names, and where their members sit in the bytes; see the
+/// module's own documentation.
+pub mod types;
 /// Asking GitHub whether there is a newer release; see the module's own
 /// documentation.
 pub mod update;
