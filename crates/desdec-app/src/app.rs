@@ -3675,6 +3675,7 @@ mod tests {
             WorkspaceView::Assistant,
             WorkspaceView::Machine,
             WorkspaceView::Graph,
+            WorkspaceView::Structures,
             WorkspaceView::Patches,
             WorkspaceView::Yara,
         ];

@@ -24,8 +24,8 @@ use desdec_core::{
     Architecture, Section,
     emulate::{Convention, condition::Expression},
     types::{
-        Model, Registry, Type, infer, parse,
-        read::{self, Depth, Reading, Source, Value},
+        Model, Registry, Type, catalogue, infer, parse,
+        read::{self, Depth, Flat, Reading, Source, Value},
     },
 };
 use eframe::egui;
@@ -57,6 +57,13 @@ pub struct State {
     pub applied: Option<String>,
     /// Where it is applied, written as an expression.
     pub address: String,
+    /// Whether the number written is a file offset rather than an address.
+    ///
+    /// The two are different questions and both are worth asking: an address
+    /// is where the loader will put something, and an offset is where it sits
+    /// in the file on disk — which is the only way to reach the header, since
+    /// no section maps it.
+    pub by_file_offset: bool,
     /// The register a structure is read out of the code through.
     pub base: String,
     /// What the last reading out of the code found, kept so its report stays
@@ -245,6 +252,8 @@ fn definitions_pane(app: &mut DesdecApp, ui: &mut egui::Ui, language: Language) 
             ui.colored_label(ERROR, refused);
         }
         ui.add_space(6.0);
+        offer_the_format(app, ui, language);
+        ui.add_space(6.0);
         ui.label(egui::RichText::new(text(language, Text::TypesKeptWithTheNotes)).color(MUTED));
     });
 
@@ -308,6 +317,49 @@ fn definitions_pane(app: &mut DesdecApp, ui: &mut egui::Ui, language: Language) 
             app.structures.trail.clear();
         }
     });
+}
+
+/// The declarations of the file's own format, offered rather than applied.
+///
+/// The first structure anyone wants over a binary is the one it starts with,
+/// and typing `Elf64_Ehdr` out of the manual page is twenty lines of work that
+/// is the same for every ELF ever opened.
+fn offer_the_format(app: &mut DesdecApp, ui: &mut egui::Ui, language: Language) {
+    let Some(format) = app
+        .analysis
+        .as_ref()
+        .map(|analysis| analysis.summary.format)
+    else {
+        return;
+    };
+    let (Some(source), Some(header)) = (catalogue::of(format), catalogue::header_of(format)) else {
+        return;
+    };
+    // Offered once: the declarations are already there, and adding them twice
+    // would only replace them with themselves.
+    if app.structures.registry.get(header).is_some() {
+        return;
+    }
+
+    let label = format!(
+        "{} ({})",
+        text(language, Text::AddTheFormatsOwn),
+        format.label()
+    );
+    if !ui.button(label).clicked() {
+        return;
+    }
+    if !app.structures.source.is_empty() && !app.structures.source.ends_with('\n') {
+        app.structures.source.push('\n');
+    }
+    app.structures.source.push_str(source);
+    app.structures.reread();
+    app.structures.applied = Some(header.to_owned());
+    // The header sits at the start of the file and no section maps it, so it
+    // is reached by offset rather than by address.
+    app.structures.by_file_offset = true;
+    app.structures.address = String::from("0");
+    app.structures.open.clear();
 }
 
 /// Reading a structure out of the code that walks it.
@@ -489,18 +541,18 @@ fn reading_pane(app: &mut DesdecApp, ui: &mut egui::Ui, language: Language) -> A
             return;
         };
 
-        let living = app.machine.is_some();
-        ui.label(
-            egui::RichText::new(text(
-                language,
-                if living {
-                    Text::StructuresReadFromTheMachine
-                } else {
-                    Text::StructuresReadFromTheFile
-                },
-            ))
-            .color(MUTED),
-        );
+        // Three places the bytes can come from, and the pane says which: the
+        // file on disk when the reader asked for an offset, the machine's
+        // memory when one is running, and the file at the address its sections
+        // map to otherwise.
+        let said = if app.structures.by_file_offset {
+            Text::StructuresReadFromTheFileItself
+        } else if app.machine.is_some() {
+            Text::StructuresReadFromTheMachine
+        } else {
+            Text::StructuresReadFromTheFile
+        };
+        ui.label(egui::RichText::new(text(language, said)).color(MUTED));
         ui.add_space(8.0);
 
         let reading = read_now(app, &applied, address);
@@ -541,12 +593,27 @@ fn chooser(app: &mut DesdecApp, ui: &mut egui::Ui, language: Language) {
             app.structures.open.clear();
         }
 
-        ui.label(text(language, Text::Address));
+        ui.label(text(
+            language,
+            if app.structures.by_file_offset {
+                Text::Offset
+            } else {
+                Text::Address
+            },
+        ));
         ui.add(
             egui::TextEdit::singleline(&mut app.structures.address)
-                .desired_width(180.0)
+                .desired_width(150.0)
                 .font(egui::TextStyle::Monospace)
-                .hint_text("rbx"),
+                .hint_text(if app.structures.by_file_offset {
+                    "0"
+                } else {
+                    "rbx"
+                }),
+        );
+        ui.checkbox(
+            &mut app.structures.by_file_offset,
+            text(language, Text::InTheFileItself),
         );
 
         if !app.structures.trail.is_empty()
@@ -572,6 +639,14 @@ fn address_of(app: &DesdecApp) -> Option<u64> {
     }
     let names = &app.names;
     let parsed = Expression::parse_naming(source, &|name| names.address_of(name)).ok()?;
+    if app.structures.by_file_offset {
+        // An offset into the file has nothing to do with a run, so a register
+        // in one has no value rather than the value it happens to hold.
+        return parsed.value(
+            &desdec_core::emulate::registers::Registers::new(),
+            &desdec_core::emulate::memory::Memory::new(std::sync::Arc::from(Vec::new())),
+        );
+    }
     match app.machine.as_ref() {
         Some(machine) => parsed.value(&machine.registers, &machine.memory),
         // With no machine there are no registers, so an address written as one
@@ -587,6 +662,13 @@ fn address_of(app: &DesdecApp) -> Option<u64> {
 fn read_now(app: &DesdecApp, applied: &str, address: u64) -> Reading {
     let kind = Type::Named(applied.to_owned());
     let depth = app.structures.depth();
+    if app.structures.by_file_offset {
+        let file = Flat {
+            base: 0,
+            bytes: &app.file_bytes,
+        };
+        return read::read(&app.structures.registry, &kind, address, &file, depth);
+    }
     if let Some(machine) = app.machine.as_ref() {
         return read::read(
             &app.structures.registry,
@@ -1046,6 +1128,51 @@ mod tests {
                 "{said:?} is drawn on top of something else, at {at:?}"
             );
             seen.push(at);
+        }
+    }
+
+    /// The test that ties the whole module to something already known: the
+    /// entry point read out of the ELF header, through declarations the reader
+    /// could have typed, must be the entry point the analysis found by other
+    /// means entirely.
+    #[test]
+    fn the_files_own_header_read_through_its_format_says_what_the_analysis_says() {
+        let mut app = opened_app(WorkspaceView::Structures);
+        let format = app.analysis.as_ref().expect("an analysis").summary.format;
+        let source = catalogue::of(format).expect("the host's binary is an ELF, a PE or a Mach-O");
+        app.structures.source = source.to_owned();
+        app.structures.reread();
+
+        let header = catalogue::header_of(format).expect("a header structure");
+        app.structures.applied = Some(header.to_owned());
+        // The header is at the start of the file and no section maps it.
+        app.structures.by_file_offset = true;
+        app.structures.address = String::from("0");
+
+        let reading = super::read_now(&app, header, 0);
+        let entry = reading
+            .members
+            .iter()
+            .find(|member| member.name == "e_entry" || member.name == "e_magic")
+            .expect("a member of the header");
+        assert!(entry.value.is_known(), "the header's bytes are there");
+
+        if let Some(expected) = app
+            .analysis
+            .as_ref()
+            .and_then(|analysis| analysis.entry_point)
+        {
+            if let Some(read) = reading
+                .members
+                .iter()
+                .find(|member| member.name == "e_entry")
+                .and_then(|member| member.value.as_u64())
+            {
+                assert_eq!(
+                    read, expected,
+                    "the entry point read through the declarations is the one the analysis found"
+                );
+            }
         }
     }
 

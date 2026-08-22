@@ -1808,6 +1808,21 @@ translations! {
     ],
     Where => ["Emplacement", "Where", "Ubicación"],
     ReadsAndWrites => ["Lu / écrit", "Read / written", "Leído / escrito"],
+    AddTheFormatsOwn => [
+        "Ajouter les structures du format",
+        "Add the format's own structures",
+        "Añadir las estructuras del formato",
+    ],
+    InTheFileItself => [
+        "dans le fichier",
+        "in the file",
+        "en el archivo",
+    ],
+    StructuresReadFromTheFileItself => [
+        "Lu dans le fichier sur le disque, au décalage écrit. C’est ainsi qu’on atteint l’en-tête : aucune section ne le mappe.",
+        "Read from the file on disk, at the offset written. This is how the header is reached: no section maps it.",
+        "Leído del archivo en el disco, en el desplazamiento escrito. Así se alcanza el encabezado: ninguna sección lo mapea.",
+    ],
     ReadFromTheCode => [
         "Déduire d’une fonction",
         "Read out of the code",

@@ -301,6 +301,7 @@ impl Command {
             // where the run now stands.
             | Self::MachineTraceUntil => WorkspaceView::Machine,
             Self::Graph => WorkspaceView::Graph,
+            Self::Structures => WorkspaceView::Structures,
             _ => return None,
         })
     }

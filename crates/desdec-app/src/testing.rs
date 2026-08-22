@@ -467,7 +467,26 @@ mod frame_sheet {
         }
         // Definitions written and applied, so the structures view has
         // something in it: an empty registry draws two prompts and no rows.
-        if std::env::var("DESDEC_STRUCTURES").is_ok() {
+        // `DESDEC_STRUCTURES=format` lays the file's own format over its
+        // header instead, which is the first thing a reader does with it.
+        if std::env::var("DESDEC_STRUCTURES").as_deref() == Ok("format") {
+            let format = app
+                .analysis
+                .as_ref()
+                .map(|analysis| analysis.summary.format);
+            if let Some(format) = format {
+                if let (Some(source), Some(header)) = (
+                    desdec_core::types::catalogue::of(format),
+                    desdec_core::types::catalogue::header_of(format),
+                ) {
+                    app.structures.source = source.to_owned();
+                    app.structures.reread();
+                    app.structures.applied = Some(header.to_owned());
+                    app.structures.by_file_offset = true;
+                    app.structures.address = String::from("0");
+                }
+            }
+        } else if std::env::var("DESDEC_STRUCTURES").is_ok() {
             app.structures.source = String::from(
                 "struct Header {\n    unsigned int magic;\n    unsigned short version;\n    unsigned short flags;\n    char name[8];\n    struct Header *next;\n};\n\nenum Kind : unsigned int {\n    Plain = 0,\n    Packed = 1,\n};\n",
             );

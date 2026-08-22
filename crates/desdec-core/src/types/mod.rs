@@ -24,6 +24,7 @@
 //! - **A member whose bytes are not there has no value.** Not zero. See
 //!   [`read::Value::Unreadable`].
 
+pub mod catalogue;
 pub mod infer;
 pub mod parse;
 pub mod read;
