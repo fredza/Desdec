@@ -312,7 +312,7 @@ fn downloaded(
     ui.add_space(8.0);
     ui.label(text(language, Text::UpdateInstallYourself));
     ui.add_space(4.0);
-    ui.small(egui::RichText::new(text(language, Text::UpdateSignatureNote)).color(MUTED));
+    ui.small(egui::RichText::new(text(language, Text::UpdateChecksumNote)).color(MUTED));
     ui.add_space(12.0);
     ui.horizontal(|ui| {
         if accented_button(ui, text(language, Text::UpdateShowFile), tint).clicked() {

@@ -6,11 +6,14 @@
 #   scripts/install.sh --prefix /usr/local/bin
 #   scripts/install.sh --from-source      # build it here instead
 #
-# It downloads the archive for this machine, checks its SHA-256 *and* its
-# signature, and only then puts the binary anywhere. The two checks answer
-# different questions — the checksum says the download is intact, the
-# signature says who produced it — and a release that fails either one is
-# thrown away rather than installed with a warning printed above it.
+# It downloads the archive for this machine, checks its SHA-256, and only then
+# puts the binary anywhere. A release whose checksum does not match is thrown
+# away rather than installed with a warning printed above it.
+#
+# The checksum says the download is intact and nothing more. Releases are not
+# signed from v0.4.1 on, so that is the whole of the check; up to v0.4.0 they
+# were, and those archives keep the detached `.asc` next to them for anyone
+# who wants to check one with `gpg` and the key at the root of the repository.
 #
 # Nothing here needs root unless the prefix does, nothing is written outside
 # the prefix, and no shell profile is edited: if the prefix is not on the
@@ -18,7 +21,6 @@
 set -euo pipefail
 
 REPO="fredza/Desdec"
-KEY_FINGERPRINT="C9A31D0746E065C4E2EA33F608FA1D818A91F329"
 BINARY="desdec-app"          # what the archive holds
 DEFAULT_NAME="desdec"        # what it is called once installed
 
@@ -27,7 +29,6 @@ name="$DEFAULT_NAME"
 tag=""
 from_source=0
 allow_prerelease=0
-skip_signature=0
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
@@ -42,7 +43,6 @@ Usage: install.sh [options]
   --prefix <dir>    Install into this directory (default: ~/.local/bin)
   --name <name>     Install under this name (default: desdec)
   --from-source     Build from source with cargo instead of downloading
-  --skip-signature  Check the SHA-256 only, not the GPG signature
   -h, --help        Show this message
 
 The environment variable DESDEC_PREFIX sets the default prefix.
@@ -56,7 +56,11 @@ while [ $# -gt 0 ]; do
         --name)    name="${2:-}"; [ -n "$name" ] || die "--name needs a name"; shift 2 ;;
         --pre)     allow_prerelease=1; shift ;;
         --from-source) from_source=1; shift ;;
-        --skip-signature) skip_signature=1; shift ;;
+        # Accepted and ignored: it was the way to install an unsigned release
+        # back when a missing signature stopped the script. Nothing is signed
+        # now, so a command that still carries it keeps working rather than
+        # failing on an unknown option.
+        --skip-signature) shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; die "unknown option: $1" ;;
     esac
@@ -207,35 +211,6 @@ install_from_release() {
             die "neither sha256sum nor shasum is installed"
         fi
     ) || die "the SHA-256 of $asset does not match what $tag published"
-
-    if [ "$skip_signature" -eq 1 ]; then
-        warn "Skipping the signature check: this says the download is intact, not who made it."
-    elif ! command -v gpg >/dev/null 2>&1; then
-        die "gpg is not installed, so the signature cannot be checked. Install gpg, or pass --skip-signature to accept the checksum alone."
-    else
-        say "Checking the signature"
-        fetch "$base/$asset.asc" "$workspace/$asset.asc" \
-            || die "$tag publishes no signature for $asset; pass --skip-signature to install it anyway"
-        # The key is verified against a fingerprint written into this script,
-        # not against whatever the release happens to ship: a key downloaded
-        # beside a signature only proves the two came from the same place.
-        fetch "https://raw.githubusercontent.com/$REPO/main/desdec-signing-key.asc" \
-              "$workspace/desdec-signing-key.asc" \
-            || die "could not fetch the public key"
-
-        local keyring="$workspace/keyring.gpg"
-        gpg --batch --quiet --no-default-keyring --keyring "$keyring" \
-            --import "$workspace/desdec-signing-key.asc" 2>/dev/null \
-            || die "the public key could not be read"
-        gpg --batch --no-default-keyring --keyring "$keyring" \
-            --with-colons --fingerprint 2>/dev/null \
-            | grep -q "^fpr:::::::::$KEY_FINGERPRINT:" \
-            || die "the published key is not $KEY_FINGERPRINT — stopping"
-        gpg --batch --quiet --no-default-keyring --keyring "$keyring" \
-            --verify "$workspace/$asset.asc" "$workspace/$asset" 2>/dev/null \
-            || die "$asset is not signed by $KEY_FINGERPRINT — stopping"
-        say "Signed by ${KEY_FINGERPRINT}"
-    fi
 
     local unpacked="$workspace/unpacked"
     mkdir -p "$unpacked"

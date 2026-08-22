@@ -120,8 +120,10 @@ What a check does is compare three numbers and stop. What a download does is
 finish the job: a release publishes a `.sha256` beside each archive, so the
 archive is hashed on arrival and refused if it does not match — deleted rather
 than left on disk under a name that looks right. That answers whether the bytes
-are intact and nothing more; **who** made them is the detached `.asc` signature's
-answer, and checking it stays a deliberate act with `gpg`.
+are intact and nothing more, and the window says as much: releases are not
+signed from v0.4.1 on, so there is no second question anything published
+answers. Archives up to v0.4.0 carry a detached `.asc` and stay checkable with
+`gpg` and the key at the root of the repository.
 
 Desdec never replaces itself. The archive lands in a folder and opening it is
 the reader's own move — which also means there is no code here that writes to a

@@ -287,12 +287,7 @@ translations! {
         "Licensed under Apache-2.0 or MIT, at your option.",
         "Bajo licencia Apache-2.0 o MIT, a su elección.",
     ],
-    SignedBy => ["Versions signées par", "Releases signed by", "Versiones firmadas por"],
-    SigningKeyHint => [
-        "Empreinte de la clef publique qui signe les versions publiées. Elle accompagne chaque release, avec les signatures détachées de chaque archive.",
-        "Fingerprint of the public key the published releases are signed with. It travels with every release, alongside the detached signature of each archive.",
-        "Huella de la clave pública con la que se firman las versiones publicadas. Acompaña a cada versión, junto a la firma separada de cada archivo.",
-    ],
+    PublishedBy => ["Versions publiées par", "Releases published by", "Versiones publicadas por"],
     LegalNotice => [
         "Utilisez uniquement des binaires que vous pouvez légalement analyser.",
         "Only analyse binaries that you are legally allowed to inspect.",
@@ -1728,10 +1723,10 @@ translations! {
         "Desdec no instala nada ni se reemplaza a sí mismo. El archivo está ahí; abrirlo es cosa suya, cuando quiera.",
     ],
     UpdateShowFile => ["Ouvrir le dossier", "Open the folder", "Abrir la carpeta"],
-    UpdateSignatureNote => [
-        "L’empreinte dit que les octets sont intacts, pas qui les a faits. La signature `.asc` répond à cette question-là, avec la clé publique jointe à la release.",
-        "The checksum says the bytes are intact, not who made them. The `.asc` signature answers that one, with the public key attached to the release.",
-        "La huella dice que los bytes están intactos, no quién los hizo. La firma `.asc` responde a eso, con la clave pública adjunta a la release.",
+    UpdateChecksumNote => [
+        "L’empreinte dit que les octets sont intacts, pas qui les a faits : les versions ne sont plus signées depuis la v0.4.1.",
+        "The checksum says the bytes are intact, not who made them: releases are not signed from v0.4.1 on.",
+        "La huella dice que los bytes están intactos, no quién los hizo: las versiones ya no se firman desde la v0.4.1.",
     ],
     UpdateRefused => [
         "L’empreinte ne correspond pas à celle publiée. Le fichier a été supprimé : une archive qui n’est pas celle annoncée ne doit pas rester sous son nom.",

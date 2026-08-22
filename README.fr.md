@@ -2,8 +2,9 @@
 
 [English](README.md) · **Français** · [Español](README.es.md)
 
-Les versions release et pré-release sont signées avec une clef privée, c'est obligatoire actuellement.
-La clef publique est distribuée gratuitement avec le binaire.  
+Les versions ne sont plus signées à partir de la v0.4.1. Chaque archive porte
+toujours sa somme SHA-256, et celles jusqu'à la v0.4.0 gardent la signature
+avec laquelle elles ont été publiées.
 
 Desdec est un explorateur de binaires local et open source, fait pour lire les
 exécutables qu'on a le droit de lire. Il ouvre un fichier ELF, PE ou Mach-O,
@@ -91,8 +92,8 @@ par un chemin à vous, et ne sont lancés qu'une fois l'un d'eux sélectionné.
 ## Installer et lancer
 
 Le script d'installation télécharge l'archive publiée pour votre machine,
-vérifie son SHA-256 *et* sa signature, et ce n'est qu'ensuite qu'il pose le
-binaire. Sur Linux et macOS (Apple Silicon) :
+vérifie son SHA-256, et ce n'est qu'ensuite qu'il pose le binaire. Sur Linux et
+macOS (Apple Silicon) :
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.sh -o install.sh
@@ -111,10 +112,8 @@ notepad install.ps1   # il est court, et vous allez l'exécuter
 Les deux acceptent `--version` / `-Version v0.3.36` pour une version précise,
 `--prefix` / `-Prefix` pour installer ailleurs, et `--from-source` /
 `-FromSource` pour compiler sur place ; `--help` et `Get-Help .\install.ps1`
-donnent le reste. Une version dont la somme ou la signature ne correspond pas
-est jetée, et non installée avec un avertissement au-dessus. Vérifier une
-signature demande `gpg` — Gpg4win sous Windows — et sans lui le script
-s'arrête plutôt que d'installer ce qu'il n'a pas pu vérifier.
+donnent le reste. Une version dont la somme ne correspond pas est jetée, et
+non installée avec un avertissement au-dessus.
 
 ### Depuis les sources
 
@@ -136,21 +135,24 @@ commençant par `v`, avec leurs sommes SHA-256.
 
 ### Vérifier une version publiée
 
-Chaque archive est signée par **Frédéric Zawalski @2026 bdom**, avec la clef
-`C9A3 1D07 46E0 65C4 E2EA  33F6 08FA 1D81 8A91 F329`. La clef publique voyage
-avec les binaires : elle est jointe à chaque release sous le nom
-`desdec-signing-key.asc`, et se trouve aussi à la racine du dépôt.
+Chaque archive est accompagnée d'un `.sha256`. Il dit que le téléchargement est
+arrivé intact — c'est ce que vérifie le script d'installation, et tout ce qu'il
+prétend :
+
+```sh
+sha256sum --check desdec-linux-x86_64-release.tar.gz.sha256
+```
+
+Cela répond de l'intégrité des octets, pas de qui les a produits. Les versions
+ne sont plus signées à partir de la v0.4.1. Jusqu'à la v0.4.0 elles l'étaient :
+ces archives gardent leur `.asc` détaché, et la clef publique reste à la racine
+du dépôt, si bien qu'un ancien téléchargement se vérifie comme avant.
 
 ```sh
 gpg --import desdec-signing-key.asc
 gpg --verify desdec-linux-x86_64-release.tar.gz.asc \
              desdec-linux-x86_64-release.tar.gz
 ```
-
-La somme SHA-256 répond à une autre question : elle dit que le téléchargement
-est intact, pas qui l'a produit. La signature dit les deux. La clef privée ne
-quitte jamais la machine du mainteneur ; le service de compilation ne la voit
-pas, il ne fait que compiler.
 
 ## Ce qu'il fait de vos fichiers et de votre machine
 

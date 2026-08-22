@@ -204,21 +204,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      # The checkout comes first, and must stay first. `actions/checkout`
-      # cleans the working directory it lands in, and the artifacts land in
-      # that same directory: run the other way round, it deletes all three
-      # archives between downloading them and publishing them. v0.3.0 was
-      # published with nothing in it but the key, and the job went green.
-      #
-      # The public half of the signing key travels with the binaries, so a
-      # reader has both halves of the check without hunting for either. The
-      # private half is never here: it stays on the maintainer's machine, and
-      # `scripts/sign-release.sh` attaches the signatures afterwards. A key a
-      # build service holds is a key whoever reaches that service holds.
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: desdec-signing-key.asc
-          sparse-checkout-cone-mode: false
+      # No checkout, and that is deliberate. `actions/checkout` cleans the
+      # directory it lands in, and the artifacts land in that same directory:
+      # run the two the wrong way round and it deletes the archives between
+      # downloading them and publishing them. v0.3.0 was published with
+      # nothing in it, and the job went green. Nothing from the repository is
+      # attached any more, so the surest way not to repeat that is to have
+      # nothing to check out.
       - uses: actions/download-artifact@v4
         with:
           pattern: desdec-*-release
@@ -230,23 +222,21 @@ jobs:
           # A named file that is not there is the failure this job exists to
           # avoid, and it must stop the release rather than shrink it.
           fail_on_unmatched_files: true
+          # Releases are no longer signed. Everything published here answers
+          # one question — whether the download is intact — and says so
+          # plainly, rather than implying a second answer it does not have.
+          # Archives up to v0.4.0 were signed and keep their `.asc` files.
           body: |
-            Signed by **Frédéric Zawalski @2026 bdom** —
-            key `C9A3 1D07 46E0 65C4 E2EA  33F6 08FA 1D81 8A91 F329`.
-
-            The signatures are attached as `.asc` files next to each archive,
-            and the public key as `desdec-signing-key.asc`. To check one:
+            Each archive has a `.sha256` beside it, which says the download
+            arrived intact:
 
             ```
-            gpg --import desdec-signing-key.asc
-            gpg --verify desdec-linux-x86_64-release.tar.gz.asc \
-                         desdec-linux-x86_64-release.tar.gz
+            sha256sum --check desdec-linux-x86_64-release.tar.gz.sha256
             ```
 
-            The `.sha256` files answer a different question: they say the
-            download is intact, not who made it.
+            Releases are not signed from v0.4.1 on. Up to v0.4.0 they were,
+            and those archives keep their detached `.asc` signatures.
           files: |
-            desdec-signing-key.asc
             desdec-linux-x86_64-release.tar.gz
             desdec-linux-x86_64-release.tar.gz.sha256
             desdec-windows-x86_64-release.zip

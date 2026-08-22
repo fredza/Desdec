@@ -2,8 +2,9 @@
 
 **English** · [Français](README.fr.md) · [Español](README.es.md)
 
-Release and pre-release versions are signed with a private key; this is currently required.
-The public key is distributed free of charge with the binary.
+Releases are no longer signed from v0.4.1 on. Every archive still carries its
+SHA-256, and the archives up to v0.4.0 keep the signatures they were published
+with.
 
 Desdec is a local, open-source binary explorer for reading executables you are
 allowed to read. It opens an ELF, PE or Mach-O file, tells you what is inside
@@ -91,8 +92,8 @@ your own, and are only ever started once you select one.
 ## Install and run
 
 The install script downloads the archive published for your machine, checks
-its SHA-256 *and* its signature, and only then puts the binary in place. On
-Linux and macOS (Apple Silicon):
+its SHA-256, and only then puts the binary in place. On Linux and macOS
+(Apple Silicon):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.sh -o install.sh
@@ -111,10 +112,8 @@ notepad install.ps1   # it is short, and you are about to run it
 Both take `--version` / `-Version v0.3.36` for a particular release,
 `--prefix` / `-Prefix` for somewhere else, and `--from-source` / `-FromSource`
 to build it here instead; `--help` and `Get-Help .\install.ps1` list the rest.
-A release whose checksum or signature does not match is discarded rather than
-installed with a warning above it. Checking a signature needs `gpg` — Gpg4win
-on Windows — and without it the script stops rather than install something it
-could not check.
+A release whose checksum does not match is discarded rather than installed
+with a warning above it.
 
 ### From source
 
@@ -135,21 +134,23 @@ together with their SHA-256 checksums.
 
 ### Checking a published release
 
-Every archive is signed by **Frédéric Zawalski @2026 bdom**, with the key
-`C9A3 1D07 46E0 65C4 E2EA  33F6 08FA 1D81 8A91 F329`. The public key travels
-with the binaries: it is attached to every release as
-`desdec-signing-key.asc`, and it also sits at the root of this repository.
+Every archive has a `.sha256` beside it. It says the download arrived intact,
+which is what the installer checks and all it claims:
+
+```sh
+sha256sum --check desdec-linux-x86_64-release.tar.gz.sha256
+```
+
+That answers whether the bytes are intact, not who produced them. Releases are
+not signed from v0.4.1 on. Up to v0.4.0 they were: those archives keep a
+detached `.asc` next to them, and the public key is still at the root of this
+repository, so an older download can be checked as it always could.
 
 ```sh
 gpg --import desdec-signing-key.asc
 gpg --verify desdec-linux-x86_64-release.tar.gz.asc \
              desdec-linux-x86_64-release.tar.gz
 ```
-
-The SHA-256 checksum answers a different question: it says the download is
-intact, not who produced it. The signature says both. The private key never
-leaves the maintainer's machine — the build service does not hold it, it only
-builds.
 
 ## What it does with your files and your machine
 

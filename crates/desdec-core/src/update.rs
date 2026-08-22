@@ -10,9 +10,9 @@
 //! `.sha256` beside each archive; this reads it, hashes what arrived, and
 //! refuses anything that does not match — deleting it rather than leaving a
 //! half-trusted file on disk under a name that looks right. That answers
-//! whether the bytes are intact, and nothing more: **who** made them is what
-//! the detached `.asc` signature answers, and checking it stays a deliberate
-//! act with `gpg`, described in the release notes.
+//! whether the bytes are intact, and nothing more. It does not answer **who**
+//! made them: releases are not signed from v0.4.1 on, and the window says so
+//! rather than letting a matching checksum be read as more than it is.
 
 use std::{
     fs::{self, OpenOptions},

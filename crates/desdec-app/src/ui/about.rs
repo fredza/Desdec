@@ -9,17 +9,11 @@ use crate::{
 /// About window, so a reader can always find the code that read their file.
 pub const REPOSITORY: &str = "https://github.com/fredza/Desdec";
 
-/// Who stands behind a release, in the same words the signature carries.
+/// Who stands behind a release.
 ///
-/// The releases are signed, and a reader who checks one is told this. Printing
-/// the same line in the window is what lets them compare the two without
-/// taking either on trust.
+/// The window says it in the same words the release page does, so a reader who
+/// arrived by one route recognises the other.
 pub const AUTHOR: &str = "Frédéric Zawalski @2026 bdom";
-
-/// Fingerprint of the key the releases are signed with, in the grouping GPG
-/// prints, so it can be read off the screen and compared character by
-/// character.
-pub const SIGNING_KEY: &str = "C9A3 1D07 46E0 65C4 E2EA  33F6 08FA 1D81 8A91 F329";
 
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     if !app.dialogs.is_open(Dialog::About) {
@@ -67,11 +61,9 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         });
 
         ui.horizontal(|ui| {
-            ui.small(app.t(Text::SignedBy));
+            ui.small(app.t(Text::PublishedBy));
             ui.small(egui::RichText::new(AUTHOR).strong());
         });
-        ui.small(egui::RichText::new(SIGNING_KEY).monospace().size(9.0))
-            .on_hover_text(app.t(Text::SigningKeyHint));
 
         ui.add_space(8.0);
         ui.small(app.t(Text::LegalNotice));
@@ -101,12 +93,10 @@ mod tests {
         );
     }
 
-    /// The window says who signs the releases and with which key. A reader who
-    /// has just checked a signature compares what GPG told them with what the
-    /// application says; the two have to be the same words, and the same key,
-    /// or the check answers nothing.
+    /// The window names who published the release it is part of. It is the one
+    /// place the reader can put a name to the program without leaving it.
     #[test]
-    fn the_window_names_the_signature_the_releases_carry() {
+    fn the_window_names_who_publishes_the_releases() {
         let ctx = egui::Context::default();
         let mut app = crate::app::DesdecApp::for_test(None, crate::app::WorkspaceView::Overview);
         app.dialogs.open(Dialog::About);
@@ -116,33 +106,7 @@ mod tests {
         let output = ctx.run(crate::testing::window_input(), |ctx| show(&mut app, ctx));
 
         let drawn = crate::testing::drawn_text(&output.shapes);
-        assert!(drawn.contains(AUTHOR), "the window must name who signs");
-        assert!(
-            drawn.contains(SIGNING_KEY),
-            "and the key, so it can be compared with what GPG printed"
-        );
-    }
-
-    /// The fingerprint is quoted in three README files, a release note and a
-    /// signing script. One of them drifting would send a reader to compare
-    /// against the wrong key, which is worse than not quoting it at all.
-    #[test]
-    fn the_fingerprint_is_the_same_everywhere_it_is_quoted() {
-        let bare: String = SIGNING_KEY.chars().filter(|c| !c.is_whitespace()).collect();
-        assert_eq!(bare.len(), 40, "a fingerprint is forty hexadecimal digits");
-        assert!(bare.chars().all(|c| c.is_ascii_hexdigit()));
-
-        for (path, quoted) in [
-            ("../../README.md", SIGNING_KEY),
-            ("../../README.fr.md", SIGNING_KEY),
-            ("../../README.es.md", SIGNING_KEY),
-            ("../../scripts/sign-release.sh", bare.as_str()),
-            ("../../.github/workflows/platform-binaries.yml", SIGNING_KEY),
-        ] {
-            let at = concat!(env!("CARGO_MANIFEST_DIR"), "/").to_owned() + path;
-            let text = std::fs::read_to_string(&at).unwrap_or_else(|_| panic!("{at} is readable"));
-            assert!(text.contains(quoted), "{path} quotes a different key");
-        }
+        assert!(drawn.contains(AUTHOR), "the window must name who publishes");
     }
 
     /// The window must offer the source and the licences, in every language:

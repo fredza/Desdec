@@ -2,8 +2,9 @@
 
 [English](README.md) · [Français](README.fr.md) · **Español**
 
-Las versiones «release» y «pre-release» se firman con una clave privada; actualmente es obligatorio.
-La clave pública se distribuye de forma gratuita junto con el binario.  
+Las versiones ya no se firman a partir de la v0.4.1. Cada archivo sigue
+llevando su suma SHA-256, y los publicados hasta la v0.4.0 conservan la firma
+con la que salieron.
 
 Desdec es un explorador de binarios local y de código abierto, hecho para leer
 los ejecutables que uno tiene derecho a leer. Abre un archivo ELF, PE o Mach-O,
@@ -92,8 +93,8 @@ una ruta propia, y solo se ejecutan una vez que se selecciona uno.
 ## Instalar y ejecutar
 
 El script de instalación descarga el archivo publicado para su máquina,
-comprueba su SHA-256 *y* su firma, y solo entonces coloca el binario. En Linux
-y macOS (Apple Silicon):
+comprueba su SHA-256, y solo entonces coloca el binario. En Linux y macOS
+(Apple Silicon):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.sh -o install.sh
@@ -113,10 +114,8 @@ notepad install.ps1   # es corto, y está a punto de ejecutarlo
 Ambos aceptan `--version` / `-Version v0.3.36` para una versión concreta,
 `--prefix` / `-Prefix` para instalar en otro sitio, y `--from-source` /
 `-FromSource` para compilar aquí mismo; `--help` y `Get-Help .\install.ps1`
-enumeran el resto. Una versión cuya suma o firma no coincide se descarta, en
-lugar de instalarse con un aviso encima. Comprobar una firma necesita `gpg`
-—Gpg4win en Windows— y sin él el script se detiene en vez de instalar algo que
-no ha podido comprobar.
+enumeran el resto. Una versión cuya suma no coincide se descarta, en lugar de
+instalarse con un aviso encima.
 
 ### Desde las fuentes
 
@@ -138,20 +137,23 @@ por `v`, junto con sus sumas SHA-256.
 
 ### Comprobar una versión publicada
 
-Cada archivo está firmado por **Frédéric Zawalski @2026 bdom**, con la clave
-`C9A3 1D07 46E0 65C4 E2EA  33F6 08FA 1D81 8A91 F329`. La clave pública viaja
-con los binarios: se adjunta a cada versión con el nombre
-`desdec-signing-key.asc`, y también está en la raíz del repositorio.
+Cada archivo lleva un `.sha256` al lado. Dice que la descarga llegó íntegra,
+que es lo que comprueba el instalador y todo lo que afirma:
+
+```sh
+sha256sum --check desdec-linux-x86_64-release.tar.gz.sha256
+```
+
+Eso responde por la integridad de los bytes, no por quién los produjo. Las
+versiones ya no se firman a partir de la v0.4.1. Hasta la v0.4.0 sí lo estaban:
+esos archivos conservan su `.asc` separado, y la clave pública sigue en la raíz
+del repositorio, así que una descarga antigua se comprueba como siempre.
 
 ```sh
 gpg --import desdec-signing-key.asc
 gpg --verify desdec-linux-x86_64-release.tar.gz.asc \
              desdec-linux-x86_64-release.tar.gz
 ```
-
-La suma SHA-256 responde a otra pregunta: dice que la descarga está íntegra, no
-quién la produjo. La firma dice ambas cosas. La clave privada nunca sale de la
-máquina del mantenedor; el servicio de compilación no la tiene, solo compila.
 
 ## Qué hace con sus archivos y con su máquina
 

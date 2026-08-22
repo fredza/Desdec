@@ -4,15 +4,15 @@
 
 .DESCRIPTION
     The companion of scripts/install.sh, for a Windows without a POSIX shell.
-    It downloads the archive published for this machine, checks its SHA-256
-    and its signature, and only then puts the binary anywhere. The two checks
-    answer different questions — the checksum says the download is intact, the
-    signature says who produced it — and a release that fails either one is
-    thrown away rather than installed with a warning printed above it.
+    It downloads the archive published for this machine, checks its SHA-256,
+    and only then puts the binary anywhere. A release whose checksum does not
+    match is thrown away rather than installed with a warning printed above it.
 
-    Signatures are OpenPGP, so checking one needs gpg on the PATH — Gpg4win
-    installs it. Without gpg the script stops rather than quietly installing
-    something it could not check; -SkipSignature accepts the checksum alone.
+    The checksum says the download is intact and nothing more. Releases are
+    not signed from v0.4.1 on, so that is the whole of the check; up to v0.4.0
+    they were, and those archives keep the detached .asc next to them for
+    anyone who wants to check one with gpg and the key at the root of the
+    repository.
 
     Nothing is written outside the prefix. The user PATH is left alone unless
     -AddToPath is given, and then only that one entry is appended.
@@ -31,6 +31,10 @@ param(
     [string] $Name = 'desdec',
     [switch] $Pre,
     [switch] $FromSource,
+    # Accepted and ignored: it was the way to install an unsigned release back
+    # when a missing signature stopped the script. Nothing is signed now, so a
+    # command that still carries it keeps working rather than failing on a
+    # parameter that no longer exists.
     [switch] $SkipSignature,
     [switch] $AddToPath
 )
@@ -39,7 +43,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Repo = 'fredza/Desdec'
-$KeyFingerprint = 'C9A31D0746E065C4E2EA33F608FA1D818A91F329'
 $Binary = 'desdec-app.exe'
 $Asset = 'desdec-windows-x86_64-release.zip'
 
@@ -128,39 +131,6 @@ function Install-FromRelease {
         $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
         if ($published -ine $actual) {
             Fail "the SHA-256 of $Asset does not match what $Version published"
-        }
-
-        if ($SkipSignature) {
-            Write-Warning 'Skipping the signature check: this says the download is intact, not who made it.'
-        } else {
-            $gpg = Get-Command gpg -ErrorAction SilentlyContinue
-            if (-not $gpg) {
-                Fail 'gpg is not on the PATH, so the signature cannot be checked. Install Gpg4win, or pass -SkipSignature to accept the checksum alone.'
-            }
-            Write-Host 'Checking the signature'
-            try {
-                Invoke-WebRequest -Uri "$base/$Asset.asc" -OutFile "$archive.asc"
-            } catch {
-                Fail "$Version publishes no signature for $Asset; pass -SkipSignature to install it anyway"
-            }
-            # The key is checked against a fingerprint written into this
-            # script, not against whatever the release happens to ship: a key
-            # downloaded beside a signature only proves the two came from the
-            # same place.
-            $keyFile = Join-Path $workspace 'desdec-signing-key.asc'
-            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$Repo/main/desdec-signing-key.asc" -OutFile $keyFile
-
-            $keyring = Join-Path $workspace 'keyring.gpg'
-            & gpg --batch --quiet --no-default-keyring --keyring $keyring --import $keyFile 2>$null
-            $fingerprints = & gpg --batch --no-default-keyring --keyring $keyring --with-colons --fingerprint 2>$null
-            if (-not ($fingerprints -match "^fpr:::::::::${KeyFingerprint}:")) {
-                Fail "the published key is not $KeyFingerprint — stopping"
-            }
-            & gpg --batch --quiet --no-default-keyring --keyring $keyring --verify "$archive.asc" $archive 2>$null
-            if ($LASTEXITCODE -ne 0) {
-                Fail "$Asset is not signed by $KeyFingerprint — stopping"
-            }
-            Write-Host "Signed by $KeyFingerprint"
         }
 
         $unpacked = Join-Path $workspace 'unpacked'
