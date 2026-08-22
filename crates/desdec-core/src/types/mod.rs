@@ -24,6 +24,7 @@
 //! - **A member whose bytes are not there has no value.** Not zero. See
 //!   [`read::Value::Unreadable`].
 
+pub mod infer;
 pub mod parse;
 pub mod read;
 
@@ -64,14 +65,11 @@ impl Default for Model {
 impl Model {
     /// The model of a file, from what its header stated.
     ///
-    /// `format` is only consulted for the width of `long`; everything else
-    /// follows the architecture.
+    /// The byte order comes from the format rather than being asked for
+    /// separately: a PE is little-endian, and an ELF or a Mach-O says which it
+    /// is in the same header the architecture was read from.
     #[must_use]
-    pub const fn of(
-        architecture: Architecture,
-        format: BinaryFormat,
-        endianness: Endianness,
-    ) -> Self {
+    pub const fn of(architecture: Architecture, format: BinaryFormat) -> Self {
         let pointer = match architecture {
             Architecture::X86 | Architecture::Arm => 4,
             _ => 8,
@@ -80,6 +78,12 @@ impl Model {
         let long = match (pointer, format) {
             (8, BinaryFormat::Pe) => 4,
             _ => pointer,
+        };
+        let endianness = match format {
+            BinaryFormat::Elf { endianness, .. } | BinaryFormat::MachO { endianness, .. } => {
+                endianness
+            }
+            BinaryFormat::Pe | BinaryFormat::Unknown => Endianness::Little,
         };
         let endianness = match endianness {
             // A file that did not state its byte order is read little-endian,
@@ -1153,6 +1157,10 @@ mod tests {
         }
     }
 
+    /// A definition, where some of its members sit, and how much room it
+    /// takes: name, members, size, alignment.
+    type Expected = (&'static str, &'static [(&'static str, u64)], u64, u64);
+
     /// The whole point of the module, checked against the only authority
     /// there is.
     ///
@@ -1181,7 +1189,7 @@ mod tests {
              struct Arrays { short pairs[3][2]; char pad; };",
         );
 
-        let expected: &[(&str, &[(&str, u64)], u64, u64)] = &[
+        let expected: &[Expected] = &[
             ("Mixed", &[("a", 0), ("b", 4), ("c", 8)], 12, 4),
             ("Node", &[("next", 0), ("name", 8), ("id", 24)], 32, 8),
             (

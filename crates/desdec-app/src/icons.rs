@@ -46,6 +46,8 @@ pub enum Icon {
     Machine,
     /// One function drawn as its control flow.
     Graph,
+    /// A run of bytes cut into the members of a structure.
+    Structures,
     Run,
     Restart,
     Breakpoint,
@@ -84,6 +86,8 @@ impl Icon {
         Self::WalkOut,
         Self::WalkClear,
         Self::Machine,
+        Self::Graph,
+        Self::Structures,
         Self::Run,
         Self::Restart,
         Self::Breakpoint,
@@ -188,6 +192,7 @@ pub fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::
         Icon::WalkClear => walk_clear(&pen),
         Icon::Machine => machine(&pen),
         Icon::Graph => graph(&pen),
+        Icon::Structures => structures(&pen),
         Icon::Run => run(&pen),
         Icon::Restart => restart(&pen),
         Icon::Breakpoint => breakpoint(&pen),
@@ -563,6 +568,15 @@ fn graph(pen: &Pen) {
     pen.boxed((0.6, 0.7), (0.96, 0.94), 1.0);
     pen.line((0.42, 0.3), (0.22, 0.7));
     pen.line((0.58, 0.3), (0.78, 0.7));
+}
+
+/// A run of bytes with the cuts a structure makes in it: one band, divided
+/// into members of unequal width, which is what a layout is.
+fn structures(pen: &Pen) {
+    pen.boxed((0.04, 0.28), (0.96, 0.72), 1.0);
+    pen.line((0.32, 0.28), (0.32, 0.72));
+    pen.line((0.52, 0.28), (0.52, 0.72));
+    pen.line((0.78, 0.28), (0.78, 0.72));
 }
 
 /// The tape deck's play, for a run that carries on until something stops it.

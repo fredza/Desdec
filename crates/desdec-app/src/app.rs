@@ -67,6 +67,9 @@ pub enum WorkspaceView {
     Machine,
     /// One function drawn as its control flow; see [`crate::ui::graph`].
     Graph,
+    /// What the bytes at an address mean, through a type the reader wrote; see
+    /// [`crate::ui::types`].
+    Structures,
     Patches,
     Yara,
 }
@@ -83,6 +86,7 @@ impl WorkspaceView {
         Self::Assistant,
         Self::Machine,
         Self::Graph,
+        Self::Structures,
         Self::Patches,
         Self::Yara,
     ];
@@ -99,6 +103,7 @@ impl WorkspaceView {
             Self::Assistant => Text::AiAssistance,
             Self::Machine => Text::Machine,
             Self::Graph => Text::Graph,
+            Self::Structures => Text::Structures,
             Self::Patches => Text::Patches,
             Self::Yara => Text::Yara,
         }
@@ -118,6 +123,7 @@ impl WorkspaceView {
             Self::Assistant => Icon::Assistant,
             Self::Machine => Icon::Machine,
             Self::Graph => Icon::Graph,
+            Self::Structures => Icon::Structures,
             Self::Patches => Icon::Patches,
             Self::Yara => Icon::Yara,
         }
@@ -137,6 +143,7 @@ impl WorkspaceView {
             Self::Assistant => Command::AiAssistance,
             Self::Machine => Command::Machine,
             Self::Graph => Command::Graph,
+            Self::Structures => Command::Structures,
             Self::Patches => Command::Patches,
             Self::Yara => Command::Yara,
         }
@@ -148,7 +155,8 @@ impl WorkspaceView {
         match self {
             Self::Overview | Self::Segments | Self::Functions | Self::Strings => None,
             Self::Disassembly | Self::Decompile | Self::Dump | Self::Assistant => None,
-            Self::Machine | Self::Graph | Self::Patches | Self::Yara => None,
+            Self::Machine | Self::Graph | Self::Structures => None,
+            Self::Patches | Self::Yara => None,
         }
     }
 }
@@ -622,6 +630,9 @@ pub struct DesdecApp {
     pub watches: Vec<crate::ui::expression::Watch>,
     /// The conditional trace: what to run until, and for how long at most.
     pub trace_until: crate::ui::trace_until::State,
+    /// The types the reader has written about this binary's data, and what is
+    /// applied where; see [`crate::ui::types`].
+    pub structures: crate::ui::types::State,
     /// The file's own names for its addresses, indexed once per binary so an
     /// expression can be written about `main` rather than about `0x1a40`.
     pub names: crate::names::Table,
@@ -936,6 +947,12 @@ impl DesdecApp {
     /// per keystroke is a hundred writes for one sentence.
     fn persist_settled_annotations(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|input| input.time);
+        // The type definitions are part of what the reader has written about
+        // this binary, and are saved by the same settling as the notes rather
+        // than by a mechanism of their own.
+        if self.annotations.types() != self.structures.source {
+            self.annotations.set_types(self.structures.source.clone());
+        }
         if self.annotations != self.annotations_last_seen {
             self.annotations_last_seen = self.annotations.clone();
             self.annotations_changed_at = Some(now);
@@ -954,6 +971,13 @@ impl DesdecApp {
             return;
         }
         self.write_annotations();
+    }
+
+    /// Runs one round of the note-saving cycle, for the test that checks the
+    /// type definitions take part in it.
+    #[cfg(test)]
+    pub fn persist_settled_annotations_for_a_test(&mut self, ctx: &egui::Context) {
+        self.persist_settled_annotations(ctx);
     }
 
     /// Records a line in the session's account.
@@ -1360,6 +1384,7 @@ impl DesdecApp {
             // The graph draws the function already selected, so opening it
             // moves nothing else.
             Command::Graph => self.select_view(WorkspaceView::Graph),
+            Command::Structures => self.select_view(WorkspaceView::Structures),
             Command::Expression => self.dialogs.open(Dialog::Expression),
             Command::AskAboutBinary => {
                 self.open_view(command);
@@ -1606,6 +1631,18 @@ impl DesdecApp {
                 self.annotations = self.stored_annotations().unwrap_or_default();
                 self.annotations_saved = self.annotations.clone();
                 self.annotations_last_seen = self.annotations.clone();
+                // The definitions come back with the file, and are laid out
+                // against this file's own shape: how wide its pointers are,
+                // and — the one word that differs between an ELF and a PE of
+                // the same architecture — how wide its `long` is.
+                self.structures.source = self.annotations.types().to_owned();
+                if let Some(analysis) = &self.analysis {
+                    self.structures.set_model(desdec_core::types::Model::of(
+                        analysis.summary.architecture,
+                        analysis.summary.format,
+                    ));
+                }
+                self.structures.reread();
                 self.note(crate::journal::Level::Note, self.opened_summary(path));
             }
             Err(error) => {
@@ -2674,6 +2711,10 @@ impl DesdecApp {
         // next binary opened.
         self.graph = crate::ui::graph::View::default();
         self.watches.clear();
+        // The definitions are the reader's, but they were written about one
+        // file's data and are kept with that file's notes: the next binary
+        // opened brings back its own.
+        self.structures = crate::ui::types::State::default();
         self.references_address = None;
         self.search = crate::ui::search::State::default();
         self.dump = crate::ui::dump::State::default();

@@ -33,6 +33,7 @@ pub mod status_bar;
 pub mod strings;
 pub mod syntax;
 pub mod trace_until;
+pub mod types;
 pub mod update_window;
 pub mod views;
 pub mod yara;
@@ -147,10 +148,26 @@ pub fn columns(
     left: impl FnOnce(&mut egui::Ui),
     right: impl FnOnce(&mut egui::Ui),
 ) {
+    columns_over(ui, &mut (), |ui, ()| left(ui), |ui, ()| right(ui));
+}
+
+/// The same, with one thing both columns write to.
+///
+/// The columns are drawn one after the other, but two closures that each
+/// borrowed the same state would both be alive at once, which the borrow
+/// checker refuses however they are called. Handing the state to each column
+/// in turn is what lets a view keep its own state — an editor on the left, a
+/// reading of what it produced on the right — in one place.
+pub fn columns_over<T>(
+    ui: &mut egui::Ui,
+    over: &mut T,
+    left: impl FnOnce(&mut egui::Ui, &mut T),
+    right: impl FnOnce(&mut egui::Ui, &mut T),
+) {
     if ui.available_width() < TWO_COLUMN_WIDTH {
-        left(ui);
+        left(ui, over);
         ui.add_space(12.0);
-        right(ui);
+        right(ui, over);
         return;
     }
 
@@ -160,12 +177,12 @@ pub fn columns(
     let top_left = ui.cursor().min;
 
     let heights = [
-        column(ui, top_left, width, left),
+        column(ui, top_left, width, |ui| left(ui, over)),
         column(
             ui,
             top_left + egui::vec2(width + spacing, 0.0),
             width,
-            right,
+            |ui| right(ui, over),
         ),
     ];
 

@@ -148,6 +148,10 @@ commands! {
     // The reader's own arithmetic over the machine's state: x64dbg's
     // calculator, in the language its conditions are already written in.
     Expression => [Expression], Some(Shortcut::ctrl_shift(KeyName::E)),
+    // What the bytes at an address mean, which is the one thing the file does
+    // not state and the reader does know. Ctrl+0 because it sits at the end of
+    // the row of view keys, where a tenth view has to go.
+    Structures => [Structures], Some(Shortcut::ctrl(KeyName::Num0)),
     // Looking for a newer release. Never on a shortcut by default: it reaches
     // the network, and a key that does that should be one the reader chose.
     CheckForUpdates => [Updates, CheckForUpdates], None,

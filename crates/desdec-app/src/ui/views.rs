@@ -7,7 +7,7 @@ use crate::{
     preferences::accent,
     ui::{
         ERROR, MUTED, assistant, card, columns, decompile, disassembly, dump, expert, format_size,
-        functions, graph, machine, monospace_value, patches_view, segments, strings, yara,
+        functions, graph, machine, monospace_value, patches_view, segments, strings, types, yara,
     },
 };
 
@@ -56,6 +56,13 @@ fn whole_application_view(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
         }
         WorkspaceView::Machine => {
             machine::show(app, ui);
+            true
+        }
+        // The structures view writes into the registry it draws from, and
+        // moves the workspace when a pointer is followed to somewhere the
+        // listing can show, so it takes the whole application too.
+        WorkspaceView::Structures => {
+            types::show(app, ui);
             true
         }
         // The graph reads the function index and the analysis together, and

@@ -47,6 +47,14 @@ pub struct Annotations {
     /// By address, so the listing and the annotation list read in the same
     /// order the file does.
     entries: BTreeMap<u64, Annotation>,
+    /// The type definitions written about this binary's data, as the C they
+    /// were typed in; see [`crate::ui::types`].
+    ///
+    /// Kept here rather than beside the preferences because it is about this
+    /// file and no other: the structures of one program describe nothing in
+    /// the next one opened, and a reader coming back to a binary wants what
+    /// they worked out about it, not what they worked out about another.
+    types: String,
 }
 
 impl Annotations {
@@ -110,13 +118,25 @@ impl Annotations {
             .map(|(address, annotation)| (*address, annotation))
     }
 
+    /// The C the reader wrote about this binary's data.
+    #[must_use]
+    pub fn types(&self) -> &str {
+        &self.types
+    }
+
+    /// Keeps what the reader wrote about this binary's data.
+    pub fn set_types(&mut self, source: String) {
+        self.types = source;
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.types.trim().is_empty()
     }
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.types.clear();
     }
 }
 

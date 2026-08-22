@@ -101,6 +101,10 @@ impl Value {
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             Self::Unsigned(value) | Self::Address(value) => Some(*value),
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "the caller wants the bits, to go to an address or copy them"
+            )]
             Self::Signed(value) | Self::Enumerated { value, .. } => Some(*value as u64),
             Self::Character(byte) => Some(u64::from(*byte)),
             Self::Bool(state) => Some(u64::from(*state)),
@@ -310,7 +314,15 @@ fn value_of(
                 let value = if base.is_signed() {
                     sign_extend(raw, layout.size * 8)
                 } else {
-                    raw as i64
+                    // An unsigned enumeration wider than `i63` would wrap, and
+                    // no enumeration is stored in one.
+                    #[expect(
+                        clippy::cast_possible_wrap,
+                        reason = "an enumeration is stored in at most eight bytes of value"
+                    )]
+                    {
+                        raw as i64
+                    }
                 };
                 (
                     Value::Enumerated {
@@ -375,6 +387,10 @@ fn members_of(
 }
 
 /// A primitive, read from the bytes it was stored in.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "each cast takes exactly the bytes the type was read from"
+)]
 fn primitive_value(primitive: Primitive, raw: u64, size: u64, bits: Option<u32>) -> Value {
     let width = bits.map_or(size.saturating_mul(8), u64::from);
     match primitive {
@@ -436,6 +452,10 @@ const fn extract(raw: u64, start: u32, width: u32) -> u64 {
 }
 
 /// Reads `value` as a two's-complement number `width` bits wide.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "reading the same bits as signed is what the function is for"
+)]
 const fn sign_extend(value: u64, width: u64) -> i64 {
     if width == 0 || width >= 64 {
         return value as i64;
@@ -722,7 +742,8 @@ mod tests {
         let registry = registry("struct S { unsigned int values[4]; };");
         let mut bytes = vec![0u8; 16];
         for (index, chunk) in bytes.chunks_exact_mut(4).enumerate() {
-            chunk.copy_from_slice(&(index as u32 * 10).to_le_bytes());
+            let index = u32::try_from(index).expect("four elements");
+            chunk.copy_from_slice(&(index * 10).to_le_bytes());
         }
         let reading = reading(&registry, "S", &bytes);
         let values = member(&reading, "values");

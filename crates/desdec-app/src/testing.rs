@@ -465,6 +465,26 @@ mod frame_sheet {
                 app.selected_function = Some(chosen.start);
             }
         }
+        // Definitions written and applied, so the structures view has
+        // something in it: an empty registry draws two prompts and no rows.
+        if std::env::var("DESDEC_STRUCTURES").is_ok() {
+            app.structures.source = String::from(
+                "struct Header {\n    unsigned int magic;\n    unsigned short version;\n    unsigned short flags;\n    char name[8];\n    struct Header *next;\n};\n\nenum Kind : unsigned int {\n    Plain = 0,\n    Packed = 1,\n};\n",
+            );
+            app.structures.reread();
+            app.structures.applied = Some(String::from("Header"));
+            let at = app.analysis.as_ref().and_then(|analysis| {
+                analysis
+                    .sections
+                    .iter()
+                    .find(|section| section.is_mapped() && section.file_size >= 64)
+                    .map(|section| section.virtual_address)
+            });
+            if let Some(at) = at {
+                app.structures.address = format!("{at:#x}");
+            }
+        }
+
         // A breakpoint carrying a condition, so the pane that edits them has
         // something in it to look at.
         if std::env::var("DESDEC_BREAKPOINT").is_ok() {
