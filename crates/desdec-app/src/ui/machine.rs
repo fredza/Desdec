@@ -11,11 +11,15 @@
 //! could go no further. A reader must never be left thinking Desdec attached
 //! to a process.
 
-use desdec_core::emulate::{
-    Machine, Stop, Watchpoint,
-    memory::{Access, Fault},
-    registers::Flag,
-    system::{SystemCall, SystemPlatform},
+use desdec_core::{
+    Architecture,
+    emulate::{
+        Machine, Stop, Watchpoint,
+        memory::{Access, Fault},
+        registers::Flag,
+        system::{SystemCall, SystemPlatform},
+    },
+    types::infer::{self, Frame, Local},
 };
 use eframe::egui;
 
@@ -87,6 +91,11 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
     );
     ui.add_space(10.0);
 
+    // Read before the panes borrow the application: the slots of the frame
+    // come from the function index and the analysis, which the panes below do
+    // not otherwise hold.
+    let frame = frame_slots(app);
+
     let mut asked = BreakpointEdit::default();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -94,53 +103,79 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
             let Some(machine) = &app.machine else {
                 return;
             };
-            columns(
-                ui,
-                |ui| {
-                    card(ui, text(language, Text::Registers), |ui| {
-                        registers(ui, machine, language);
-                    });
-                    ui.add_space(8.0);
-                    card(ui, text(language, Text::CallStack), |ui| {
-                        call_stack(ui, machine, language);
-                    });
-                    ui.add_space(8.0);
-                    card(ui, text(language, Text::Stack), |ui| {
-                        stack(ui, machine, language);
-                    });
-                },
-                |ui| {
-                    card(ui, text(language, Text::ExecutionTrace), |ui| {
-                        trace(ui, machine, language);
-                    });
-                    ui.add_space(8.0);
-                    if let Some(Stop::SystemCall { call, .. }) = machine.stop() {
-                        card(ui, text(language, Text::SystemRequest), |ui| {
-                            system_call(ui, call, language);
-                        });
-                        ui.add_space(8.0);
-                    }
-                    card(ui, text(language, Text::MappedRegions), |ui| {
-                        regions(ui, machine);
-                    });
-                },
-            );
-            ui.add_space(8.0);
-            columns(
-                ui,
-                |ui| {
-                    card(ui, text(language, Text::Breakpoints), |ui| {
-                        asked = breakpoints(ui, machine, language);
-                    });
-                },
-                |ui| {
-                    card(ui, text(language, Text::Watchpoints), |ui| {
-                        watchpoints(ui, machine, language);
-                    });
-                },
-            );
+            asked = panes(ui, machine, frame.as_ref(), language);
         });
     apply(app, ui.ctx(), asked);
+}
+
+/// Everything the view holds, in two rows of two columns.
+fn panes(
+    ui: &mut egui::Ui,
+    machine: &Machine,
+    frame: Option<&FrameSlots>,
+    language: Language,
+) -> BreakpointEdit {
+    let mut asked = BreakpointEdit::default();
+    columns(
+        ui,
+        |ui| {
+            card(ui, text(language, Text::Registers), |ui| {
+                registers(ui, machine, language);
+            });
+            ui.add_space(8.0);
+            card(ui, text(language, Text::CallStack), |ui| {
+                call_stack(ui, machine, language);
+            });
+            ui.add_space(8.0);
+            card(ui, text(language, Text::Stack), |ui| {
+                stack(ui, machine, language);
+            });
+        },
+        |ui| {
+            card(ui, text(language, Text::ExecutionTrace), |ui| {
+                trace(ui, machine, language);
+            });
+            ui.add_space(8.0);
+            // Beside the trace rather than under the registers: the register
+            // card is sixteen general-purpose and sixteen vector rows tall,
+            // and anything below it starts a screen down. What a reader wants
+            // the moment a run stops must not be somewhere they scroll to.
+            card(ui, text(language, Text::LocalVariables), |ui| {
+                if let Some(shown) = locals(ui, machine, frame, language) {
+                    asked.show = Some(shown);
+                }
+            });
+            ui.add_space(8.0);
+            if let Some(Stop::SystemCall { call, .. }) = machine.stop() {
+                card(ui, text(language, Text::SystemRequest), |ui| {
+                    system_call(ui, call, language);
+                });
+                ui.add_space(8.0);
+            }
+            card(ui, text(language, Text::MappedRegions), |ui| {
+                regions(ui, machine);
+            });
+        },
+    );
+    ui.add_space(8.0);
+    columns(
+        ui,
+        |ui| {
+            card(ui, text(language, Text::Breakpoints), |ui| {
+                // A breakpoint the reader edited is the only thing either row
+                // asks for, beside the address the frame's slots offer.
+                let shown = asked.show;
+                asked = breakpoints(ui, machine, language);
+                asked.show = asked.show.or(shown);
+            });
+        },
+        |ui| {
+            card(ui, text(language, Text::Watchpoints), |ui| {
+                watchpoints(ui, machine, language);
+            });
+        },
+    );
+    asked
 }
 
 /// What the reader asked of one breakpoint, acted on once the borrow the panes
@@ -568,6 +603,131 @@ fn stack(ui: &mut egui::Ui, machine: &Machine, language: Language) {
         });
 }
 
+/// The slots of the frame the run is standing in.
+///
+/// x64dbg keeps a pane of these beside its registers, and it is the other half
+/// of what a reader needs the moment they stop somewhere: the registers say
+/// what is in the processor, and this says what is in the frame. Which is a
+/// reading of the function's own code rather than a measurement — the file
+/// never said it had locals — so it is what the instructions state, and the
+/// values beside it are what the run actually put there.
+struct FrameSlots {
+    /// The function the run is standing in.
+    called: String,
+    architecture: Architecture,
+    slots: Vec<Local>,
+}
+
+/// The slots of the frame around the instruction about to run.
+fn frame_slots(app: &DesdecApp) -> Option<FrameSlots> {
+    let analysis = app.analysis.as_ref()?;
+    let pointer = app.machine.as_ref()?.instruction_pointer();
+    let function = app
+        .functions
+        .iter()
+        .find(|function| (function.start..function.end).contains(&pointer))?;
+    let architecture = analysis.summary.architecture;
+    Some(FrameSlots {
+        called: function.name.clone(),
+        architecture,
+        slots: infer::locals(function.body(analysis), architecture),
+    })
+}
+
+/// The frame's slots, with what the run has put in each. Answers an address
+/// the reader asked the listing to show.
+fn locals(
+    ui: &mut egui::Ui,
+    machine: &Machine,
+    frame: Option<&FrameSlots>,
+    language: Language,
+) -> Option<u64> {
+    let Some(frame) = frame else {
+        ui.label(egui::RichText::new(text(language, Text::NotInsideAFunction)).color(MUTED));
+        return None;
+    };
+    ui.label(egui::RichText::new(&frame.called).color(MUTED));
+    if frame.slots.is_empty() {
+        ui.label(egui::RichText::new(text(language, Text::NoFrameSlots)).color(MUTED));
+        return None;
+    }
+
+    let mut show = None;
+    egui::Grid::new("machine-locals")
+        .num_columns(4)
+        .spacing([14.0, 4.0])
+        .min_row_height(ROW_HEIGHT)
+        .show(ui, |ui| {
+            ui.strong(text(language, Text::Where));
+            ui.strong(text(language, Text::Size));
+            ui.strong(text(language, Text::ReadsAndWrites));
+            ui.strong(text(language, Text::Value));
+            ui.end_row();
+
+            for slot in &frame.slots {
+                let at = slot_address(machine, slot);
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(slot.label(frame.architecture)).monospace(),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    show = Some(slot.first);
+                }
+                match slot.width {
+                    Some(width) => ui.monospace(format!("{width} B")),
+                    // The listing never stated how wide the accesses were, so
+                    // neither does this: a made-up width would be read out of
+                    // the memory as a value.
+                    None => ui.label(egui::RichText::new("—").color(MUTED)),
+                };
+                ui.label(
+                    egui::RichText::new(format!("{} / {}", slot.reads, slot.writes)).color(MUTED),
+                );
+                match slot.width.and_then(|width| value_at(machine, at, width)) {
+                    Some(value) => {
+                        ui.monospace(format!("{value:#x}"));
+                    }
+                    None => {
+                        ui.label(egui::RichText::new("—").color(MUTED));
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    show
+}
+
+/// Where a slot of the frame is right now, from the register it hangs off.
+fn slot_address(machine: &Machine, slot: &Local) -> u64 {
+    let register = match slot.frame {
+        Frame::BasePointer => machine.registers.frame_pointer(),
+        Frame::StackPointer => machine.registers.stack_pointer(),
+    };
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "a negative offset is subtracted, which wrapping addition does"
+    )]
+    register.wrapping_add(slot.offset as u64)
+}
+
+/// What is in a slot, when its bytes are mapped and there are no more than
+/// eight of them.
+fn value_at(machine: &Machine, address: u64, width: u64) -> Option<u64> {
+    let width = usize::try_from(width).ok()?;
+    if width == 0 || width > 8 {
+        return None;
+    }
+    let mut bytes = [0_u8; 8];
+    for (step, byte) in bytes.iter_mut().take(width).enumerate() {
+        *byte = machine.memory.peek(address.wrapping_add(step as u64))?;
+    }
+    Some(u64::from_le_bytes(bytes))
+}
+
 /// The instructions most recently carried out, newest last.
 fn trace(ui: &mut egui::Ui, machine: &Machine, language: Language) {
     let entries: Vec<_> = machine.trace().rev().take(ROWS).collect();
@@ -755,6 +915,7 @@ fn watchpoints(ui: &mut egui::Ui, machine: &Machine, language: Language) {
 mod tests {
     use desdec_core::emulate::Stop;
     use desdec_core::emulate::system::{SystemArgument, SystemCall, SystemPlatform};
+    use desdec_core::types::infer::{Frame, Local};
     use eframe::egui;
 
     use crate::{
@@ -798,6 +959,98 @@ mod tests {
             );
             seen.push(at);
         }
+    }
+
+    /// A slot below the frame pointer is below it: the offset is negative and
+    /// subtracting it is what wrapping addition does.
+    #[test]
+    fn a_slot_sits_where_its_offset_puts_it_relative_to_its_register() {
+        // The machine is built on demand, which is what asking for it does.
+        let mut app = crate::testing::emulatable_sample().opened(WorkspaceView::Machine);
+        let machine = app.machine().expect("a machine over this file");
+        machine.registers.set_stack_pointer(0x7fff_0000);
+        let below = Local {
+            frame: Frame::StackPointer,
+            offset: -0x18,
+            width: Some(8),
+            reads: 1,
+            writes: 0,
+            first: 0,
+        };
+        assert_eq!(super::slot_address(machine, &below), 0x7fff_0000 - 0x18);
+
+        let above = Local {
+            offset: 0x20,
+            ..below
+        };
+        assert_eq!(super::slot_address(machine, &above), 0x7fff_0000 + 0x20);
+    }
+
+    /// The frame is the other half of what a reader needs when a run stops:
+    /// the registers say what is in the processor, this says what is in the
+    /// frame.
+    ///
+    /// Drawn on its own rather than looked for in the whole view: the card
+    /// sits below the registers, and what falls outside the viewport is not
+    /// painted at all, so a test that read the whole frame would be reading
+    /// what fits on screen rather than what the view says.
+    #[test]
+    fn the_slots_of_the_frame_are_drawn_with_what_the_run_put_in_them() {
+        let mut app = crate::testing::emulatable_sample().opened(WorkspaceView::Machine);
+        let machine = app.machine().expect("a machine over this file");
+        machine.registers.set_stack_pointer(0x7fff_0000);
+        // Somewhere the file maps, so the slot has bytes behind it.
+        let base = machine
+            .regions()
+            .first()
+            .map(|region| region.start)
+            .expect("a mapped region");
+        machine.registers.set_frame_pointer(base + 0x100);
+
+        let frame = super::FrameSlots {
+            called: String::from("worker"),
+            architecture: desdec_core::Architecture::X86_64,
+            slots: vec![
+                Local {
+                    frame: Frame::BasePointer,
+                    offset: -0x14,
+                    width: Some(4),
+                    reads: 2,
+                    writes: 1,
+                    first: 0x1000,
+                },
+                Local {
+                    frame: Frame::StackPointer,
+                    offset: 0x8,
+                    // A width the listing never stated.
+                    width: None,
+                    reads: 1,
+                    writes: 0,
+                    first: 0x1010,
+                },
+            ],
+        };
+
+        let machine = app.machine.as_ref().expect("the machine just built");
+        let ctx = egui::Context::default();
+        let output = ctx.run(window_input(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                super::locals(ui, machine, Some(&frame), crate::i18n::Language::French);
+            });
+        });
+        let said: String = drawn(&output.shapes)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+
+        assert!(said.contains("worker"), "the function it is the frame of");
+        assert!(said.contains("rbp-0x14"), "where the slot sits: {said}");
+        assert!(said.contains("rsp+0x8"));
+        assert!(said.contains("2 / 1"), "how often it is read and written");
+        assert!(
+            said.contains('—'),
+            "and a slot whose width was never stated has no value read out of it"
+        );
     }
 
     /// Opening the view builds the machine, and the machine reports the file's

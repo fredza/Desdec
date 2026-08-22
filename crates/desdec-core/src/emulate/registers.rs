@@ -212,9 +212,21 @@ impl Registers {
         self.get(Register::RSP)
     }
 
+    /// The frame pointer, which is where a function that keeps one hangs its
+    /// locals off.
+    #[must_use]
+    pub fn frame_pointer(&self) -> u64 {
+        self.get(Register::RBP)
+    }
+
     /// Moves the stack pointer.
     pub fn set_stack_pointer(&mut self, value: u64) {
         self.set(Register::RSP, value);
+    }
+
+    /// Moves the frame pointer.
+    pub fn set_frame_pointer(&mut self, value: u64) {
+        self.set(Register::RBP, value);
     }
 
     #[must_use]

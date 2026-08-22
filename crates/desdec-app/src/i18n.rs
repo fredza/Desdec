@@ -1795,6 +1795,19 @@ translations! {
     FollowThisPointer => ["Suivre", "Follow", "Seguir"],
     BackToWhereItCameFrom => ["Revenir", "Back", "Volver"],
     ChooseAType => ["Choisissez un type", "Choose a type", "Elija un tipo"],
+    LocalVariables => ["Variables locales", "Local variables", "Variables locales"],
+    NotInsideAFunction => [
+        "L’instruction courante n’est dans aucune fonction connue : il n’y a pas de cadre à lire.",
+        "The current instruction is inside no known function, so there is no frame to read.",
+        "La instrucción actual no está en ninguna función conocida: no hay marco que leer.",
+    ],
+    NoFrameSlots => [
+        "Cette fonction ne touche à aucun emplacement de son cadre.",
+        "This function touches no slot of its frame.",
+        "Esta función no toca ningún espacio de su marco.",
+    ],
+    Where => ["Emplacement", "Where", "Ubicación"],
+    ReadsAndWrites => ["Lu / écrit", "Read / written", "Leído / escrito"],
     ReadFromTheCode => [
         "Déduire d’une fonction",
         "Read out of the code",

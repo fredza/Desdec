@@ -42,6 +42,14 @@ pub struct Access {
     /// Whether an index register was part of the address, which is what an
     /// array subscript looks like.
     pub indexed: bool,
+    /// Whether the instruction writes there.
+    ///
+    /// Read from where the operand sits and what the mnemonic does with it,
+    /// which is exact for the moves and the arithmetic and deliberately says
+    /// "read" for anything it does not recognise: a member reported as written
+    /// when it is only compared would have the reader looking for a write that
+    /// never happens.
+    pub writes: bool,
     /// The instruction it was read from.
     pub at: u64,
 }
@@ -180,6 +188,118 @@ fn of_width(width: u64) -> Type {
     })
 }
 
+/// Which register a slot of the frame is reached through.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Frame {
+    /// The frame pointer: `rbp`, `ebp`, `x29`. Where a compiler that keeps one
+    /// puts the locals, at negative offsets, and the arguments it was passed
+    /// on the stack, at positive ones.
+    BasePointer,
+    /// The stack pointer: `rsp`, `esp`, `sp`. Where the locals are in a frame
+    /// built without a frame pointer, which is most of them once the optimiser
+    /// has been over the code.
+    StackPointer,
+}
+
+impl Frame {
+    /// How it is written in an address, so a reader can find it in the
+    /// listing.
+    #[must_use]
+    pub const fn label(self, architecture: Architecture) -> &'static str {
+        match (self, architecture) {
+            (Self::BasePointer, Architecture::X86) => "ebp",
+            (Self::BasePointer, Architecture::Arm64) => "x29",
+            (Self::BasePointer, _) => "rbp",
+            (Self::StackPointer, Architecture::X86) => "esp",
+            (Self::StackPointer, Architecture::Arm64) => "sp",
+            (Self::StackPointer, _) => "rsp",
+        }
+    }
+}
+
+/// One slot of a function's frame, as its own code uses it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Local {
+    pub frame: Frame,
+    /// Bytes from the register. Negative below it, which is where the locals
+    /// of a frame-pointer function are.
+    pub offset: i64,
+    /// How wide the accesses to it are, when the text says.
+    pub width: Option<u64>,
+    pub reads: usize,
+    pub writes: usize,
+    /// The first instruction that touches it, so the listing can be taken
+    /// there.
+    pub first: u64,
+}
+
+impl Local {
+    /// Where it sits, as the listing writes it: `rbp-0x18`.
+    #[must_use]
+    pub fn label(&self, architecture: Architecture) -> String {
+        let register = self.frame.label(architecture);
+        if self.offset < 0 {
+            return format!("{register}-{:#x}", self.offset.unsigned_abs());
+        }
+        format!("{register}+{:#x}", self.offset)
+    }
+}
+
+/// The slots of one function's frame, from what its own code does with them.
+///
+/// Both registers are followed, because whether a function keeps a frame
+/// pointer is the compiler's choice and not the reader's: a frame built
+/// without one puts its locals at positive offsets from `rsp`, and looking
+/// only at `rbp` would find nothing at all in most optimised code.
+///
+/// This is a reading of the text, not a measurement. An access through an
+/// index register is left out — it is a stack array, whose length the code
+/// does not state — and so is anything below the stack pointer, which is not
+/// part of the frame.
+#[must_use]
+pub fn locals(body: &[Instruction], architecture: Architecture) -> Vec<Local> {
+    let mut found: BTreeMap<(Frame, i64), Local> = BTreeMap::new();
+
+    for (frame, register) in [
+        (Frame::BasePointer, Frame::BasePointer.label(architecture)),
+        (Frame::StackPointer, Frame::StackPointer.label(architecture)),
+    ] {
+        for instruction in body {
+            for access in accesses_in(instruction, register, architecture) {
+                if access.indexed {
+                    continue;
+                }
+                // Below the stack pointer is the red zone at best and nothing
+                // at all at worst; it is not a slot of this frame.
+                if frame == Frame::StackPointer && access.offset < 0 {
+                    continue;
+                }
+                let slot = found.entry((frame, access.offset)).or_insert(Local {
+                    frame,
+                    offset: access.offset,
+                    width: access.width,
+                    reads: 0,
+                    writes: 0,
+                    first: instruction.address,
+                });
+                // The widest access is the one that says how much room the
+                // slot takes, the same way it does for a member.
+                slot.width = match (slot.width, access.width) {
+                    (Some(had), Some(width)) => Some(had.max(width)),
+                    (had, width) => had.or(width),
+                };
+                slot.first = slot.first.min(instruction.address);
+                if access.writes {
+                    slot.writes += 1;
+                } else {
+                    slot.reads += 1;
+                }
+            }
+        }
+    }
+    found.into_values().collect()
+}
+
 /// The accesses through `base` one instruction makes.
 fn accesses_in(instruction: &Instruction, base: &str, architecture: Architecture) -> Vec<Access> {
     match architecture {
@@ -211,6 +331,7 @@ fn at_and_t(instruction: &Instruction, base: &str) -> Vec<Access> {
                 offset: displacement(before),
                 width: width_of(text, before, after),
                 indexed,
+                writes: writes_there(text, after),
                 at: instruction.address,
             });
         }
@@ -311,6 +432,26 @@ fn register_width(name: &str) -> Option<u64> {
     None
 }
 
+/// Whether an x86 instruction writes to the memory operand.
+///
+/// In AT&T order the destination is last, so a memory operand with nothing
+/// after it is the destination — unless the mnemonic is one that reads its
+/// destination without writing to it.
+fn writes_there(text: &str, after: &str) -> bool {
+    // `cmp` and `test` set flags and leave both operands alone; `push` reads
+    // its operand and writes to the stack.
+    const READS_ONLY: &[&str] = &["cmp", "test", "push", "bt"];
+
+    if after.contains(',') {
+        return false;
+    }
+    let Some(mnemonic) = text.split_whitespace().next() else {
+        return false;
+    };
+    let stem = mnemonic.trim_end_matches(['b', 'w', 'l', 'q']);
+    !READS_ONLY.contains(&stem) && !READS_ONLY.contains(&mnemonic)
+}
+
 /// GAS's size suffix, when the mnemonic carries one.
 fn suffix_width(mnemonic: &str) -> Option<u64> {
     // Only the mnemonics that take one, and only when nothing else in the line
@@ -361,10 +502,12 @@ fn aarch64(instruction: &Instruction, base: &str) -> Vec<Access> {
             None => {}
         }
     }
+    let mnemonic = text.split_whitespace().next().unwrap_or_default();
     vec![Access {
         offset,
         width: aarch64_width(text),
         indexed,
+        writes: mnemonic.starts_with("st"),
         at: instruction.address,
     }]
 }
@@ -590,6 +733,95 @@ mod tests {
             ]
         );
         assert_eq!(inferred.indexed.len(), 1, "the subscripted one is apart");
+    }
+
+    /// Whether an access writes decides whether the reader is looking at
+    /// where a value comes from or where it goes.
+    #[test]
+    fn where_the_operand_sits_says_whether_the_instruction_writes_there() {
+        let read = from(&[(0x10, "mov 0x8(%rbx),%rax")], "rbx");
+        assert!(!read.accesses[0].writes);
+
+        let written = from(&[(0x10, "mov %rax,0x8(%rbx)")], "rbx");
+        assert!(written.accesses[0].writes);
+
+        // `cmp` has the operand last and writes to neither side.
+        let compared = from(&[(0x10, "cmpl $0x0,0x8(%rbx)")], "rbx");
+        assert!(!compared.accesses[0].writes, "a comparison writes nothing");
+
+        let stored = from_body(
+            "guessed",
+            "x0",
+            &body(&[(0x10, "str x1, [x0, #0x8]"), (0x14, "ldr x2, [x0]")]),
+            Architecture::Arm64,
+        );
+        assert!(stored.accesses[0].writes);
+        assert!(!stored.accesses[1].writes);
+    }
+
+    /// The frame of a function, from what its own code does with it.
+    #[test]
+    fn the_slots_of_a_frame_are_read_from_both_of_the_registers_that_reach_it() {
+        let found = locals(
+            &body(&[
+                (0x10, "mov %edi,-0x14(%rbp)"),
+                (0x13, "mov -0x14(%rbp),%eax"),
+                (0x16, "mov %rax,0x8(%rsp)"),
+                (0x1a, "mov -0x8(%rsp),%rax"),
+            ]),
+            Architecture::X86_64,
+        );
+        assert_eq!(
+            found.len(),
+            2,
+            "one slot of each frame, and nothing below rsp"
+        );
+
+        let local = &found[0];
+        assert_eq!(local.frame, Frame::BasePointer);
+        assert_eq!(local.offset, -0x14);
+        assert_eq!(local.width, Some(4));
+        assert_eq!((local.reads, local.writes), (1, 1));
+        assert_eq!(local.first, 0x10);
+        assert_eq!(local.label(Architecture::X86_64), "rbp-0x14");
+
+        let argument = &found[1];
+        assert_eq!(argument.frame, Frame::StackPointer);
+        assert_eq!(argument.label(Architecture::X86_64), "rsp+0x8");
+        assert_eq!((argument.reads, argument.writes), (0, 1));
+    }
+
+    /// A frame written without a frame pointer — most optimised code — has its
+    /// locals at positive offsets from the stack pointer, and looking only at
+    /// `rbp` would find none of them.
+    #[test]
+    fn a_frame_with_no_frame_pointer_still_has_its_slots_read() {
+        let found = locals(
+            &body(&[
+                (0x10, "sub $0x28,%rsp"),
+                (0x14, "movl $0x0,0x14(%rsp)"),
+                (0x1c, "mov 0x14(%rsp),%eax"),
+                (0x20, "mov %rax,0x18(%rsp)"),
+            ]),
+            Architecture::X86_64,
+        );
+        assert_eq!(
+            found
+                .iter()
+                .map(|local| local.label(Architecture::X86_64))
+                .collect::<Vec<_>>(),
+            vec!["rsp+0x14".to_owned(), "rsp+0x18".to_owned()],
+            "the immediate of the `sub` is not an address and makes no slot"
+        );
+    }
+
+    #[test]
+    fn a_stack_array_is_left_out_rather_than_given_a_made_up_length() {
+        let found = locals(
+            &body(&[(0x10, "mov -0x20(%rbp,%rax,4),%ecx")]),
+            Architecture::X86_64,
+        );
+        assert!(found.is_empty());
     }
 
     /// A structure read out of code is C the reader can edit, which is the
