@@ -312,7 +312,10 @@ mod tests {
     fn an_indirect_jump_leaves_the_block_with_nowhere_stated() {
         let blocks = of(&body(&[(0x10, "mov rax, 1"), (0x14, "jmp rax")]));
         assert_eq!(blocks.len(), 1);
-        assert!(blocks[0].leaves(), "nothing is guessed for an indirect jump");
+        assert!(
+            blocks[0].leaves(),
+            "nothing is guessed for an indirect jump"
+        );
         assert_eq!(
             blocks[0].exit,
             Exit::Unstated,

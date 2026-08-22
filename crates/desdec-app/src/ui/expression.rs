@@ -115,8 +115,7 @@ fn contents(app: &mut DesdecApp, ui: &mut egui::Ui) -> Option<u64> {
             ui.colored_label(ERROR, text(language, Text::ExpressionHasNoValue));
             if app.machine.is_none() {
                 ui.label(
-                    egui::RichText::new(text(language, Text::ExpressionNeedsAMachine))
-                        .color(MUTED),
+                    egui::RichText::new(text(language, Text::ExpressionNeedsAMachine)).color(MUTED),
                 );
             }
         }
@@ -161,16 +160,15 @@ fn read_now(app: &mut DesdecApp) -> Reading {
         return Reading::Empty;
     }
     let names = &app.names;
-    let parsed = match Expression::parse_naming(&app.expression.source, &|name| {
-        names.address_of(name)
-    }) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            let said = error.to_string();
-            app.expression.refused = Some(said.clone());
-            return Reading::Refused(said);
-        }
-    };
+    let parsed =
+        match Expression::parse_naming(&app.expression.source, &|name| names.address_of(name)) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                let said = error.to_string();
+                app.expression.refused = Some(said.clone());
+                return Reading::Refused(said);
+            }
+        };
     app.expression.refused = None;
     // The machine as it stands, without building one: opening this window must
     // not start anything, and an expression of numbers alone answers without a
@@ -212,10 +210,7 @@ fn value_rows(ui: &mut egui::Ui, value: u64, language: Language) -> Option<u64> 
             }
         });
     ui.add_space(8.0);
-    if ui
-        .button(text(language, Text::GoToThisAddress))
-        .clicked()
-    {
+    if ui.button(text(language, Text::GoToThisAddress)).clicked() {
         go_to = Some(value);
     }
     go_to
@@ -303,7 +298,10 @@ mod tests {
         let _ = ctx.run(window_input(), &mut draw);
         let output = ctx.run(window_input(), &mut draw);
         let said = crate::testing::drawn_text(&output.shapes);
-        assert!(said.contains("66"), "the decimal answer is on screen: {said}");
+        assert!(
+            said.contains("66"),
+            "the decimal answer is on screen: {said}"
+        );
         assert!(said.contains("0x42") || said.contains("42"), "{said}");
     }
 

@@ -18,7 +18,11 @@
 //!   register points, and no register has a value here. The walk stops and
 //!   says so.
 
-use desdec_core::{Analysis, flow::{self, Kind}, operand};
+use desdec_core::{
+    Analysis,
+    flow::{self, Kind},
+    operand,
+};
 
 /// How far a single press moves the walk.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

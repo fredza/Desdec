@@ -442,7 +442,8 @@ fn canvas(view: &mut View, ui: &mut egui::Ui, drawing: &Drawing<'_>) -> Option<u
             && let Some(pointer) = response.hover_pos()
         {
             let previous = view.zoom;
-            let zoom = (previous * (1.0 + scroll * 0.002)).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
+            let zoom =
+                (previous * (1.0 + scroll * 0.002)).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
             let anchor = pointer - rect.min - view.offset;
             view.offset += anchor - anchor * (zoom / previous);
             view.zoom = zoom;
@@ -451,8 +452,7 @@ fn canvas(view: &mut View, ui: &mut egui::Ui, drawing: &Drawing<'_>) -> Option<u
     if view.centre_on_entry {
         // The entry block, brought under the top middle of the surface.
         if let Some(entry) = drawing.placed.of_block(0) {
-            view.offset =
-                egui::vec2(rect.width() / 2.0 - entry.rect.center().x, 24.0);
+            view.offset = egui::vec2(rect.width() / 2.0 - entry.rect.center().x, 24.0);
         }
         view.centre_on_entry = false;
     }
@@ -467,10 +467,7 @@ fn canvas(view: &mut View, ui: &mut egui::Ui, drawing: &Drawing<'_>) -> Option<u
     let mut go_to = None;
     for node in &drawing.placed.nodes {
         let block = &drawing.blocks[node.block];
-        let screen = egui::Rect::from_min_size(
-            to_screen(node.rect.min),
-            node.rect.size() * zoom,
-        );
+        let screen = egui::Rect::from_min_size(to_screen(node.rect.min), node.rect.size() * zoom);
         if !rect.intersects(screen) {
             continue; // Off the surface: not drawn, and not interacted with.
         }
@@ -845,7 +842,11 @@ mod tests {
         let shown = super::shortened(long);
         assert!(shown.chars().count() <= super::NAME_SHOWN + 1);
         assert!(shown.ends_with('…'));
-        assert_eq!(super::shortened("main"), "main", "a short name is left alone");
+        assert_eq!(
+            super::shortened("main"),
+            "main",
+            "a short name is left alone"
+        );
     }
 
     #[test]

@@ -172,10 +172,7 @@ pub fn columns(
     // The row takes up the width it was given and the height of its taller
     // column — never the width its contents asked for.
     ui.allocate_rect(
-        egui::Rect::from_min_size(
-            top_left,
-            egui::vec2(full_width, heights[0].max(heights[1])),
-        ),
+        egui::Rect::from_min_size(top_left, egui::vec2(full_width, heights[0].max(heights[1]))),
         egui::Sense::hover(),
     );
 }
@@ -488,8 +485,7 @@ mod tests {
                     ui,
                     |ui| {
                         ui.add(
-                            egui::Label::new("A".repeat(400))
-                                .wrap_mode(egui::TextWrapMode::Extend),
+                            egui::Label::new("A".repeat(400)).wrap_mode(egui::TextWrapMode::Extend),
                         );
                     },
                     |ui| {

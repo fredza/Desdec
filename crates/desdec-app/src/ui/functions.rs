@@ -2,7 +2,11 @@
 
 use std::{collections::HashMap, ops::Range};
 
-use desdec_core::{Analysis, Instruction, Symbol, blocks::{self, BasicBlock}, discover};
+use desdec_core::{
+    Analysis, Instruction, Symbol,
+    blocks::{self, BasicBlock},
+    discover,
+};
 use eframe::egui;
 
 use crate::{

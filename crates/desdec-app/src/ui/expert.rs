@@ -204,9 +204,7 @@ pub fn digest_row(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
         // the reader is here to compare it against another one. Sixty-four
         // characters take two lines in a narrow card, which is the price.
         Some(digest) => {
-            ui.add(
-                egui::Label::new(egui::RichText::new(hash::to_hex(&digest)).monospace()).wrap(),
-            );
+            ui.add(egui::Label::new(egui::RichText::new(hash::to_hex(&digest)).monospace()).wrap());
         }
         None => {
             ui.label(egui::RichText::new(text(language, Text::DigestWithheld)).color(MUTED));

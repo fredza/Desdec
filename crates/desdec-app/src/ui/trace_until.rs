@@ -124,7 +124,10 @@ fn run(app: &mut DesdecApp) {
     let parsed = match parsed {
         Ok(parsed) => parsed,
         Err(error) => {
-            let said = format!("{} {error}", text(language, Text::BreakpointConditionRefused));
+            let said = format!(
+                "{} {error}",
+                text(language, Text::BreakpointConditionRefused)
+            );
             app.trace_until.refused = Some(said.clone());
             app.note(Level::Failure, said);
             return;
@@ -197,6 +200,9 @@ mod tests {
         app.trace_until.limit = 40;
         run(&mut app);
         let machine = app.machine.as_ref().expect("a machine was built");
-        assert!(machine.executed() <= 40, "it spent no more than it was given");
+        assert!(
+            machine.executed() <= 40,
+            "it spent no more than it was given"
+        );
     }
 }

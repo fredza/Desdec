@@ -39,7 +39,9 @@ impl Table {
             }
         }
         for function in functions {
-            by_name.entry(function.name.clone()).or_insert(function.start);
+            by_name
+                .entry(function.name.clone())
+                .or_insert(function.start);
         }
         Self { by_name }
     }
