@@ -86,6 +86,9 @@ struct Listing<'a> {
     accent: egui::Color32,
     /// What the reader has written about these addresses.
     notes: &'a crate::annotations::Annotations,
+    /// What each row touches, through the types the reader said the registers
+    /// hold; see [`crate::ui::types::MemberNames`].
+    members: &'a crate::ui::types::MemberNames,
     /// Whether hovering a row says what its operand designates.
     hints: bool,
     /// How wide each column is held, in pixels, so the listing does not walk
@@ -118,6 +121,7 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
         sections: &app.section_starts,
         accent: accent(app.preferences.theme),
         notes: &app.annotations,
+        members: &app.member_names,
         // The general switch still governs: a reader who turned the tooltips
         // off asked for a listing and nothing else.
         hints: app.preferences.show_tooltips && app.preferences.show_operand_hints,
@@ -1072,6 +1076,7 @@ fn instruction_row(
             egui::Label::new(syntax::annotated(
                 ui,
                 &instruction.text,
+                listing.members.get(instruction.address),
                 listing.notes.label(instruction.address),
                 listing.notes.comment(instruction.address),
                 selected_fill,
@@ -1683,6 +1688,7 @@ mod tests {
                     sections: &app.section_starts,
                     accent: egui::Color32::WHITE,
                     notes: &app.annotations,
+                    members: &app.member_names,
                     hints: false,
                     columns: [0.0; 4],
                     machine: app.machine.as_ref(),
@@ -2245,6 +2251,32 @@ mod tests {
         assert!(
             drawn.contains('\u{2605}'),
             "and the mark that was put on it"
+        );
+    }
+
+    /// The offset a reader translates in their head, translated on the row
+    /// itself. This is what a structure is written down *for*.
+    #[test]
+    fn the_listing_names_what_a_row_touches_through_the_type_it_was_told_about() {
+        let analysis = reference_analysis();
+        let Some(address) = analysis.instructions.first().map(|i| i.address) else {
+            return;
+        };
+        let mut app = opened_app(WorkspaceView::Disassembly);
+        // Said about the first row directly rather than worked out from a
+        // function: what is under test is that the listing draws it, not how
+        // the index was filled.
+        app.member_names = crate::ui::types::MemberNames::of([(address, "header.count")]);
+
+        let ctx = egui::Context::default();
+        let output = ctx.run(listing_window_input(), |ctx| {
+            views::show_central_panel(&mut app, ctx);
+        });
+
+        let drawn = drawn_text(&output.shapes);
+        assert!(
+            drawn.contains("→ header.count"),
+            "the row says which member it touches: {drawn}"
         );
     }
 

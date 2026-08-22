@@ -633,6 +633,10 @@ pub struct DesdecApp {
     /// The types the reader has written about this binary's data, and what is
     /// applied where; see [`crate::ui::types`].
     pub structures: crate::ui::types::State,
+    /// What each instruction of the listing touches, named through those
+    /// types. Built from the reader's sayings and rebuilt when they change,
+    /// because the listing reads it on every visible row of every frame.
+    pub member_names: crate::ui::types::MemberNames,
     /// The file's own names for its addresses, indexed once per binary so an
     /// expression can be written about `main` rather than about `0x1a40`.
     pub names: crate::names::Table,
@@ -978,6 +982,17 @@ impl DesdecApp {
     #[cfg(test)]
     pub fn persist_settled_annotations_for_a_test(&mut self, ctx: &egui::Context) {
         self.persist_settled_annotations(ctx);
+    }
+
+    /// Names every access the reader's sayings cover, again.
+    ///
+    /// Called when a saying is made or taken back, when the definitions change
+    /// and when a binary is opened — never per frame: naming an access means
+    /// decoding an operand and walking a type, for every instruction of every
+    /// function that has a saying about it.
+    pub fn rebuild_member_names(&mut self) {
+        let built = crate::ui::types::MemberNames::build(self);
+        self.member_names = built;
     }
 
     /// Records a line in the session's account.
@@ -1643,6 +1658,7 @@ impl DesdecApp {
                     ));
                 }
                 self.structures.reread();
+                self.rebuild_member_names();
                 self.note(crate::journal::Level::Note, self.opened_summary(path));
             }
             Err(error) => {
@@ -2715,6 +2731,7 @@ impl DesdecApp {
         // file's data and are kept with that file's notes: the next binary
         // opened brings back its own.
         self.structures = crate::ui::types::State::default();
+        self.member_names = crate::ui::types::MemberNames::default();
         self.references_address = None;
         self.search = crate::ui::search::State::default();
         self.dump = crate::ui::dump::State::default();

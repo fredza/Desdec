@@ -1808,6 +1808,22 @@ translations! {
     ],
     Where => ["Emplacement", "Where", "Ubicación"],
     ReadsAndWrites => ["Lu / écrit", "Read / written", "Leído / escrito"],
+    NameItInTheListing => [
+        "Nommer dans le listing",
+        "Name it in the listing",
+        "Nombrar en el listado",
+    ],
+    NameItInTheListingHelp => [
+        "chaque accès par ce registre, dans cette fonction, portera le nom de son champ",
+        "every access through that register, in that function, will carry its field's name",
+        "cada acceso por ese registro, en esa función, llevará el nombre de su campo",
+    ],
+    NamedInTheListing => [
+        "Nommé dans le listing",
+        "Named in the listing",
+        "Nombrado en el listado",
+    ],
+    RowsNamed => ["{} lignes nommées", "{} rows named", "{} líneas nombradas"],
     AddTheFormatsOwn => [
         "Ajouter les structures du format",
         "Add the format's own structures",

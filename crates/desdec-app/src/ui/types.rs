@@ -133,6 +133,95 @@ impl State {
     }
 }
 
+/// What each instruction of the listing touches, named through the types the
+/// reader said the registers hold.
+///
+/// Built from the sayings in [`crate::annotations::Annotations::in_code`] and
+/// rebuilt whenever those or the definitions change. The listing reads it on
+/// every visible row, so it must be a lookup and not a computation: naming an
+/// access means decoding an operand and walking a type, and a listing draws
+/// forty rows sixty times a second.
+#[derive(Default)]
+pub struct MemberNames {
+    by_address: std::collections::BTreeMap<u64, String>,
+}
+
+impl MemberNames {
+    /// What the instruction at `address` touches, when something does.
+    #[must_use]
+    pub fn get(&self, address: u64) -> Option<&str> {
+        self.by_address.get(&address).map(String::as_str)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.by_address.is_empty()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.by_address.len()
+    }
+
+    /// An index made from names given directly, for the tests that are about
+    /// what the listing draws rather than about how the index was filled.
+    #[cfg(test)]
+    #[must_use]
+    pub fn of<'a>(named: impl IntoIterator<Item = (u64, &'a str)>) -> Self {
+        Self {
+            by_address: named
+                .into_iter()
+                .map(|(address, path)| (address, path.to_owned()))
+                .collect(),
+        }
+    }
+
+    /// Names every access the reader's sayings cover.
+    #[must_use]
+    pub fn build(app: &DesdecApp) -> Self {
+        let mut by_address = std::collections::BTreeMap::new();
+        let Some(analysis) = app.analysis.as_ref() else {
+            return Self { by_address };
+        };
+        let architecture = analysis.summary.architecture;
+
+        for saying in app.annotations.in_code() {
+            let kind = Type::Named(saying.kind.clone());
+            if app.structures.registry.layout(&kind).is_err() {
+                // A type the reader has since deleted names nothing, rather
+                // than leaving the listing labelled from a definition that is
+                // no longer there.
+                continue;
+            }
+            let Some(function) = app
+                .functions
+                .iter()
+                .find(|function| function.start == saying.function)
+            else {
+                continue;
+            };
+            for named in infer::name_accesses(
+                function.body(analysis),
+                &saying.register,
+                architecture,
+                &app.structures.registry,
+                &kind,
+            ) {
+                let written = if named.into == 0 {
+                    named.path
+                } else {
+                    // An access part way into a member is part way into it,
+                    // and saying so is the difference between a reading and a
+                    // guess.
+                    format!("{}+{:#x}", named.path, named.into)
+                };
+                by_address.entry(named.at).or_insert(written);
+            }
+        }
+        Self { by_address }
+    }
+}
+
 /// What one reading out of the code found, in the reader's terms.
 struct Report {
     /// The function it was read from, and the register it followed.
@@ -246,6 +335,9 @@ fn definitions_pane(app: &mut DesdecApp, ui: &mut egui::Ui, language: Language) 
         // key to see whether a definition is good makes the pane a form.
         if typed.changed() {
             app.structures.reread();
+            // A definition that changed changes what every named row in the
+            // listing says, so the index goes with it.
+            app.rebuild_member_names();
         }
         if let Some(refused) = &app.structures.refused {
             ui.add_space(6.0);
@@ -405,6 +497,33 @@ fn infer_pane(app: &mut DesdecApp, ui: &mut egui::Ui, language: Language) {
             }
         });
 
+        // Naming a type the reader already has, against the function and
+        // register in front of them: a structure worked out on one function is
+        // usually the same one the next function is handed.
+        let applied = app.structures.applied.clone();
+        if let Some(kind) = applied {
+            ui.horizontal(|ui| {
+                if ui
+                    .button(text(language, Text::NameItInTheListing))
+                    .clicked()
+                {
+                    let register = app.structures.base.trim().to_owned();
+                    if !register.is_empty() {
+                        app.annotations.say_in_code(crate::annotations::InCode {
+                            function: start,
+                            register,
+                            kind: kind.clone(),
+                        });
+                        app.rebuild_member_names();
+                    }
+                }
+                ui.label(
+                    egui::RichText::new(text(language, Text::NameItInTheListingHelp)).color(MUTED),
+                );
+            });
+        }
+        sayings(app, ui, language);
+
         if let Some(report) = &app.structures.inferred {
             ui.add_space(6.0);
             ui.label(
@@ -428,6 +547,55 @@ fn infer_pane(app: &mut DesdecApp, ui: &mut egui::Ui, language: Language) {
             }
         }
     });
+}
+
+/// What the reader has said each register holds, and a way to take it back.
+fn sayings(app: &mut DesdecApp, ui: &mut egui::Ui, language: Language) {
+    if app.annotations.in_code().is_empty() {
+        return;
+    }
+    ui.add_space(6.0);
+    // The count is the answer to "did that do anything?", and a saying about a
+    // register the function never uses as a base names no row at all.
+    let said = if app.member_names.is_empty() {
+        text(language, Text::NamedInTheListing).to_owned()
+    } else {
+        format!(
+            "{} — {}",
+            text(language, Text::NamedInTheListing),
+            text(language, Text::RowsNamed).replace("{}", &app.member_names.len().to_string())
+        )
+    };
+    ui.label(egui::RichText::new(said).color(MUTED));
+
+    let mut forget = None;
+    let sayings: Vec<crate::annotations::InCode> = app.annotations.in_code().to_vec();
+    egui::Grid::new("desdec.structures.in_code")
+        .num_columns(4)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            for saying in &sayings {
+                let called = app
+                    .functions
+                    .iter()
+                    .find(|function| function.start == saying.function)
+                    .map_or_else(
+                        || format!("{:#x}", saying.function),
+                        |function| function.name.clone(),
+                    );
+                ui.monospace(called);
+                ui.monospace(&saying.register);
+                ui.label(egui::RichText::new(&saying.kind).color(MUTED));
+                if ui.small_button("✕").clicked() {
+                    forget = Some((saying.function, saying.register.clone()));
+                }
+                ui.end_row();
+            }
+        });
+    if let Some((function, register)) = forget {
+        app.annotations.forget_in_code(function, &register);
+        app.rebuild_member_names();
+    }
 }
 
 /// The register the first argument of a call arrives in, which is the one a
@@ -492,8 +660,16 @@ fn read_out_of_the_code(app: &mut DesdecApp, start: u64, called: &str) {
     }
     app.structures.source.push_str(&written);
     app.structures.reread();
-    app.structures.applied = Some(name);
+    app.structures.applied = Some(name.clone());
     app.structures.open.clear();
+    // The reading already knows which register in which function it came from,
+    // so the listing can be named from it without being asked twice.
+    app.annotations.say_in_code(crate::annotations::InCode {
+        function: start,
+        register: base,
+        kind: name,
+    });
+    app.rebuild_member_names();
 }
 
 /// A name for a structure read out of a function: the function's, the
@@ -1234,6 +1410,99 @@ mod tests {
             "and never starts with a digit"
         );
         assert_eq!(super::suggested_name("", "rdi"), "function_rdi");
+    }
+
+    /// A saying about one register in one function names every access it makes
+    /// through it — which is the column of offsets a reader translates in
+    /// their head, translated.
+    #[test]
+    fn a_saying_about_a_register_names_the_rows_that_go_through_it() {
+        let mut app = opened_app(WorkspaceView::Structures);
+        app.structures.source = "struct Frame { unsigned long long slot[64]; };".to_owned();
+        app.structures.reread();
+
+        // The largest function, so there is something to name.
+        let function = app
+            .functions
+            .iter()
+            .max_by_key(|function| function.end.saturating_sub(function.start))
+            .map(|function| function.start)
+            .expect("a function");
+        app.annotations.say_in_code(crate::annotations::InCode {
+            function,
+            register: "rsp".to_owned(),
+            kind: "Frame".to_owned(),
+        });
+        app.rebuild_member_names();
+
+        assert!(
+            !app.member_names.is_empty(),
+            "a function that keeps a stack frame touches it"
+        );
+        let named = app
+            .member_names
+            .get(
+                *app.member_names
+                    .by_address
+                    .keys()
+                    .next()
+                    .expect("at least one row"),
+            )
+            .expect("a name for it");
+        assert!(
+            named.starts_with("slot["),
+            "the name is the member the offset falls in: {named}"
+        );
+    }
+
+    /// A type the reader has deleted names nothing: a listing labelled from a
+    /// definition that is no longer there would be showing what it was told
+    /// once and never since.
+    #[test]
+    fn a_saying_about_a_type_that_no_longer_exists_names_nothing() {
+        let mut app = opened_app(WorkspaceView::Structures);
+        app.structures.source = "struct Frame { unsigned long long slot[64]; };".to_owned();
+        app.structures.reread();
+        let function = app
+            .functions
+            .iter()
+            .max_by_key(|function| function.end.saturating_sub(function.start))
+            .map(|function| function.start)
+            .expect("a function");
+        app.annotations.say_in_code(crate::annotations::InCode {
+            function,
+            register: "rsp".to_owned(),
+            kind: "Frame".to_owned(),
+        });
+        app.rebuild_member_names();
+        assert!(!app.member_names.is_empty());
+
+        app.structures.source.clear();
+        app.structures.reread();
+        app.rebuild_member_names();
+        assert!(
+            app.member_names.is_empty(),
+            "the saying stands, but there is no type to read it through"
+        );
+    }
+
+    /// Saying it twice about the same register is saying it once: the second
+    /// is a correction, not a second reading.
+    #[test]
+    fn saying_it_again_about_one_register_replaces_what_was_said() {
+        let mut app = opened_app(WorkspaceView::Structures);
+        for kind in ["A", "B"] {
+            app.annotations.say_in_code(crate::annotations::InCode {
+                function: 0x1000,
+                register: "rdi".to_owned(),
+                kind: kind.to_owned(),
+            });
+        }
+        assert_eq!(app.annotations.in_code().len(), 1);
+        assert_eq!(app.annotations.in_code()[0].kind, "B");
+
+        app.annotations.forget_in_code(0x1000, "rdi");
+        assert!(app.annotations.in_code().is_empty());
     }
 
     /// The definitions are the reader's work on one binary, and come back with

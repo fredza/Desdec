@@ -40,6 +40,21 @@ impl Annotation {
     }
 }
 
+/// A type the reader has said one register holds inside one function.
+///
+/// It is what turns `0x18(%rbx)` in the listing into `header.count`: the file
+/// never said what `rbx` points at there, and this is the reader saying it.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InCode {
+    /// Where the function starts, which is how the listing finds it again.
+    pub function: u64,
+    /// The register, as the listing writes it and without a `%`.
+    pub register: String,
+    /// The type it holds, by the name it was defined under.
+    pub kind: String,
+}
+
 /// Everything the reader has written about one binary.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -55,6 +70,8 @@ pub struct Annotations {
     /// the next one opened, and a reader coming back to a binary wants what
     /// they worked out about it, not what they worked out about another.
     types: String,
+    /// Which type each register holds, function by function.
+    in_code: Vec<InCode>,
 }
 
 impl Annotations {
@@ -129,14 +146,35 @@ impl Annotations {
         self.types = source;
     }
 
+    /// Which type each register holds, function by function.
+    #[must_use]
+    pub fn in_code(&self) -> &[InCode] {
+        &self.in_code
+    }
+
+    /// Says that a register holds a type inside a function, replacing whatever
+    /// was said about that same register in that same function.
+    pub fn say_in_code(&mut self, saying: InCode) {
+        self.in_code
+            .retain(|had| had.function != saying.function || had.register != saying.register);
+        self.in_code.push(saying);
+    }
+
+    /// Takes one of those sayings back.
+    pub fn forget_in_code(&mut self, function: u64, register: &str) {
+        self.in_code
+            .retain(|had| had.function != function || had.register != register);
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty() && self.types.trim().is_empty()
+        self.entries.is_empty() && self.types.trim().is_empty() && self.in_code.is_empty()
     }
 
     pub fn clear(&mut self) {
         self.entries.clear();
         self.types.clear();
+        self.in_code.clear();
     }
 }
 

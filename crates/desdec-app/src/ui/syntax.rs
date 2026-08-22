@@ -72,11 +72,25 @@ pub fn pseudo_code(ui: &egui::Ui, text: &str, background: egui::Color32) -> Layo
 pub fn annotated(
     ui: &egui::Ui,
     text: &str,
+    member: Option<&str>,
     label: Option<&str>,
     comment: Option<&str>,
     background: egui::Color32,
 ) -> LayoutJob {
     let mut job = job(ui, background, &assembly_spans(text));
+    // What the operand's offset is, through the type the reader said the
+    // register holds. Written straight after the instruction, before their own
+    // name and comment: it is a reading of this line rather than something
+    // they said about it.
+    if let Some(member) = member {
+        append(
+            &mut job,
+            ui,
+            background,
+            &format!("   → {member}"),
+            Class::Register,
+        );
+    }
     if let Some(label) = label {
         append(
             &mut job,

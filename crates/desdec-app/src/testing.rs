@@ -467,6 +467,43 @@ mod frame_sheet {
         }
         // Definitions written and applied, so the structures view has
         // something in it: an empty registry draws two prompts and no rows.
+        // `DESDEC_STRUCTURES=code` reads a structure out of the largest
+        // function and names its rows, which is what the listing draws.
+        if std::env::var("DESDEC_STRUCTURES").as_deref() == Ok("code") {
+            let largest = app
+                .functions
+                .iter()
+                .max_by_key(|function| function.end.saturating_sub(function.start))
+                .map(|function| (function.start, function.name.clone()));
+            if let (Some((start, called)), Some(analysis)) = (largest, app.analysis.as_ref()) {
+                let architecture = analysis.summary.architecture;
+                let body = app
+                    .functions
+                    .iter()
+                    .find(|function| function.start == start)
+                    .map(|function| function.body(analysis).to_vec())
+                    .unwrap_or_default();
+                let inferred =
+                    desdec_core::types::infer::from_body("frame", "rsp", &body, architecture);
+                let mut registry =
+                    desdec_core::types::Registry::new(*app.structures.registry.model());
+                registry.define(inferred.definition);
+                app.structures.source = registry.to_source();
+                app.structures.reread();
+                app.structures.applied = Some(String::from("frame"));
+                app.structures.base = String::from("rsp");
+                app.annotations.say_in_code(crate::annotations::InCode {
+                    function: start,
+                    register: String::from("rsp"),
+                    kind: String::from("frame"),
+                });
+                app.rebuild_member_names();
+                app.selected_instruction = Some(start);
+                app.pending_instruction_scroll = Some(start);
+                let _ = called;
+            }
+        }
+
         // `DESDEC_STRUCTURES=format` lays the file's own format over its
         // header instead, which is the first thing a reader does with it.
         if std::env::var("DESDEC_STRUCTURES").as_deref() == Ok("format") {

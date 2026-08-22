@@ -406,6 +406,23 @@ pub struct Placed {
     pub layout: Layout,
 }
 
+/// One member found at an offset, with the path that reaches it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Found {
+    /// How to name it from the type it was looked for in: `inner.count`, or
+    /// `entries[3].tag` inside an array.
+    pub path: String,
+    pub kind: Type,
+    /// Where the member starts, from the start of the type asked about.
+    pub offset: u64,
+    /// Bytes past the start of the member the offset asked about falls, which
+    /// is `0` for an offset that lands exactly on it.
+    pub into: u64,
+    pub layout: Layout,
+    /// Which bits it is, when it is a bit-field.
+    pub bits: Option<(u32, u32)>,
+}
+
 /// The types one reader has written down.
 ///
 /// Definitions may name each other in any order, and may name themselves
@@ -527,6 +544,91 @@ impl Registry {
                     .map(|(placed, _)| placed),
             },
             Type::Primitive(_) | Type::Pointer(_) => Ok(Vec::new()),
+        }
+    }
+
+    /// What sits at `offset` bytes into `kind`.
+    ///
+    /// Descends through structures and arrays, so an offset that lands in the
+    /// middle of a nested type is named all the way down — which is what turns
+    /// `0x18(%rbx)` in a listing into `header.count`. An offset in the padding
+    /// between two members belongs to neither, and is answered with `None`
+    /// rather than with whichever member is nearest.
+    #[must_use]
+    pub fn member_at(&self, kind: &Type, offset: u64) -> Option<Found> {
+        self.member_within(kind, offset, 0)
+    }
+
+    /// The same, with a bound on how deep it will go: a type that reaches
+    /// itself through an array of itself would otherwise not stop.
+    fn member_within(&self, kind: &Type, offset: u64, depth: usize) -> Option<Found> {
+        /// Deep enough for anything a reader writes by hand.
+        const LIMIT: usize = 16;
+
+        if depth >= LIMIT {
+            return None;
+        }
+        let layout = self.layout(kind).ok()?;
+        if offset >= layout.size {
+            return None;
+        }
+
+        match kind {
+            // An array is indexed rather than searched: an offset into a
+            // million-element array must not walk a million members.
+            Type::Array(element, count) => {
+                let inner = self.layout(element).ok()?;
+                if inner.size == 0 {
+                    return None;
+                }
+                let index = offset / inner.size;
+                if index >= *count {
+                    return None;
+                }
+                let within = offset % inner.size;
+                let below = self.member_within(element, within, depth + 1);
+                Some(join(
+                    format!("[{index}]"),
+                    index * inner.size,
+                    element,
+                    inner,
+                    within,
+                    below,
+                ))
+            }
+            Type::Named(_) => {
+                // An enumeration and anything undefined have no members to
+                // descend into; a structure or a union does.
+                let placed = self.members_of(kind, u64::MAX).ok()?;
+                let found = placed.into_iter().find(|member| {
+                    // A bit-field is named for the whole of its storage unit:
+                    // an address cannot point at a bit.
+                    offset >= member.offset && offset < member.offset + member.layout.size.max(1)
+                })?;
+                let within = offset - found.offset;
+                let below = self.member_within(&found.kind, within, depth + 1);
+                Some(
+                    join(
+                        found.name,
+                        found.offset,
+                        &found.kind,
+                        found.layout,
+                        within,
+                        below,
+                    )
+                    .with_bits(found.bits),
+                )
+            }
+            // A primitive or a pointer is what is at that offset; an offset
+            // part way into one is part way into it, and says so.
+            Type::Primitive(_) | Type::Pointer(_) => Some(Found {
+                path: String::new(),
+                kind: kind.clone(),
+                offset: 0,
+                into: offset,
+                layout,
+                bits: None,
+            }),
         }
     }
 
@@ -664,6 +766,55 @@ impl Registry {
         // still gives every element an address of its own.
         let size = round_up(end.max(u64::from(members.is_empty())), alignment);
         Ok(Layout { size, alignment })
+    }
+}
+
+impl Found {
+    /// The same, carrying which bits of its storage unit it is.
+    fn with_bits(mut self, bits: Option<(u32, u32)>) -> Self {
+        // Only the outermost member can be a bit-field: nothing nests inside
+        // one.
+        if self.bits.is_none() {
+            self.bits = bits;
+        }
+        self
+    }
+}
+
+/// One member and what was found inside it, named together.
+///
+/// `header` and `count` become `header.count`; an array element keeps its
+/// brackets against the name before it, as C writes it.
+fn join(
+    name: String,
+    offset: u64,
+    kind: &Type,
+    layout: Layout,
+    within: u64,
+    below: Option<Found>,
+) -> Found {
+    match below {
+        Some(below) if !below.path.is_empty() => {
+            let separator = if below.path.starts_with('[') { "" } else { "." };
+            Found {
+                path: format!("{name}{separator}{}", below.path),
+                kind: below.kind,
+                offset: offset + below.offset,
+                into: below.into,
+                layout: below.layout,
+                bits: below.bits,
+            }
+        }
+        // Nothing below names anything of its own: the member itself is the
+        // answer, and how far into it the offset fell is worth keeping.
+        _ => Found {
+            path: name,
+            kind: kind.clone(),
+            offset,
+            into: within,
+            layout,
+            bits: None,
+        },
     }
 }
 
@@ -1224,6 +1375,91 @@ mod tests {
                 assert_eq!(found.1, *offset, "{name}.{member}");
             }
         }
+    }
+
+    /// Turning `0x18(%rbx)` in a listing into `header.count` is the whole
+    /// point of naming an offset.
+    #[test]
+    fn an_offset_is_named_all_the_way_down_through_what_holds_it() {
+        let mut registry = lp64();
+        define(
+            &mut registry,
+            "struct Inner { unsigned int a; unsigned int b; };
+             struct Outer {
+                 unsigned long long head;
+                 struct Inner inner;
+                 struct Inner many[4];
+                 char tag;
+             };",
+        );
+        let outer = named("Outer");
+
+        let head = registry.member_at(&outer, 0).expect("something at 0");
+        assert_eq!(head.path, "head");
+        assert_eq!(head.into, 0);
+
+        let inner_b = registry.member_at(&outer, 12).expect("something at 12");
+        assert_eq!(inner_b.path, "inner.b", "named through what holds it");
+        assert_eq!(inner_b.offset, 12);
+
+        // The array starts at 16, each element is eight bytes: the second
+        // element's `b` is at 16 + 2*8 + 4.
+        let element = registry.member_at(&outer, 36).expect("in the array");
+        assert_eq!(
+            element.path, "many[2].b",
+            "the brackets sit against the name"
+        );
+        assert_eq!(element.offset, 36);
+
+        let tag = registry.member_at(&outer, 48).expect("the last member");
+        assert_eq!(tag.path, "tag");
+    }
+
+    /// An offset part way into a member is that member, and how far in is
+    /// worth keeping: `+0x2` into a four-byte field is the third byte of it.
+    #[test]
+    fn an_offset_part_way_into_a_member_names_the_member_and_says_how_far_in() {
+        let mut registry = lp64();
+        define(&mut registry, "struct S { unsigned int value; };");
+        let found = registry.member_at(&named("S"), 2).expect("inside value");
+        assert_eq!(found.path, "value");
+        assert_eq!(found.into, 2);
+        assert_eq!(found.offset, 0);
+    }
+
+    /// Padding belongs to no member, and naming the nearest one would be
+    /// naming something the offset is not part of.
+    #[test]
+    fn an_offset_in_the_padding_between_members_names_nothing() {
+        let mut registry = lp64();
+        define(&mut registry, "struct S { char a; int b; };");
+        assert_eq!(registry.member_at(&named("S"), 0).expect("a").path, "a");
+        assert!(
+            registry.member_at(&named("S"), 2).is_none(),
+            "the three bytes of padding are not part of either member"
+        );
+        assert_eq!(registry.member_at(&named("S"), 4).expect("b").path, "b");
+    }
+
+    #[test]
+    fn an_offset_past_the_end_of_a_type_names_nothing() {
+        let mut registry = lp64();
+        define(&mut registry, "struct S { unsigned int a; };");
+        assert!(registry.member_at(&named("S"), 4).is_none());
+        assert!(registry.member_at(&named("Never"), 0).is_none());
+    }
+
+    /// A member of a union is at the same offset as every other, and the
+    /// first one declared is the one an offset is named for.
+    #[test]
+    fn an_offset_into_a_union_names_the_first_member_that_holds_it() {
+        let mut registry = lp64();
+        define(
+            &mut registry,
+            "union U { unsigned int number; unsigned char bytes[4]; };",
+        );
+        let found = registry.member_at(&named("U"), 0).expect("something at 0");
+        assert_eq!(found.path, "number");
     }
 
     #[test]

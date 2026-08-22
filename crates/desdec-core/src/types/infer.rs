@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     Architecture, Instruction,
-    types::{Definition, Member, Primitive, Type},
+    types::{Definition, Member, Primitive, Registry, Type},
 };
 
 /// One access through the base register, as the listing states it.
@@ -186,6 +186,61 @@ fn of_width(width: u64) -> Type {
         // as the bytes it is.
         _ => return Type::Array(Box::new(Type::primitive(Primitive::UnsignedChar)), width),
     })
+}
+
+/// One instruction, and the member of a type it touches.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Named {
+    /// The instruction, so a listing can find its own row.
+    pub at: u64,
+    /// The member, named the way [`Registry::member_at`] names it:
+    /// `header.count`, `entries[3].tag`.
+    pub path: String,
+    /// Bytes past the start of the member the access begins at. `0` for an
+    /// access that lands on it exactly, which is nearly all of them.
+    pub into: u64,
+    /// Whether the instruction writes there.
+    pub writes: bool,
+}
+
+/// Names every access `body` makes through `base`, read against `kind`.
+///
+/// This is what turns a column of `0x18(%rbx)` into a column of
+/// `header.count` — the thing a reader is doing in their head anyway, and the
+/// reason to have written the structure down at all.
+///
+/// An access the type does not cover names nothing: below the pointer, past
+/// the end of the structure, or in the padding between two members. Naming the
+/// nearest member instead would put a name in the listing that the code is not
+/// touching.
+#[must_use]
+pub fn name_accesses(
+    body: &[Instruction],
+    base: &str,
+    architecture: Architecture,
+    registry: &Registry,
+    kind: &Type,
+) -> Vec<Named> {
+    let mut named = Vec::new();
+    for instruction in body {
+        for access in accesses_in(instruction, base, architecture) {
+            // An index register means the address is not this offset at all,
+            // and a negative one is not inside what the pointer points at.
+            if access.indexed || access.offset < 0 {
+                continue;
+            }
+            let Some(found) = registry.member_at(kind, access.offset.unsigned_abs()) else {
+                continue;
+            };
+            named.push(Named {
+                at: instruction.address,
+                path: found.path,
+                into: found.into,
+                writes: access.writes,
+            });
+        }
+    }
+    named
 }
 
 /// Which register a slot of the frame is reached through.
@@ -822,6 +877,52 @@ mod tests {
             Architecture::X86_64,
         );
         assert!(found.is_empty());
+    }
+
+    /// The column of offsets a reader translates in their head, translated.
+    #[test]
+    fn the_accesses_of_a_body_are_named_against_the_type_they_go_through() {
+        let mut registry = crate::types::Registry::new(crate::types::Model::default());
+        for definition in crate::types::parse::definitions(
+            "struct Header {
+                 unsigned long long head;
+                 unsigned int count;
+                 unsigned int flags;
+             };",
+        )
+        .expect("the definitions read")
+        {
+            registry.define(definition);
+        }
+        let kind = Type::Named("Header".to_owned());
+
+        let named = name_accesses(
+            &body(&[
+                (0x10, "mov (%rbx),%rax"),
+                (0x13, "mov 0x8(%rbx),%eax"),
+                (0x16, "mov %ecx,0xc(%rbx)"),
+                // Past the end of the structure, and through an index: both
+                // name nothing rather than the member nearest them.
+                (0x19, "mov 0x40(%rbx),%eax"),
+                (0x1c, "mov 0x8(%rbx,%rcx,4),%eax"),
+            ]),
+            "rbx",
+            Architecture::X86_64,
+            &registry,
+            &kind,
+        );
+
+        assert_eq!(
+            named
+                .iter()
+                .map(|one| (one.at, one.path.as_str(), one.writes))
+                .collect::<Vec<_>>(),
+            vec![
+                (0x10, "head", false),
+                (0x13, "count", false),
+                (0x16, "flags", true),
+            ]
+        );
     }
 
     /// A structure read out of code is C the reader can edit, which is the
