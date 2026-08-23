@@ -232,10 +232,70 @@ pub fn apply_theme(ctx: &egui::Context, preference: ThemePreference) {
     ctx.set_visuals(visuals);
     // Compared before it is written: `apply_theme` runs every frame while the
     // theme follows the system, and replacing the style each time would churn
-    // for nothing.
-    let margin = egui::Margin::same(WINDOW_MARGIN);
-    if ctx.style().spacing.window_margin != margin {
-        ctx.all_styles_mut(|style| style.spacing.window_margin = margin);
+    // for nothing. One measurement stands for the whole set — they are only
+    // ever written together, by the call below.
+    if ctx.style().spacing.item_spacing != ITEM_SPACING {
+        ctx.all_styles_mut(measure);
+    }
+}
+
+/// How much room the interface gives itself.
+///
+/// egui's defaults are drawn tight — three points between two rows, one point
+/// under a button's label, nine-point small text — which suits a panel bolted
+/// on to a game and reads as a debug overlay in a window of its own. These are
+/// the measurements of a desktop application: text large enough to read at a
+/// glance, rows that do not touch, and buttons with something under their
+/// labels.
+///
+/// The monospace size is deliberately left where it was. The listings are
+/// virtualised against [`crate::ui::ROW_HEIGHT`], and a taller line would
+/// overflow every row in the disassembly, the dump and the strings table.
+const ITEM_SPACING: egui::Vec2 = egui::vec2(8.0, 5.0);
+const BUTTON_PADDING: egui::Vec2 = egui::vec2(8.0, 3.0);
+const INDENT: f32 = 14.0;
+const SCROLL_BAR_WIDTH: f32 = 8.0;
+const SMALL_TEXT: f32 = 10.5;
+const BODY_TEXT: f32 = 13.5;
+const HEADING_TEXT: f32 = 17.0;
+const MONOSPACE_TEXT: f32 = 12.0;
+
+fn measure(style: &mut egui::Style) {
+    style.spacing.window_margin = egui::Margin::same(WINDOW_MARGIN);
+    style.spacing.item_spacing = ITEM_SPACING;
+    style.spacing.button_padding = BUTTON_PADDING;
+    style.spacing.indent = INDENT;
+    style.spacing.scroll.bar_width = SCROLL_BAR_WIDTH;
+    for (item, size, family) in [
+        (
+            egui::TextStyle::Small,
+            SMALL_TEXT,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Body,
+            BODY_TEXT,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Button,
+            BODY_TEXT,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Heading,
+            HEADING_TEXT,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Monospace,
+            MONOSPACE_TEXT,
+            egui::FontFamily::Monospace,
+        ),
+    ] {
+        style
+            .text_styles
+            .insert(item, egui::FontId::new(size, family));
     }
 }
 

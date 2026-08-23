@@ -119,6 +119,22 @@ pub fn card(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)
     });
 }
 
+/// A filled round pip, the size of the surrounding text.
+///
+/// Drawn rather than written. The obvious spelling is a black-circle
+/// character, and none of the fonts egui ships carries one in the
+/// proportional family: `⬤` came out as `◻`, the replacement glyph, which
+/// turned the loudest mark on the overview into a sign that something was
+/// broken. A circle is two lines of painting and needs no font at all.
+pub fn pip(ui: &mut egui::Ui, colour: egui::Color32) -> egui::Response {
+    let diameter = ui.text_style_height(&egui::TextStyle::Body) * 0.52;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::Vec2::splat(diameter), egui::Sense::hover());
+    ui.painter()
+        .circle_filled(rect.center(), diameter / 2.0, colour);
+    response
+}
+
 /// A monospace value that gives way when the space runs short.
 ///
 /// A path, a digest or a library name cannot be wrapped, and egui will not
@@ -447,6 +463,12 @@ mod tests {
     fn no_card_in_the_overview_is_drawn_over_another_or_past_the_window() {
         let ctx = egui::Context::default();
         let mut app = crate::testing::opened_app(WorkspaceView::Overview);
+        // Measured in the interface's own type, not egui's. What decides
+        // whether a card fits is the width of the text in it, and this test
+        // used to lay out at egui's default sizes — a font the application
+        // never draws a single word in.
+        crate::fonts::install(&ctx);
+        crate::preferences::apply_theme(&ctx, app.preferences.theme);
         // A path long enough to overflow every width tested below. Reading a
         // file from a deeply nested directory was all it ever took.
         if let Some(analysis) = app.analysis.as_mut() {

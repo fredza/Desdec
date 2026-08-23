@@ -115,6 +115,10 @@ Les deux acceptent `--version` / `-Version v0.3.36` pour une version précise,
 donnent le reste. Une version dont la somme ne correspond pas est jetée, et
 non installée avec un avertissement au-dessus.
 
+Le binaire installé répond à `desdec --version` et `desdec --help` ; tout autre
+argument est le fichier à analyser. Sur Windows, une version *release* n'a pas
+de console : elle ouvre sa fenêtre sans rien écrire.
+
 ### Depuis les sources
 
 Rust 1.85 ou plus récent.

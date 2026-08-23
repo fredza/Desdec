@@ -96,7 +96,11 @@ impl Icon {
 
 const BUTTON_SIZE: egui::Vec2 = egui::vec2(34.0, 30.0);
 /// Fraction of the button taken by the glyph; the rest is breathing room.
-const GLYPH_SCALE: f32 = 0.62;
+///
+/// Public so a caller that wants the glyph at a size of its own — the
+/// application's icon, which is a glyph on a tile and not a glyph in a button
+/// — can work out the rectangle that produces it.
+pub const GLYPH_SCALE: f32 = 0.62;
 const CORNER_RADIUS: f32 = 5.0;
 /// Stroke as a fraction of the glyph's size, and the range it stays inside so
 /// a very small icon keeps a visible line and a large one does not go heavy.
@@ -152,14 +156,36 @@ pub fn sized_button(
 /// beside the glyph — can place one itself.
 pub fn draw(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::Color32) {
     let side = rect.width().min(rect.height()) * GLYPH_SCALE;
+    let width = (side * STROKE_RATIO).clamp(*STROKE_RANGE.start(), *STROKE_RANGE.end());
+    draw_with_stroke(painter, rect, icon, color, width);
+}
+
+/// The stroke [`draw`] would use at this size, without the clamp.
+///
+/// [`STROKE_RANGE`] is a button's range: it keeps a sixteen-pixel rail icon
+/// from thinning to a hairline and a thirty-four-pixel one from going heavy.
+/// Nothing outside that range wants it — the application's own icon is drawn
+/// at five hundred pixels for a dock, and `draw` would put a two-and-a-half
+/// pixel line across it.
+#[must_use]
+pub fn stroke_for(side: f32) -> f32 {
+    side * GLYPH_SCALE * STROKE_RATIO
+}
+
+/// The same glyph, at a stroke the caller chose.
+pub fn draw_with_stroke(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    icon: Icon,
+    color: egui::Color32,
+    stroke_width: f32,
+) {
+    let side = rect.width().min(rect.height()) * GLYPH_SCALE;
     let square = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(side));
     let pen = Pen {
         painter,
         rect: square,
-        stroke: egui::Stroke::new(
-            (side * STROKE_RATIO).clamp(*STROKE_RANGE.start(), *STROKE_RANGE.end()),
-            color,
-        ),
+        stroke: egui::Stroke::new(stroke_width, color),
         color,
     };
     match icon {
@@ -290,27 +316,42 @@ fn overview(pen: &Pen) {
 }
 
 /// Bands of unequal width, stacked: the section table as a map of the image.
+///
+/// Outlined rather than filled. Three solid slabs were the heaviest mark on
+/// the rail and pulled the eye to the section table over everything beside
+/// it; at button size a stroked band of this height fills in anyway.
 fn segments(pen: &Pen) {
-    for (y, width) in [(0.06, 1.0), (0.4, 0.62), (0.74, 0.84)] {
-        pen.filled((0.0, y), (width, y + 0.2), 1.0);
+    for (y, width) in [(0.04_f32, 1.0_f32), (0.38, 0.56), (0.72, 0.82)] {
+        pen.boxed((0.0, y), (width, y + 0.24), 1.0);
     }
 }
 
-/// A call splitting into two branches: control flow.
+/// A call arriving at a routine: the arrow is the call, the rounded block the
+/// body it enters.
+///
+/// It used to be a line splitting into two branches, which is the share icon
+/// every phone has drawn for a decade — and, worse, it is control flow, which
+/// is what the graph view is for. Nothing else in the set is a block an arrow
+/// enters.
 fn functions(pen: &Pen) {
-    pen.line((0.0, 0.5), (0.45, 0.5));
-    pen.line((0.45, 0.5), (1.0, 0.08));
-    pen.line((0.45, 0.5), (1.0, 0.92));
-    for point in [(0.0, 0.5), (1.0, 0.08), (1.0, 0.92)] {
-        pen.dot(point);
-    }
+    pen.boxed((0.44, 0.18), (1.0, 0.82), 3.0);
+    pen.line((0.0, 0.5), (0.44, 0.5));
+    pen.path(&[(0.22, 0.3), (0.44, 0.5), (0.22, 0.7)]);
 }
 
-/// Opening and closing quotation marks.
+/// Quotation marks over the line of text they open and close.
+///
+/// It was written as two mirrored chevrons, which came out as `<` and `>` —
+/// the code icon, worn by the view that lists a file's *text*. The marks are
+/// upright and straight rather than curled: a comma's tail is two pixels
+/// across at button size and becomes a smudge.
 fn strings(pen: &Pen) {
-    for (outer, inner) in [(0.3, 0.06), (0.7, 0.94)] {
-        pen.path(&[(outer, 0.16), (inner, 0.44), (outer, 0.72)]);
+    // Barely a lean. Slanted any further the four strokes read as `// //` —
+    // two code comments, which is the opposite of what this view lists.
+    for x in [0.08_f32, 0.26, 0.62, 0.8] {
+        pen.line((x + 0.03, 0.08), (x, 0.42));
     }
+    pen.line((0.02, 0.8), (0.98, 0.8));
 }
 
 /// Stacked instruction lines of uneven length, with their address column.
@@ -324,44 +365,60 @@ fn disassembly(pen: &Pen) {
 }
 
 /// The offset column, then the bytes: a hexadecimal dump seen from far away.
+///
+/// Two rows of three rather than three: nine cells at button size are a solid
+/// block with a line beside it, and what makes this a dump — an offset column
+/// against a field of bytes — is lost in the ink.
 fn dump(pen: &Pen) {
-    pen.line((0.0, 0.0), (0.0, 1.0));
-    for y in [0.08, 0.42, 0.76] {
-        for x in [0.26, 0.56, 0.86] {
-            pen.filled((x - 0.12, y), (x + 0.12, y + 0.16), 0.5);
+    pen.line((0.0, 0.06), (0.0, 0.94));
+    for y in [0.18_f32, 0.58] {
+        for x in [0.3_f32, 0.6, 0.9] {
+            pen.filled((x - 0.11, y), (x + 0.11, y + 0.24), 0.5);
         }
     }
 }
 
 /// Braces around uneven source lines: pseudo-C rather than a generic code
 /// block, visibly distinct from the address-and-opcode listing icon.
+///
+/// The braces are kept to a sixth of the width at each edge. Drawn wider they
+/// reached the middle of the glyph, met the lines of code and each other, and
+/// the whole thing closed up into a lozenge — a shape that said nothing at
+/// all, least of all "source".
 fn decompile(pen: &Pen) {
+    /// How far into the glyph a brace reaches. The lines of code start well
+    /// clear of it.
+    const REACH: f32 = 0.16;
     for (edge, inward) in [(0.0_f32, 1.0_f32), (1.0, -1.0)] {
-        let spine = edge + inward * 0.22;
+        let spine = edge + inward * REACH;
         pen.path(&[
-            (spine + inward * 0.22, 0.0),
-            (spine, 0.14),
-            (spine, 0.4),
+            (spine + inward * 0.1, 0.02),
+            (spine, 0.16),
+            (spine, 0.42),
             (edge, 0.5),
-            (spine, 0.6),
-            (spine, 0.86),
-            (spine + inward * 0.22, 1.0),
+            (spine, 0.58),
+            (spine, 0.84),
+            (spine + inward * 0.1, 0.98),
         ]);
     }
-    for (y, end) in [(0.26_f32, 0.68_f32), (0.5, 0.78), (0.74, 0.6)] {
-        pen.line((0.35, y), (end, y));
+    for (y, end) in [(0.26_f32, 0.7_f32), (0.5, 0.64), (0.74, 0.58)] {
+        pen.line((0.36, y), (end, y));
     }
 }
 
-/// Bytes replaced: a run of cells with one written over.
+/// A byte lifted out of the run and put back changed.
+///
+/// Drawn flush in the row — a strip of cells with one of them filled — this
+/// was the same picture as a structure's members, and at button size the two
+/// views wore one icon between them. Lifted clear of the row, it is an edit
+/// and nothing else.
 fn patches(pen: &Pen) {
-    // Four cells rather than three, and the changed one off-centre: three with
-    // the middle one filled read as a progress bar half done.
-    pen.boxed((0.0, 0.3), (1.0, 0.7), 1.0);
-    for x in [0.25_f32, 0.5, 0.75] {
-        pen.line((x, 0.3), (x, 0.7));
+    pen.boxed((0.0, 0.5), (1.0, 0.94), 1.0);
+    for x in [0.34_f32, 0.66] {
+        pen.line((x, 0.5), (x, 0.94));
     }
-    pen.filled((0.52, 0.32), (0.73, 0.68), 0.0);
+    pen.filled((0.36, 0.02), (0.64, 0.34), 1.0);
+    pen.line((0.5, 0.34), (0.5, 0.5));
 }
 
 /// A scan frame with its sweep: rules run over the whole file.
@@ -424,11 +481,21 @@ fn open(pen: &Pen) {
     ]);
 }
 
-/// A command input with its prompt.
+/// A command field with the matches it offers under it.
+///
+/// It used to be a framed prompt, which is exactly what the script console
+/// is: at button size the palette and the console were one glyph drawn twice.
+/// What tells them apart is that the palette answers — so the answers are in
+/// the picture.
 fn palette(pen: &Pen) {
-    pen.boxed((0.0, 0.1), (1.0, 0.9), 2.0);
-    pen.path(&[(0.2, 0.36), (0.38, 0.5), (0.2, 0.64)]);
-    pen.line((0.5, 0.64), (0.8, 0.64));
+    pen.boxed((0.0, 0.02), (1.0, 0.44), 2.0);
+    // The caret, upright, ahead of what has been typed: without it the frame
+    // was just a wide band, and the whole glyph was the section table.
+    pen.line((0.14, 0.13), (0.14, 0.33));
+    pen.line((0.28, 0.23), (0.66, 0.23));
+    for (y, end) in [(0.68_f32, 0.9_f32), (0.94, 0.64)] {
+        pen.line((0.06, y), (end, y));
+    }
 }
 
 /// Stamped lines, each with the moment it happened: an account kept in order.
@@ -445,18 +512,27 @@ fn script(pen: &Pen) {
     pen.line((0.56, 0.78), (0.98, 0.78));
 }
 
-/// A plug: a body outside, and the pins going into what it plugs into.
+/// A plug: the body, and the two pins under it.
+///
+/// Stood upright. Lying on its side it was a block with two leads entering
+/// from the left, and so was the functions icon — a block an arrow enters.
+/// Turned ninety degrees it is a plug, and it is the only vertical body in
+/// the set.
 fn plugins(pen: &Pen) {
-    pen.boxed((0.3, 0.14), (1.0, 0.86), 2.0);
-    pen.line((0.0, 0.36), (0.3, 0.36));
-    pen.line((0.0, 0.64), (0.3, 0.64));
+    pen.boxed((0.18, 0.04), (0.82, 0.6), 2.0);
+    pen.line((0.36, 0.6), (0.36, 0.94));
+    pen.line((0.64, 0.6), (0.64, 0.94));
 }
 
 /// Two sliders: settings that are chosen rather than toggled.
+///
+/// The handles are upright bars, not round pips. A line with a pip on it is
+/// what the output log draws for a stamped entry, and a rail with a pip is
+/// the same mark rotated: the two glyphs sat four rows apart in the same menu.
 fn preferences(pen: &Pen) {
-    for (y, knob) in [(0.28, 0.66), (0.72, 0.34)] {
+    for (y, knob) in [(0.3_f32, 0.66_f32), (0.7, 0.34)] {
         pen.line((0.0, y), (1.0, y));
-        pen.dot((knob, y));
+        pen.filled((knob - 0.07, y - 0.18), (knob + 0.07, y + 0.18), 1.0);
     }
 }
 
@@ -515,19 +591,22 @@ fn walk_into(pen: &Pen) {
     pen.path(&[(0.25, 0.4), (0.5, 0.66), (0.75, 0.4)]);
 }
 
-/// An arc jumping over a point on the line: the call that is passed rather
+/// An arc jumping over the call on the line: the call that is passed rather
 /// than entered.
+///
+/// The pip that marked the call under the arc is gone. Three marks — arc, pip
+/// and head — at eighteen pixels were three marks, not one picture, and the
+/// arc alone already says what is hopped over.
 fn walk_over(pen: &Pen) {
     pen.path(&[
         (0.0, 0.76),
         (0.16, 0.76),
-        (0.34, 0.24),
-        (0.66, 0.24),
+        (0.34, 0.2),
+        (0.66, 0.2),
         (0.84, 0.76),
         (1.0, 0.76),
     ]);
-    pen.dot((0.5, 0.76));
-    pen.path(&[(0.72, 0.54), (1.0, 0.76), (0.72, 0.98)]);
+    pen.path(&[(0.74, 0.56), (1.0, 0.76), (0.74, 0.96)]);
 }
 
 /// An arrow leaving the line it stands on: back out of the call.
@@ -537,14 +616,19 @@ fn walk_out(pen: &Pen) {
     pen.path(&[(0.24, 0.38), (0.5, 0.1), (0.76, 0.38)]);
 }
 
-/// Forget the path, shown as a route struck through rather than a media-player
-/// stop button.
+/// Forget the path: the route, with the mark that drops it set beside it.
+///
+/// Struck through corner to corner, the route vanished at button size under
+/// its own diagonal and what was left was the window's close button. The
+/// cross now sits in one corner, small, the way a badge does, and the route
+/// stays legible under it.
 fn walk_clear(pen: &Pen) {
-    pen.path(&[(0.12, 0.74), (0.36, 0.5), (0.58, 0.68), (0.86, 0.3)]);
-    pen.dot((0.12, 0.74));
-    pen.dot((0.36, 0.5));
-    pen.dot((0.58, 0.68));
-    pen.line((0.16, 0.16), (0.84, 0.84));
+    pen.path(&[(0.02, 0.62), (0.26, 0.3), (0.5, 0.5)]);
+    for point in [(0.02, 0.62), (0.26, 0.3), (0.5, 0.5)] {
+        pen.dot(point);
+    }
+    pen.line((0.6, 0.6), (0.98, 0.98));
+    pen.line((0.98, 0.6), (0.6, 0.98));
 }
 
 /// A processor: a square die with legs on all four sides. Deliberately not a
@@ -652,7 +736,10 @@ mod tests {
 ///
 /// A drawn icon can only be judged by eye, and a test that asserts "something
 /// was painted" says nothing about whether the glyph reads as what it stands
-/// for. Run with the destination in the environment to get a sheet out:
+/// for. Every icon appears twice: once large enough to see the shape, and once
+/// at the size a toolbar button gives it, which is the size that decides
+/// whether it reads at all. Run with the destination in the environment to get
+/// a sheet out:
 ///
 /// ```text
 /// DESDEC_ICON_SHEET=/tmp/icons.svg cargo test -p desdec-app icon_sheet
@@ -665,8 +752,16 @@ mod sheet {
 
     use std::fmt::Write as _;
 
-    const CELL: f32 = 64.0;
-    const COLUMNS: usize = 8;
+    /// Width and height of one cell of the sheet.
+    const CELL: egui::Vec2 = egui::vec2(120.0, 78.0);
+    const COLUMNS: usize = 5;
+    /// The glyph drawn large, to judge the shape.
+    const LARGE: f32 = 56.0;
+    /// And the same glyph at the size the toolbar actually draws it, which is
+    /// the only size that decides whether it reads. A shape that is obvious at
+    /// fifty pixels and a smudge at eighteen is a failed icon, and the sheet
+    /// used to show only the flattering half of that.
+    const SMALL: f32 = 30.0;
 
     /// A count as a coordinate. Sheets are a handful of cells wide.
     #[expect(
@@ -689,34 +784,40 @@ mod sheet {
         for (index, icon) in Icon::ALL.iter().enumerate() {
             let column = index % COLUMNS;
             let row = index / COLUMNS;
-            let origin = egui::pos2(coordinate(column) * CELL, coordinate(row) * CELL);
-            let mut cell = egui::Rect::NOTHING;
-            let output = ctx.run(crate::testing::window_input(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::Vec2::splat(CELL), egui::Sense::hover());
-                    cell = rect;
-                    draw(ui.painter(), rect, *icon, egui::Color32::WHITE);
+            let origin = egui::pos2(coordinate(column) * CELL.x, coordinate(row) * CELL.y);
+            // The large one on the left, the button-sized one beside it, so
+            // the eye compares them without moving.
+            let places = [
+                (LARGE, egui::vec2(8.0, 6.0)),
+                (SMALL, egui::vec2(LARGE + 22.0, 6.0 + (LARGE - SMALL) / 2.0)),
+            ];
+            for (side, inset) in places {
+                let mut cell = egui::Rect::NOTHING;
+                let output = ctx.run(crate::testing::window_input(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::Vec2::splat(side), egui::Sense::hover());
+                        cell = rect;
+                        draw(ui.painter(), rect, *icon, egui::Color32::WHITE);
+                    });
                 });
-            });
-            let offset = origin - cell.min;
-            for clipped in &output.shapes {
-                emit(&clipped.shape, offset, &mut body);
+                let offset = (origin + inset) - cell.min;
+                for clipped in &output.shapes {
+                    emit(&clipped.shape, offset, &mut body);
+                }
             }
             let _ = writeln!(
                 body,
-                "<text x=\"{}\" y=\"{}\" fill=\"#8a93a6\" font-size=\"7\" font-family=\"sans-serif\" text-anchor=\"middle\">{icon:?}</text>",
-                origin.x + CELL / 2.0,
-                origin.y + CELL - 4.0
+                "<text x=\"{}\" y=\"{}\" fill=\"#8a93a6\" font-size=\"8\" font-family=\"sans-serif\" text-anchor=\"middle\">{icon:?}</text>",
+                origin.x + CELL.x / 2.0,
+                origin.y + CELL.y - 5.0
             );
         }
 
+        let width = coordinate(COLUMNS) * CELL.x;
+        let height = coordinate(rows) * CELL.y;
         let svg = format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\"><rect width=\"100%\" height=\"100%\" fill=\"#1b1f27\"/>\n{body}</svg>",
-            coordinate(COLUMNS) * CELL,
-            coordinate(rows) * CELL,
-            coordinate(COLUMNS) * CELL,
-            coordinate(rows) * CELL,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\"><rect width=\"100%\" height=\"100%\" fill=\"#1b1f27\"/>\n{body}</svg>",
         );
         std::fs::write(path, svg).expect("the sheet is writable");
     }
@@ -769,7 +870,7 @@ mod sheet {
                 );
             }
             egui::Shape::Rect(rect) => {
-                if rect.rect.width() > CELL {
+                if rect.rect.width() > LARGE {
                     return; // The panel's own background, not a glyph.
                 }
                 let min = point(rect.rect.min);

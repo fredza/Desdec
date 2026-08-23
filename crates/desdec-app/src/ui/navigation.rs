@@ -43,6 +43,24 @@ const ROW_HEIGHT: f32 = 32.0;
 const PRIMARY_BUTTON_HEIGHT: f32 = 34.0;
 const SECONDARY_BUTTON_HEIGHT: f32 = 30.0;
 
+/// How many remembered files the menu offers at a glance.
+///
+/// Fewer than the history keeps. `RECENT_BINARY_LIMIT` decides what is
+/// remembered; this decides what is on screen the moment the window opens,
+/// and the two are not the same question. Five full-height buttons sat under
+/// the views taking as much room as the views themselves, for a list whose
+/// first entry is the one nearly always wanted. The rest are still there —
+/// the command palette searches the whole history, and the file dialog opens
+/// on the last directory used.
+const RECENT_SHOWN: usize = 3;
+
+/// And drawn shorter than the buttons above them, on small text.
+///
+/// A recent file is a list to glance down, not an action to press: it does
+/// not need the height that `Open binary` has, and at that height the section
+/// was the loudest thing in a panel it is not the subject of.
+const RECENT_ROW_HEIGHT: f32 = 22.0;
+
 /// How much of itself the menu can show at its current width.
 ///
 /// One decision, taken once per frame from the width alone, so every part of
@@ -102,22 +120,46 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
             // so the layout answers to the drag on the very same frame.
             let density = Density::of_width(ui.available_width());
             header(app, ui, density);
-            binary_actions(app, ctx, ui, density);
-            ui.add_space(if density.shows_sections() { 14.0 } else { 8.0 });
-            views_section(app, ui, density);
-            ui.add_space(8.0);
-            tools_section(app, ctx, ui, density);
 
             // One line of help, and only the part a reader cannot discover by
             // looking: that the edge is draggable and the width is kept. The
             // second line explained how to reopen a menu that is, at that
             // moment, open.
+            //
+            // Claimed before the views, and as a panel rather than as a
+            // bottom-up layout: a layout only asks for the room it needs at
+            // the bottom of whatever is left, so on a short window the last
+            // tools were drawn straight over this line — `About Desdec` and
+            // `the edge can be dragged` sharing one row of pixels. A panel
+            // takes its strip first and the rest lays out inside what remains.
             if density.shows_sections() {
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.small(egui::RichText::new(app.t(Text::DragToResizeMenu)).color(MUTED));
-                    ui.separator();
-                });
+                egui::TopBottomPanel::bottom("navigation.hint")
+                    .show_separator_line(false)
+                    .show_inside(ui, |ui| {
+                        ui.separator();
+                        ui.small(egui::RichText::new(app.t(Text::DragToResizeMenu)).color(MUTED));
+                        ui.add_space(2.0);
+                    });
             }
+
+            // And the rest scrolls. A menu is a list of ways in, and a window
+            // short enough to run out of room for them must let the reader
+            // reach the ones below the fold rather than paint them on top of
+            // one another.
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show_inside(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            binary_actions(app, ctx, ui, density);
+                            ui.add_space(if density.shows_sections() { 14.0 } else { 8.0 });
+                            views_section(app, ui, density);
+                            ui.add_space(8.0);
+                            tools_section(app, ctx, ui, density);
+                            ui.add_space(6.0);
+                        });
+                });
         });
 
     remember_width(app, ctx, panel.response.rect.width());
@@ -319,34 +361,83 @@ fn recent_binaries(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) 
         return;
     }
 
-    ui.add_space(6.0);
-    egui::CollapsingHeader::new(section_title(app.t(Text::RecentBinaries)))
+    ui.add_space(10.0);
+    // Folded on the frame this session first draws it, and never forced
+    // again: see `DesdecApp::recent_binaries_folded` for why `default_open`
+    // is not enough on its own.
+    let folding = !app.recent_binaries_folded;
+    app.recent_binaries_folded = true;
+    let mut header = egui::CollapsingHeader::new(section_title(app.t(Text::RecentBinaries)))
         .id_salt("navigation.recent_binaries")
-        .default_open(true)
-        .show(ui, |ui| {
-            let mut selected = None;
-            for path in recent {
-                let label = path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |name| name.to_string_lossy().into_owned(),
-                );
-                let response = ui
-                    .add_sized(
-                        [ui.available_width(), SECONDARY_BUTTON_HEIGHT],
-                        egui::Button::new(label).truncate(),
-                    )
-                    .on_hover_text(path.display().to_string());
-                if response.clicked() {
-                    selected = Some(path);
-                }
+        .default_open(true);
+    if folding {
+        header = header.open(Some(false));
+    }
+    header.show(ui, |ui| {
+        ui.add_space(2.0);
+        let mut selected = None;
+        for path in recent.into_iter().take(RECENT_SHOWN) {
+            let label = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            if recent_row(ui, &label)
+                .on_hover_text(path.display().to_string())
+                .clicked()
+            {
+                selected = Some(path);
             }
-            if ui.button(app.t(Text::ClearRecentBinaries)).clicked() {
-                app.clear_recent_binaries();
-            }
-            if let Some(path) = selected {
-                app.open_recent_binary(ctx, path);
-            }
-        });
+        }
+        ui.add_space(2.0);
+        if ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new(app.t(Text::ClearRecentBinaries))
+                        .small()
+                        .color(MUTED),
+                )
+                .frame(false),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
+            app.clear_recent_binaries();
+        }
+        if let Some(path) = selected {
+            app.open_recent_binary(ctx, path);
+        }
+    });
+}
+
+/// One remembered file: a row to glance down, not a button to press.
+///
+/// Drawn like the menu entries above it — the whole width, the name against
+/// the left margin, a fill only under the pointer — rather than as a framed
+/// button with its name centred in it. Three centred boxes read as three
+/// commands of equal weight, which is not what a history is.
+fn recent_row(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, RECENT_ROW_HEIGHT), egui::Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect.shrink(1.0), 5.0, ui.visuals().widgets.hovered.bg_fill);
+    }
+    let colour = if response.hovered() {
+        ui.visuals().widgets.hovered.text_color()
+    } else {
+        MUTED
+    };
+    // Painted rather than laid out, so a long name is clipped by the row
+    // instead of widening the panel: the clip rectangle is the row itself.
+    ui.painter().with_clip_rect(rect).text(
+        egui::pos2(rect.left() + 8.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::TextStyle::Small.resolve(ui.style()),
+        colour,
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// The workspace views: the part of the menu that survives at every width.
@@ -554,6 +645,79 @@ mod tests {
                 "the wide menu must name {view:?}"
             );
         }
+    }
+
+    /// The menu offers the newest few recent files, not the whole history.
+    ///
+    /// What is remembered and what is on screen are two different numbers.
+    /// The history is what the command palette searches; the menu is a
+    /// glance, and a glance that fills the panel is not one.
+    #[test]
+    fn the_menu_offers_only_the_newest_recent_files() {
+        let ctx = egui::Context::default();
+        let mut app = opened_app(WorkspaceView::Overview);
+        app.navigation_open = true;
+        app.preferences.navigation_width = DEFAULT_WIDTH;
+        // Named so that no one of them is a substring of another, or a count
+        // of what is drawn would be meaningless.
+        let history: Vec<std::path::PathBuf> = (0..5)
+            .map(|index| std::path::PathBuf::from(format!("/samples/first-{index}-last")))
+            .collect();
+        app.preferences.recent_binaries = history.clone();
+        // Unfolded, which is what this test is about: the section is shut at
+        // every opening — see `the_recent_files_are_folded_at_every_opening` —
+        // and marking the fold as already done leaves it open.
+        app.recent_binaries_folded = true;
+
+        let drawn = frame(&mut app, &ctx);
+        let shown = history
+            .iter()
+            .filter(|path| drawn.contains(&path.file_name().unwrap().to_string_lossy().to_string()))
+            .count();
+        assert_eq!(
+            shown, RECENT_SHOWN,
+            "the menu drew {shown} recent files, not {RECENT_SHOWN}"
+        );
+        // And the newest, not whichever three the iteration happened to reach:
+        // the list is kept newest first.
+        for path in history.iter().take(RECENT_SHOWN) {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            assert!(drawn.contains(&name), "{name} should be in the menu");
+        }
+    }
+
+    /// Shut when the window opens, whatever the last session left behind.
+    ///
+    /// `eframe` persists egui's memory, so an unfolded section used to stay
+    /// unfolded for good: the first thing in the menu was a list of files the
+    /// reader had already closed, above the views they came for.
+    #[test]
+    fn the_recent_files_are_folded_at_every_opening() {
+        let ctx = egui::Context::default();
+        let mut app = opened_app(WorkspaceView::Overview);
+        app.navigation_open = true;
+        app.preferences.navigation_width = DEFAULT_WIDTH;
+        app.preferences.recent_binaries = vec![std::path::PathBuf::from("/samples/kept-name")];
+
+        // The section names itself at every width that shows sections; only
+        // what is inside it is folded away.
+        let opening = frame(&mut app, &ctx);
+        assert!(
+            opening.contains(app.t(Text::RecentBinaries)),
+            "the section must still name itself"
+        );
+        assert!(
+            !opening.contains("kept-name"),
+            "the list must be folded when the window opens"
+        );
+
+        // And folded once, not on every frame: the menu records that it has
+        // done it, and what the reader does with the section afterwards is
+        // theirs for the rest of the session.
+        assert!(
+            app.recent_binaries_folded,
+            "the menu must record that it has folded the section"
+        );
     }
 
     /// The menu leaves the toolbar's own views to the toolbar, and keeps the

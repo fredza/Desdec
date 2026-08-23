@@ -348,7 +348,21 @@ pub fn libraries_card(
         }
         for (position, library) in analysis.details.linked_libraries.iter().enumerate() {
             ui.horizontal(|ui| {
-                monospace_value(ui, library);
+                // The name gives way; the question mark keeps its room.
+                //
+                // Both of them read `available_width` and both believed it:
+                // the truncated name filled the row, the button was placed
+                // after it, and the card grew past the right edge of the
+                // window. On Linux this never showed — `libc.so.6` is nine
+                // characters — and on macOS it always did, where a linked
+                // library is spelled
+                // `/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit`.
+                let room = if explain { question_room(ui) } else { 0.0 };
+                let width = (ui.available_width() - room).max(0.0);
+                ui.scope(|ui| {
+                    ui.set_max_width(width);
+                    monospace_value(ui, library);
+                });
                 if !explain {
                     return;
                 }
@@ -366,6 +380,19 @@ pub fn libraries_card(
         }
     });
     asked
+}
+
+/// The width the `?` beside a library name will take, and the gap before it.
+///
+/// Worked out the way egui works out a button's width — the glyph, plus the
+/// padding on either side of it — rather than guessed at, so a change of font
+/// or of theme spacing carries through instead of quietly eating into the
+/// name. Rounded up: half a point of slack costs nothing, and coming up half
+/// a point short is the whole defect again.
+fn question_room(ui: &egui::Ui) -> f32 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let glyph = ui.fonts(|fonts| fonts.glyph_width(&font, '?'));
+    (glyph + ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x).ceil()
 }
 
 /// What the file asks one library for, when the format says.

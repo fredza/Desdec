@@ -117,6 +117,10 @@ Ambos aceptan `--version` / `-Version v0.3.36` para una versión concreta,
 enumeran el resto. Una versión cuya suma no coincide se descarta, en lugar de
 instalarse con un aviso encima.
 
+El binario instalado responde a `desdec --version` y `desdec --help`; cualquier
+otro argumento es el archivo que se va a analizar. En Windows, una compilación
+*release* no tiene consola: abre su ventana sin escribir nada.
+
 ### Desde las fuentes
 
 Rust 1.85 o posterior.

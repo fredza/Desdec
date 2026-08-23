@@ -439,7 +439,12 @@ fn running_version() -> String {
 }
 
 /// What went wrong, in the reader's language, with the detail after it.
-fn explain(error: &update::Error, language: Language) -> String {
+///
+/// The session's account uses this too: a line reading `Updates :
+/// x86_64-unknown-linux-gnu` — which is all the bare `Display` of a
+/// [`update::Error::NoArchiveForThisPlatform`] amounts to — told the reader
+/// nothing, in a language that was not theirs.
+pub fn explain(error: &update::Error, language: Language) -> String {
     let say = |item: Text| text(language, item).to_owned();
     match error {
         update::Error::Unreachable(why) | update::Error::Unreadable(why) => {

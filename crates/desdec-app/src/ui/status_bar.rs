@@ -61,20 +61,44 @@ fn state(app: &mut DesdecApp, ui: &mut egui::Ui) {
     }
 
     if app.error.is_some() {
+        lamp(ui, ERROR);
         ui.label(egui::RichText::new(app.t(Text::StatusFailed)).color(ERROR));
     } else {
-        ui.label(egui::RichText::new("OK").color(success(app.preferences.theme)));
+        let colour = success(app.preferences.theme);
+        lamp(ui, colour);
+        ui.label(egui::RichText::new("OK").color(colour));
     }
 
+    // What the file is, behind the state rather than beside it: the bar has
+    // one thing to say at a glance — whether anything went wrong — and three
+    // facts in full-strength text competed with it for the same look.
     if let Some(summary) = app.analysis.as_ref().map(|analysis| &analysis.summary) {
-        ui.label(summary.format.label());
-        ui.separator();
-        ui.label(summary.architecture.label());
-        ui.separator();
-        ui.label(format_size(summary.size));
+        for fact in [
+            summary.format.label(),
+            summary.architecture.label(),
+            &format_size(summary.size),
+        ] {
+            ui.separator();
+            ui.label(egui::RichText::new(fact).color(MUTED));
+        }
     } else {
-        ui.label(app.t(Text::ReadyToOpen));
+        ui.separator();
+        ui.label(egui::RichText::new(app.t(Text::ReadyToOpen)).color(MUTED));
     }
+}
+
+/// The state as a colour before it is a word.
+///
+/// A reader glancing at the bottom of the window reads a lamp before they read
+/// `OK`, and a red one before they read anything at all.
+fn lamp(ui: &mut egui::Ui, colour: egui::Color32) {
+    const DIAMETER: f32 = 8.0;
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(DIAMETER, DIAMETER),
+        egui::Sense::focusable_noninteractive(),
+    );
+    ui.painter()
+        .circle_filled(rect.center(), DIAMETER / 2.0, colour);
 }
 
 /// The most recent line of the session's account, and the way into all of it.

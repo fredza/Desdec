@@ -115,6 +115,10 @@ to build it here instead; `--help` and `Get-Help .\install.ps1` list the rest.
 A release whose checksum does not match is discarded rather than installed
 with a warning above it.
 
+The installed binary answers `desdec --version` and `desdec --help`; any other
+argument is the file to analyse. On Windows a release build has no console, so
+it opens its window and writes nothing.
+
 ### From source
 
 Requires Rust 1.85 or newer.

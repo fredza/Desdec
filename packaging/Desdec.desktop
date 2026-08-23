@@ -1,0 +1,34 @@
+[Desktop Entry]
+# Named `Desdec.desktop`, with a capital, to match the application id the
+# window carries (`ViewportBuilder::with_app_id` in `main.rs`). A Wayland
+# desktop pairs a window with its menu entry by that name and by nothing else:
+# call this file `desdec.desktop` and GNOME shows the window under a generic
+# icon while the entry sits, unmatched, in the menu.
+#
+# `Icon` is a name, not a path: the icon itself is written beside this file by
+# `desdec --write-icon`, into the `hicolor` theme, so the menu shows the same
+# mark the window does and cannot fall out of step with it.
+#
+# `Exec` is rewritten to the installed path by `scripts/install-local.sh`. The
+# bare name here is what a distribution package wants, where the binary is on
+# the PATH by construction.
+Type=Application
+Version=1.5
+Name=Desdec
+GenericName=Binary explorer
+GenericName[fr]=Explorateur de binaires
+GenericName[es]=Explorador de binarios
+Comment=Read what a program is made of: its sections, its strings and its machine code
+Comment[fr]=Lire de quoi un programme est fait : ses sections, ses chaînes et son code machine
+Comment[es]=Leer de qué está hecho un programa: sus secciones, sus cadenas y su código máquina
+Exec=desdec %f
+TryExec=desdec
+Icon=desdec
+Terminal=false
+StartupNotify=true
+StartupWMClass=Desdec
+Categories=Development;Debugger;
+Keywords=disassembler;decompiler;binary;executable;ELF;PE;Mach-O;reverse engineering;
+Keywords[fr]=désassembleur;décompilateur;binaire;exécutable;ELF;PE;Mach-O;rétro-ingénierie;
+Keywords[es]=desensamblador;descompilador;binario;ejecutable;ELF;PE;Mach-O;ingeniería inversa;
+MimeType=application/x-executable;application/x-pie-executable;application/x-sharedlib;application/x-mach-binary;application/vnd.microsoft.portable-executable;

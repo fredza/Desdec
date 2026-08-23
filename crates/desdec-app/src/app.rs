@@ -568,6 +568,16 @@ pub struct DesdecApp {
     pub error: Option<String>,
     pub active_view: WorkspaceView,
     pub navigation_open: bool,
+    /// Whether the menu has already folded its recent-files section shut for
+    /// this session.
+    ///
+    /// `eframe` persists egui's memory, and a collapsing header's open state
+    /// lives in it: a reader who unfolded the list once reopened the program
+    /// into an unfolded list for good, whatever `default_open` said. The
+    /// menu therefore folds it the first frame it draws it and leaves it
+    /// alone afterwards, so the section is shut at every opening and still
+    /// answers to the reader for the rest of the session.
+    pub recent_binaries_folded: bool,
     pub dialogs: Dialogs,
     pub preferences: Preferences,
     pub preferences_tab: PreferencesTab,
@@ -606,6 +616,15 @@ pub struct DesdecApp {
     /// Whether this session has already looked, so it looks once and not on
     /// every frame that notices the preference is on.
     update_checked_this_session: bool,
+    /// Whether the check now running was asked for, rather than started on its
+    /// own when the window opened.
+    ///
+    /// The two deserve different answers when they fail. A reader who pressed
+    /// `Check for updates` is owed the reason in the loudest terms the bar
+    /// has; the check the window starts by itself is owed nothing louder than
+    /// a line in the account, and used to greet every opening with a red
+    /// failure naming a platform triple.
+    update_check_was_asked_for: bool,
     /// How far the download has got, as the thread doing it reports.
     update_progress: Option<Receiver<update::Progress>>,
     /// Whether the question about updates has already been put this session,
@@ -737,7 +756,10 @@ pub struct DesdecApp {
 }
 
 impl DesdecApp {
-    pub fn new(creation_context: &eframe::CreationContext<'_>) -> Self {
+    /// `path` is the file named on the command line, already sorted from the
+    /// options by [`crate::cli`]. Reading the arguments again here would mean
+    /// two places deciding what `--version` means.
+    pub fn new(creation_context: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
         let mut preferences: Preferences = creation_context
             .storage
             .and_then(|storage| eframe::get_value(storage, PREFERENCES_KEY))
@@ -745,6 +767,7 @@ impl DesdecApp {
         // A file written when the history was longer would otherwise keep its
         // extra entries until the next binary is opened.
         preferences.recent_binaries.truncate(RECENT_BINARY_LIMIT);
+        crate::fonts::install(&creation_context.egui_ctx);
         apply_theme(&creation_context.egui_ctx, preferences.theme);
         let mut app = Self {
             persisted_preferences: preferences.clone(),
@@ -757,8 +780,8 @@ impl DesdecApp {
 
         // `desdec-app <binary>` starts the analysis straight away, like a file
         // manager handing the application a file to open.
-        if let Some(path) = std::env::args_os().nth(1) {
-            app.inspect_binary(&creation_context.egui_ctx, PathBuf::from(path));
+        if let Some(path) = path {
+            app.inspect_binary(&creation_context.egui_ctx, path);
         }
         app
     }
@@ -2195,6 +2218,7 @@ impl DesdecApp {
         if self.preferences.check_for_updates != Some(true) || self.jobs.update_check.is_some() {
             return;
         }
+        self.update_check_was_asked_for = deliberate;
         if deliberate {
             self.dialogs.open(Dialog::Update);
         }
@@ -2341,10 +2365,19 @@ impl DesdecApp {
             }
             Ok(_) => self.update = UpdateState::UpToDate,
             Err(error) => {
-                self.note(
-                    crate::journal::Level::Failure,
-                    format!("{} : {error}", self.t(Text::Updates)),
-                );
+                // Red is for what the reader asked for and did not get. A
+                // check nobody asked for — the one the window starts on its
+                // own — has nothing to announce when it comes back empty: the
+                // program still works, and the release it could not read is
+                // not the reader's business. It goes into the account all the
+                // same, where the Output window has it if anyone looks.
+                let level = if self.update_check_was_asked_for {
+                    crate::journal::Level::Failure
+                } else {
+                    crate::journal::Level::Note
+                };
+                let said = crate::ui::update_window::explain(&error, self.preferences.language);
+                self.note(level, format!("{} : {said}", self.t(Text::Updates)));
                 self.update = UpdateState::Failed(error);
             }
         }
@@ -2366,9 +2399,10 @@ impl DesdecApp {
             }
             (Ok(_), None) => self.update = UpdateState::Idle,
             (Err(error), _) => {
+                let said = crate::ui::update_window::explain(&error, self.preferences.language);
                 self.note(
                     crate::journal::Level::Failure,
-                    format!("{} : {error}", self.t(Text::Updates)),
+                    format!("{} : {said}", self.t(Text::Updates)),
                 );
                 self.update = UpdateState::Failed(error);
             }

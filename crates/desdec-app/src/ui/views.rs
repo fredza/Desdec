@@ -7,7 +7,8 @@ use crate::{
     preferences::accent,
     ui::{
         ERROR, MUTED, assistant, card, columns, decompile, disassembly, dump, expert, format_size,
-        functions, graph, machine, monospace_value, patches_view, segments, strings, types, yara,
+        functions, graph, machine, monospace_value, patches_view, pip, segments, strings, types,
+        yara,
     },
 };
 
@@ -327,7 +328,7 @@ fn network_alert(ui: &mut egui::Ui, network: &NetworkUse, language: Language) {
             // `horizontal`, never `horizontal_wrapped`: a wrapped row draws
             // every one of its parts at the same place in egui 0.31.
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("⬤").color(ERROR));
+                pip(ui, ERROR);
                 ui.label(
                     egui::RichText::new(text(language, Text::NetworkAlert))
                         .color(ERROR)

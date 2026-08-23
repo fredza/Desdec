@@ -145,7 +145,23 @@ install_binary() {
     cp "$built" "$staged"
     chmod +x "$staged"
     mv -f "$staged" "$target"
-    say "Installed $target"
+
+    # Ask it what it is. Up to v0.4.1 the first argument was taken as a file
+    # to analyse whatever it said, so this opened a window instead of
+    # answering, and the installer had no way to tell a good archive from a
+    # truncated one. An older binary that still behaves that way must not
+    # leave a window on the screen, hence the timeout and the discarded
+    # output; and the check only ever adds to the message, never stops the
+    # install, because a binary this script has just verified by checksum is
+    # not made wrong by an unhelpful `--version`.
+    local reported=""
+    if command -v timeout >/dev/null 2>&1; then
+        reported="$(timeout 5 "$target" --version 2>/dev/null || true)"
+    fi
+    case "$reported" in
+        desdec\ v*) say "Installed $target — $reported" ;;
+        *)           say "Installed $target" ;;
+    esac
 
     case ":$PATH:" in
         *":$prefix:"*) ;;
