@@ -16,10 +16,28 @@ use std::{
     sync::OnceLock,
 };
 
-/// Path of the test executable.
+/// Path of the test executable, or of whatever `DESDEC_REFERENCE` names.
+///
+/// The override exists for one reason: the reference binary is the host's, so
+/// a suite run on Linux exercises ELF and x86-64 and nothing else — and four
+/// tests that pass here failed on the macOS runner, on an aarch64 Mach-O
+/// nobody could put in front of them. Pointing this at a real binary of
+/// another format runs the whole suite against it:
+///
+/// ```text
+/// DESDEC_REFERENCE=/tmp/desdec-app cargo test -p desdec-app
+/// ```
+///
+/// Unset — which is every run in CI and every ordinary run here — it is the
+/// test executable, exactly as before.
 pub fn reference_path() -> &'static Path {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
-    PATH.get_or_init(|| std::env::current_exe().expect("the test binary has a path"))
+    PATH.get_or_init(|| {
+        std::env::var_os("DESDEC_REFERENCE").map_or_else(
+            || std::env::current_exe().expect("the test binary has a path"),
+            PathBuf::from,
+        )
+    })
 }
 
 /// Its bytes, read once.
@@ -45,6 +63,22 @@ pub fn opened_app(view: WorkspaceView) -> DesdecApp {
     let mut app = DesdecApp::for_test(Some(reference_analysis().clone()), view);
     app.file_bytes = reference_bytes().to_vec();
     app
+}
+
+/// What the reference binary's architecture calls its stack pointer.
+///
+/// Two tests say something about a function's stack frame and then check that
+/// the saying names the rows going through it. Written with `rsp` in them,
+/// both passed here and both failed on the macOS runner: an aarch64 function
+/// keeps its frame in `sp`, so the saying was about a register the code never
+/// touches, and it named nothing at all. The register is the host's, exactly
+/// as the binary is.
+pub fn stack_register() -> &'static str {
+    match reference_analysis().summary.architecture {
+        desdec_core::Architecture::Arm64 | desdec_core::Architecture::Arm => "sp",
+        desdec_core::Architecture::X86_64 => "rsp",
+        desdec_core::Architecture::X86 | desdec_core::Architecture::Unknown => "esp",
+    }
 }
 
 /// A synthetic binary, analysed, with what it was built to contain.
@@ -310,6 +344,7 @@ mod window_sheet {
             return;
         };
         let ctx = egui::Context::default();
+        crate::fonts::install(&ctx);
         let mut app = opened_app(WorkspaceView::Disassembly);
         app.script.source =
             "for f in functions() {\n  if f.size > 512 { bookmark(f.address); }\n}".to_owned();
@@ -426,6 +461,16 @@ mod frame_sheet {
             return;
         };
         let ctx = egui::Context::default();
+        // The sheet exists to be looked at, so it is drawn with the fonts the
+        // window is drawn with. Without this, a glyph the application cannot
+        // render comes out of the sheet perfectly, because the renderer that
+        // turns the sheet into a picture has fonts of its own.
+        crate::fonts::install(&ctx);
+        // `DESDEC_RECENT=1` fills the history, which is empty in a fresh test
+        // application: the menu's recent-files section cannot be looked at
+        // otherwise, because it draws nothing at all when there is nothing in
+        // it.
+        let recent = std::env::var("DESDEC_RECENT").is_ok();
         // Which view to draw. Every view is worth looking at, and a sheet that
         // could only ever show the first one meant editing this file to look
         // at any other.
@@ -438,6 +483,18 @@ mod frame_sheet {
             opened_app(view)
         };
         app.navigation_open = true;
+        if recent {
+            app.preferences.recent_binaries = [
+                "/usr/bin/ls",
+                "/usr/lib64/libc.so.6",
+                "/home/reader/samples/dropper.exe",
+                "/home/reader/samples/packed-sample-with-a-long-name.bin",
+                "/bin/busybox",
+            ]
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
+        }
         // A sheet of the listing is worth little without a run on it: the
         // marks a run leaves are exactly what a reader has to look at.
         if std::env::var("DESDEC_RUN").is_ok() {
@@ -610,7 +667,18 @@ mod frame_sheet {
             .unwrap_or(egui::Color32::WHITE)
     }
 
+    /// One colour, as SVG spells it.
+    ///
+    /// Fully transparent comes out as `none` rather than as `rgba(…,0)`.
+    /// Inkscape does not render `rgba()` at all, so a sheet is passed through
+    /// `sed` to turn it into `rgb()` before being exported — and that turns a
+    /// transparent fill into opaque black. Every outlined box in the interface
+    /// came out of the exporter filled in: a defect that existed only in the
+    /// picture of the defect.
     pub fn colour(c: egui::Color32) -> String {
+        if c.a() == 0 {
+            return "none".to_owned();
+        }
         format!(
             "rgba({},{},{},{})",
             c.r(),
@@ -624,6 +692,29 @@ mod frame_sheet {
     ///
     /// Its own function because it is the longest arm by far and the one that
     /// grows: the background alone took a dozen lines to find.
+    /// The size and family a galley is really laid out in.
+    ///
+    /// Every line used to be written at twelve points in a proportional face,
+    /// whatever it was. Small text — a hint, a recent file, the caption under
+    /// a card — came out a third too wide and appeared to burst out of the
+    /// button around it, a fault that was in the sheet and not in the window;
+    /// and every monospace listing was measured in a proportional face, which
+    /// is the one thing a column of addresses cannot survive. Both are read
+    /// from the layout job's first section, like the colour beside it.
+    fn text_font(text: &egui::epaint::TextShape) -> (f32, &'static str) {
+        text.galley
+            .job
+            .sections
+            .first()
+            .map_or((12.0, "sans-serif"), |section| {
+                let family = match section.format.font_id.family {
+                    egui::FontFamily::Monospace => "monospace",
+                    _ => "sans-serif",
+                };
+                (section.format.font_id.size, family)
+            })
+    }
+
     fn emit_text(text: &egui::epaint::TextShape, out: &mut String) {
         // What is painted *behind* the text. It is not a shape of its
         // own and not in the row's mesh either: it is a property of
@@ -672,11 +763,14 @@ mod frame_sheet {
                 continue;
             }
             let at = text.pos + row.rect.min.to_vec2();
+            let (size, family) = text_font(text);
             let _ = writeln!(
                 out,
-                "<text x=\"{}\" y=\"{}\" fill=\"{shade}\" font-size=\"12\" font-family=\"sans-serif\">{content}</text>",
+                "<text x=\"{}\" y=\"{}\" fill=\"{shade}\" font-size=\"{size}\" font-family=\"{family}\">{content}</text>",
                 at.x,
-                at.y + 11.0,
+                // The baseline, at the same fraction of the size the fixed
+                // eleven-over-twelve used to be.
+                at.y + size * 0.92,
             );
         }
     }

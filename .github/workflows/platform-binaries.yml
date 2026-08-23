@@ -19,7 +19,14 @@ on:
     branches:
       - main
     tags:
-      - "v*"
+      # Both spellings. Releases 0.4.12 and 0.4.13 were named without the
+      # leading `v`, this filter did not match them, the job never ran, and
+      # they went out carrying one bare executable instead of the three
+      # archives and their checksums — which is exactly the state
+      # `scripts/install.sh` cannot install from. A tag naming a version
+      # publishes a release whichever way it is spelled.
+      - "v[0-9]*"
+      - "[0-9]*"
   # And weekly even when nothing has changed here, because not everything
   # that breaks a build is a commit: `stable` moves, a runner image is
   # replaced, a dependency yanks a version. Those arrive on their own schedule
@@ -29,6 +36,15 @@ on:
 
 permissions:
   contents: read
+
+# Every action here runs on Node 24. They were pinned to majors that ship a
+# Node 20 entry point, which the runners now refuse to honour: they force
+# those actions onto Node 24 and say so in an annotation on every job. Running
+# a Node 20 bundle on a runtime it was not built for is not something to leave
+# a release depending on, and the deprecation ends with the runners dropping
+# Node 20 outright. Every input this workflow passes exists unchanged in the
+# major it was moved to — `pattern` and `merge-multiple` on the download,
+# `if-no-files-found` on the uploads, and all five inputs of the release step.
 
 jobs:
   # The About dialog shows the crate version, while the release is named by the
@@ -40,9 +56,14 @@ jobs:
     name: Tag matches the crate version
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      # Every tag, not just the ones spelled with a `v`. Guarded on `v` alone,
+      # this check waved through exactly the tags that most needed it: a
+      # release named `0.4.14` skipped it entirely and could have shipped a
+      # binary reporting some other version. `${GITHUB_REF_NAME#v}` strips the
+      # prefix when it is there and leaves the name alone when it is not.
       - name: Compare the tag with Cargo.toml
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           crate="$(cargo metadata --no-deps --format-version 1 \
             | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "desdec-app"))')"
@@ -65,7 +86,7 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
@@ -89,7 +110,7 @@ jobs:
         run: |
           tar -C target/x86_64-unknown-linux-gnu/release -czf desdec-linux-x86_64-release.tar.gz desdec-app
           sha256sum desdec-linux-x86_64-release.tar.gz > desdec-linux-x86_64-release.tar.gz.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desdec-linux-x86_64-release
           path: |
@@ -105,7 +126,7 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
@@ -128,7 +149,7 @@ jobs:
       - name: Archive debug executable
         shell: pwsh
         run: Compress-Archive -Path target\x86_64-pc-windows-msvc\debug\desdec-app.exe -DestinationPath desdec-windows-x86_64-debug.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desdec-windows-x86_64-debug
           path: desdec-windows-x86_64-debug.zip
@@ -140,7 +161,7 @@ jobs:
           Compress-Archive -Path target\x86_64-pc-windows-msvc\release\desdec-app.exe -DestinationPath desdec-windows-x86_64-release.zip
           $hash = (Get-FileHash desdec-windows-x86_64-release.zip -Algorithm SHA256).Hash.ToLower()
           "$hash  desdec-windows-x86_64-release.zip" | Set-Content -NoNewline desdec-windows-x86_64-release.zip.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desdec-windows-x86_64-release
           path: |
@@ -156,7 +177,7 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
@@ -178,7 +199,7 @@ jobs:
       - run: cargo build --locked -p desdec-app --target aarch64-apple-darwin
       - name: Archive debug executable
         run: ditto -c -k --sequesterRsrc --keepParent target/aarch64-apple-darwin/debug/desdec-app desdec-macos-aarch64-debug.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desdec-macos-aarch64-debug
           path: desdec-macos-aarch64-debug.zip
@@ -188,7 +209,7 @@ jobs:
         run: |
           ditto -c -k --sequesterRsrc --keepParent target/aarch64-apple-darwin/release/desdec-app desdec-macos-aarch64-release.zip
           shasum -a 256 desdec-macos-aarch64-release.zip > desdec-macos-aarch64-release.zip.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desdec-macos-aarch64-release
           path: |
@@ -198,7 +219,7 @@ jobs:
 
   github-release:
     name: Publish GitHub release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs: [linux-x86_64, windows-x86_64, macos-arm64]
     runs-on: ubuntu-24.04
     permissions:
@@ -211,11 +232,11 @@ jobs:
       # nothing in it, and the job went green. Nothing from the repository is
       # attached any more, so the surest way not to repeat that is to have
       # nothing to check out.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: desdec-*-release
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           append_body: true

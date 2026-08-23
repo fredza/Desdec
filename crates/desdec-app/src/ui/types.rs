@@ -33,11 +33,17 @@ use eframe::egui;
 use crate::{
     app::DesdecApp,
     i18n::{Language, Text, text},
+    icons::{self, Icon},
+    preferences::accent,
     ui::{ERROR, MUTED, card, columns_over, monospace_value},
 };
 
 /// How many elements of one array are read at a time.
 const ARRAY_LIMIT: u64 = 32;
+
+/// The button that forgets one recorded saying: a row's height, not a
+/// toolbar's.
+const FORGET_BUTTON_SIZE: egui::Vec2 = egui::vec2(22.0, 20.0);
 /// How deep a reading goes however much is opened, so a type that nests
 /// through arrays cannot be asked for more rows than a screen can hold.
 const DEPTH_LIMIT: usize = 8;
@@ -569,6 +575,7 @@ fn sayings(app: &mut DesdecApp, ui: &mut egui::Ui, language: Language) {
     ui.label(egui::RichText::new(said).color(MUTED));
 
     let mut forget = None;
+    let theme = accent(app.preferences.theme);
     let sayings: Vec<crate::annotations::InCode> = app.annotations.in_code().to_vec();
     egui::Grid::new("desdec.structures.in_code")
         .num_columns(4)
@@ -586,7 +593,11 @@ fn sayings(app: &mut DesdecApp, ui: &mut egui::Ui, language: Language) {
                 ui.monospace(called);
                 ui.monospace(&saying.register);
                 ui.label(egui::RichText::new(&saying.kind).color(MUTED));
-                if ui.small_button("✕").clicked() {
+                // Drawn, not written: no font egui ships has a cross in the
+                // proportional family, and `✕` reached the row as `◻`.
+                if icons::sized_button(ui, Icon::Close, None, false, theme, FORGET_BUTTON_SIZE)
+                    .clicked()
+                {
                     forget = Some((saying.function, saying.register.clone()));
                 }
                 ui.end_row();
@@ -1326,13 +1337,22 @@ mod tests {
         app.structures.address = String::from("0");
 
         let reading = super::read_now(&app, header, 0);
-        let entry = reading
+        // The field each format opens its header with, or names its entry
+        // point in: `e_entry` for an ELF, `e_magic` for a PE, `magic` for a
+        // Mach-O. Listing only the first two made this a test of the host —
+        // it passed on Linux and failed on the macOS runner, on a header it
+        // had read perfectly well.
+        let known = reading
             .members
             .iter()
-            .find(|member| member.name == "e_entry" || member.name == "e_magic")
+            .find(|member| matches!(member.name.as_str(), "e_entry" | "e_magic" | "magic"))
             .expect("a member of the header");
-        assert!(entry.value.is_known(), "the header's bytes are there");
+        assert!(known.value.is_known(), "the header's bytes are there");
 
+        // And where the header carries the entry point, it must be the one
+        // the analysis found by other means entirely — which is the tie this
+        // test exists for. A Mach-O keeps its entry in a load command rather
+        // than in the header, so there it is the reading above that stands.
         if let Some(expected) = app
             .analysis
             .as_ref()
@@ -1412,33 +1432,68 @@ mod tests {
         assert_eq!(super::suggested_name("", "rdi"), "function_rdi");
     }
 
+    /// The reference binary with a saying already made about a function that
+    /// really does reach through its stack pointer.
+    ///
+    /// The largest function used to stand in for this. On the x86-64 ELF a
+    /// Linux run analyses, the largest function reliably keeps a frame; on the
+    /// aarch64 Mach-O the macOS runner analyses, it is four megabytes of
+    /// `br x16` stubs whose only touch of `sp` is a pre-indexed push at a
+    /// negative offset — outside anything the pointer points at, and rightly
+    /// named nothing. Both tests below then failed on a claim neither was
+    /// making: what they are about is that a saying names the rows, not that
+    /// the biggest function in any binary anywhere happens to keep a frame.
+    ///
+    /// So the frame is looked for rather than assumed. A binary in which no
+    /// function at all reaches through its stack pointer is itself a failure —
+    /// that is what `name_accesses` not knowing an architecture looks like —
+    /// and the panic says so.
+    fn app_saying_about_a_frame() -> (DesdecApp, u64, &'static str) {
+        // Bodies are walked instruction by instruction, and a stripped binary
+        // holds one function of a million of them: the ones worth trying are
+        // the ordinary ones, and a frame turns up in the first few.
+        const LONGEST_TRIED: usize = 4096;
+
+        let mut app = opened_app(WorkspaceView::Structures);
+        app.structures.source = FRAME.to_owned();
+        app.structures.reread();
+        let register = crate::testing::stack_register();
+
+        let candidates: Vec<u64> = app
+            .functions
+            .iter()
+            .filter(|function| {
+                app.analysis
+                    .as_ref()
+                    .is_some_and(|analysis| function.body(analysis).len() <= LONGEST_TRIED)
+            })
+            .map(|function| function.start)
+            .collect();
+
+        for start in candidates {
+            app.annotations.say_in_code(crate::annotations::InCode {
+                function: start,
+                register: register.to_owned(),
+                kind: String::from("Frame"),
+            });
+            app.rebuild_member_names();
+            if !app.member_names.is_empty() {
+                return (app, start, register);
+            }
+            app.annotations.forget_in_code(start, register);
+        }
+        panic!("no function of the host's binary reaches through {register}");
+    }
+
+    /// One structure wide enough to cover a frame, used by both tests below.
+    const FRAME: &str = "struct Frame { unsigned long long slot[64]; };";
+
     /// A saying about one register in one function names every access it makes
     /// through it — which is the column of offsets a reader translates in
     /// their head, translated.
     #[test]
     fn a_saying_about_a_register_names_the_rows_that_go_through_it() {
-        let mut app = opened_app(WorkspaceView::Structures);
-        app.structures.source = "struct Frame { unsigned long long slot[64]; };".to_owned();
-        app.structures.reread();
-
-        // The largest function, so there is something to name.
-        let function = app
-            .functions
-            .iter()
-            .max_by_key(|function| function.end.saturating_sub(function.start))
-            .map(|function| function.start)
-            .expect("a function");
-        app.annotations.say_in_code(crate::annotations::InCode {
-            function,
-            register: "rsp".to_owned(),
-            kind: "Frame".to_owned(),
-        });
-        app.rebuild_member_names();
-
-        assert!(
-            !app.member_names.is_empty(),
-            "a function that keeps a stack frame touches it"
-        );
+        let (app, _, _) = app_saying_about_a_frame();
         let named = app
             .member_names
             .get(
@@ -1460,22 +1515,7 @@ mod tests {
     /// once and never since.
     #[test]
     fn a_saying_about_a_type_that_no_longer_exists_names_nothing() {
-        let mut app = opened_app(WorkspaceView::Structures);
-        app.structures.source = "struct Frame { unsigned long long slot[64]; };".to_owned();
-        app.structures.reread();
-        let function = app
-            .functions
-            .iter()
-            .max_by_key(|function| function.end.saturating_sub(function.start))
-            .map(|function| function.start)
-            .expect("a function");
-        app.annotations.say_in_code(crate::annotations::InCode {
-            function,
-            register: "rsp".to_owned(),
-            kind: "Frame".to_owned(),
-        });
-        app.rebuild_member_names();
-        assert!(!app.member_names.is_empty());
+        let (mut app, _, _) = app_saying_about_a_frame();
 
         app.structures.source.clear();
         app.structures.reread();
