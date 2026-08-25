@@ -628,6 +628,7 @@ mod tests {
                 },
             ],
             symbols: Vec::new(),
+            classes: Vec::new(),
             import_slots: Vec::new(),
             network: desdec_core::NetworkUse::default(),
             instructions: vec![Instruction {

@@ -6,9 +6,9 @@ use crate::{
     i18n::{Language, Text, text},
     preferences::accent,
     ui::{
-        ERROR, MUTED, assistant, card, columns, decompile, disassembly, dump, expert, format_size,
-        functions, graph, machine, monospace_value, patches_view, pip, segments, strings, types,
-        yara,
+        ERROR, MUTED, assistant, card, classes, columns, decompile, disassembly, dump, expert,
+        format_size, functions, graph, machine, monospace_value, patches_view, pip, segments,
+        strings, symbols, types, yara,
     },
 };
 
@@ -159,6 +159,21 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 &mut app.selected_function,
                 language,
             );
+        }
+        WorkspaceView::Symbols => {
+            let action = symbols::show(
+                ui,
+                analysis,
+                &mut app.symbols_filter,
+                &mut app.symbols_hide_imports,
+                &mut app.symbols_hide_defined,
+                language,
+            );
+            go_to = action.go_to;
+        }
+        WorkspaceView::Classes => {
+            let action = classes::show(ui, analysis, &mut app.classes_filter, language);
+            go_to = action.go_to;
         }
         view => {
             if let Some(explanation) = view.planned_explanation() {

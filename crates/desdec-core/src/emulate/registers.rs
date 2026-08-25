@@ -206,6 +206,19 @@ impl Registers {
         };
     }
 
+    /// One general-purpose slot by index, read as a whole sixty-four bit
+    /// value with no x86 naming applied.
+    ///
+    /// The sixteen slots are architecture-neutral storage; [`Self::get`] reads
+    /// them under x86-64 names, but an ABI whose registers this file does not
+    /// name — aarch64's `x0`…`x8` at a syscall boundary — reaches them by
+    /// position instead. An index past the file, like any register never
+    /// written, reads as zero rather than stopping the caller.
+    #[must_use]
+    pub fn slot(&self, index: usize) -> u64 {
+        self.general.get(index).copied().unwrap_or(0)
+    }
+
     /// The stack pointer, which enough of the emulator reads to deserve a name.
     #[must_use]
     pub fn stack_pointer(&self) -> u64 {

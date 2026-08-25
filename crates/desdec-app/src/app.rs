@@ -56,6 +56,11 @@ pub enum WorkspaceView {
     Segments,
     Functions,
     Strings,
+    /// The names the file declares: imports and defined symbols; see
+    /// [`crate::ui::symbols`].
+    Symbols,
+    /// C++ classes recovered from the symbol names; see [`crate::ui::classes`].
+    Classes,
     Disassembly,
     Decompile,
     /// The file's bytes as they are, sixteen to a row.
@@ -80,6 +85,8 @@ impl WorkspaceView {
         Self::Segments,
         Self::Functions,
         Self::Strings,
+        Self::Symbols,
+        Self::Classes,
         Self::Disassembly,
         Self::Decompile,
         Self::Dump,
@@ -97,6 +104,8 @@ impl WorkspaceView {
             Self::Segments => Text::Segments,
             Self::Functions => Text::Functions,
             Self::Strings => Text::Strings,
+            Self::Symbols => Text::Symbols,
+            Self::Classes => Text::Classes,
             Self::Disassembly => Text::Disassembly,
             Self::Decompile => Text::Decompile,
             Self::Dump => Text::Dump,
@@ -117,6 +126,8 @@ impl WorkspaceView {
             Self::Segments => Icon::Segments,
             Self::Functions => Icon::Functions,
             Self::Strings => Icon::Strings,
+            Self::Symbols => Icon::Symbols,
+            Self::Classes => Icon::Classes,
             Self::Disassembly => Icon::Disassembly,
             Self::Decompile => Icon::Decompile,
             Self::Dump => Icon::Dump,
@@ -137,6 +148,8 @@ impl WorkspaceView {
             Self::Segments => Command::Segments,
             Self::Functions => Command::Functions,
             Self::Strings => Command::Strings,
+            Self::Symbols => Command::Symbols,
+            Self::Classes => Command::Classes,
             Self::Disassembly => Command::Disassembly,
             Self::Decompile => Command::Decompile,
             Self::Dump => Command::Dump,
@@ -154,6 +167,7 @@ impl WorkspaceView {
     pub const fn planned_explanation(self) -> Option<Text> {
         match self {
             Self::Overview | Self::Segments | Self::Functions | Self::Strings => None,
+            Self::Symbols | Self::Classes => None,
             Self::Disassembly | Self::Decompile | Self::Dump | Self::Assistant => None,
             Self::Machine | Self::Graph | Self::Structures => None,
             Self::Patches | Self::Yara => None,
@@ -687,6 +701,14 @@ pub struct DesdecApp {
     pub strings_hide_unmapped: bool,
     /// Hide strings without a direct reference in decoded code.
     pub strings_hide_unreferenced: bool,
+    /// Free-text filter applied to the declared symbols.
+    pub symbols_filter: String,
+    /// Hide the imported names in the Symbols view.
+    pub symbols_hide_imports: bool,
+    /// Hide the defined names in the Symbols view.
+    pub symbols_hide_defined: bool,
+    /// Free-text filter applied to the recovered C++ classes.
+    pub classes_filter: String,
     /// A short confirmation of something that left no trace on screen.
     pub notice: Option<Notice>,
     /// What the reader has written about the open binary's addresses.
@@ -1353,6 +1375,8 @@ impl DesdecApp {
             | Command::Disassembly
             | Command::Functions
             | Command::Strings
+            | Command::Symbols
+            | Command::Classes
             | Command::Dump => self.open_view(command),
             Command::ExportPatched => {
                 self.open_view(command);
@@ -2770,6 +2794,10 @@ impl DesdecApp {
         self.search = crate::ui::search::State::default();
         self.dump = crate::ui::dump::State::default();
         self.strings_filter.clear();
+        self.symbols_filter.clear();
+        self.symbols_hide_imports = false;
+        self.symbols_hide_defined = false;
+        self.classes_filter.clear();
         self.strings_hide_unmapped = false;
         self.strings_hide_unreferenced = false;
         self.selected_function = None;
@@ -3723,6 +3751,8 @@ mod tests {
             WorkspaceView::Decompile,
             WorkspaceView::Dump,
             WorkspaceView::Strings,
+            WorkspaceView::Symbols,
+            WorkspaceView::Classes,
             WorkspaceView::Assistant,
             WorkspaceView::Machine,
             WorkspaceView::Graph,

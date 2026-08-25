@@ -34,6 +34,8 @@ pub mod condition;
 pub mod memory;
 /// The register file; see the module's own documentation.
 pub mod registers;
+/// System-call service-number tables; see the module's own documentation.
+pub mod syscalls;
 /// System-call ABI decoding, without a host operating system; see the
 /// module's own documentation.
 pub mod system;
@@ -909,6 +911,7 @@ impl Machine {
                         at,
                         instruction: text,
                         call: system::SystemCall::capture(
+                            self.architecture,
                             self.format,
                             self.bitness,
                             &self.registers,

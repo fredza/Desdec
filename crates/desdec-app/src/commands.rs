@@ -95,6 +95,8 @@ commands! {
     StringsHideUnmapped => [Strings, FilterUnmappedStrings], None,
     StringsHideUnreferenced => [Strings, FilterUnreferencedStrings], None,
     StringsClearFilter => [Strings, ClearFilter], None,
+    Symbols => [Symbols], None,
+    Classes => [Classes], None,
     Patches => [Patches], Some(Shortcut::ctrl(KeyName::Num5)),
     Segments => [Segments], Some(Shortcut::ctrl(KeyName::Num6)),
     ExportPatched => [Patches, ExportPatched], None,
@@ -264,6 +266,8 @@ impl Command {
             | Self::StringsHideUnmapped
             | Self::StringsHideUnreferenced
             | Self::StringsClearFilter => WorkspaceView::Strings,
+            Self::Symbols => WorkspaceView::Symbols,
+            Self::Classes => WorkspaceView::Classes,
             // The walk moves the selection in the listing, so it shows it.
             Self::Dump => WorkspaceView::Dump,
             Self::Disassembly

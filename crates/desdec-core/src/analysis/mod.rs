@@ -22,6 +22,7 @@ use std::{
 
 pub mod blocks;
 pub mod details;
+pub mod classes;
 pub mod disassembly;
 pub mod discover;
 pub mod entropy;
@@ -37,6 +38,7 @@ pub mod stack;
 pub mod strings;
 pub mod symbols;
 
+pub use classes::{Class, ClassMethod, ClassSource};
 pub use details::{BinaryDetails, FileKind, Hardening, ImportedLibrary, Relro, Segment};
 pub use disassembly::{Decoded, Instruction, InstructionBytes, decode_one};
 pub use imports::ImportSlot;
@@ -76,6 +78,10 @@ pub struct Analysis {
     pub sections: Vec<Section>,
     pub strings: Vec<ExtractedString>,
     pub symbols: Vec<Symbol>,
+    /// C++ classes recovered from the symbol names, empty when the file
+    /// declares none. A reading of the names the compiler emitted, not of the
+    /// code; see [`classes`].
+    pub classes: Vec<Class>,
     /// Where each imported name is expected to be filled in, by address.
     ///
     /// What names a call that goes through a slot rather than to a place in
@@ -360,6 +366,7 @@ fn sequentially(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
 
     let strings = strings::extract(bytes);
     let symbols = symbols::extract(bytes, format);
+    let classes = classes::recover(&symbols);
     let import_slots = imports::extract(bytes, format);
     let sections = sections::parse(bytes, format);
     let code = disassembly::decode(bytes, format, architecture, &sections);
@@ -374,6 +381,7 @@ fn sequentially(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
         sections,
         strings,
         symbols,
+        classes,
         import_slots,
         instructions: code.instructions,
         code_truncated: code.truncated,
@@ -418,6 +426,7 @@ fn concurrently(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
         let (strings, details) = join(described);
         let (sections, decoded) = join(code);
         let symbols = join(symbols);
+        let classes = classes::recover(&symbols);
         // Reads the three results above, so it waits for them rather than
         // running as a seventh thread.
         let languages = language::detect(bytes, &sections, &symbols, &details);
@@ -428,6 +437,7 @@ fn concurrently(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
             sections,
             strings,
             symbols,
+            classes,
             import_slots: join(import_slots),
             instructions: decoded.instructions,
             code_truncated: decoded.truncated,

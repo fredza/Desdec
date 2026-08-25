@@ -17,6 +17,10 @@ pub enum Icon {
     Segments,
     Functions,
     Strings,
+    /// The names the file declares: imports and defined symbols.
+    Symbols,
+    /// C++ classes recovered from the symbol names.
+    Classes,
     Disassembly,
     Decompile,
     Dump,
@@ -62,6 +66,8 @@ impl Icon {
         Self::Segments,
         Self::Functions,
         Self::Strings,
+        Self::Symbols,
+        Self::Classes,
         Self::Disassembly,
         Self::Decompile,
         Self::Dump,
@@ -193,6 +199,8 @@ pub fn draw_with_stroke(
         Icon::Segments => segments(&pen),
         Icon::Functions => functions(&pen),
         Icon::Strings => strings(&pen),
+        Icon::Symbols => symbols(&pen),
+        Icon::Classes => classes(&pen),
         Icon::Disassembly => disassembly(&pen),
         Icon::Decompile => decompile(&pen),
         Icon::Dump => dump(&pen),
@@ -352,6 +360,26 @@ fn strings(pen: &Pen) {
         pen.line((x + 0.03, 0.08), (x, 0.42));
     }
     pen.line((0.02, 0.8), (0.98, 0.8));
+}
+
+/// A list of named entries: a marker for each declared name, then the name
+/// beside it. Distinct from the disassembly glyph, whose column is addresses
+/// rather than the pip that stands for a symbol here.
+fn symbols(pen: &Pen) {
+    for (y, end) in [(0.14_f32, 0.86), (0.5, 0.98), (0.86, 0.7)] {
+        pen.filled((0.02, y - 0.09), (0.2, y + 0.09), 0.4);
+        pen.line((0.34, y), (end, y));
+    }
+}
+
+/// A class: a header box over the members it groups, like a small class
+/// diagram seen from far away.
+fn classes(pen: &Pen) {
+    pen.filled((0.14, 0.06), (0.86, 0.3), 0.4);
+    for y in [0.52_f32, 0.78] {
+        pen.line((0.24, y), (0.76, y));
+    }
+    pen.line((0.5, 0.3), (0.5, 0.9));
 }
 
 /// Stacked instruction lines of uneven length, with their address column.

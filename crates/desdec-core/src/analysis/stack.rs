@@ -746,6 +746,7 @@ mod tests {
             sections: Vec::new(),
             strings: Vec::new(),
             symbols: Vec::new(),
+            classes: Vec::new(),
             import_slots: Vec::new(),
             network: crate::analysis::NetworkUse::default(),
             instructions: listing

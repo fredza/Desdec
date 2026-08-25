@@ -26,7 +26,8 @@ pub mod update;
 pub mod yara;
 
 pub use analysis::{
-    ANALYSIS_BYTE_LIMIT, AnalysedFile, Analysis, BinaryDetails, Confidence, Decoded,
+    ANALYSIS_BYTE_LIMIT, AnalysedFile, Analysis, BinaryDetails, Class, ClassMethod, ClassSource,
+    Confidence, Decoded,
     ExtractedString, FileKind, Hardening, ImportSlot, ImportedLibrary, Instruction,
     InstructionBytes, LanguageEvidence, LastWrite, NetworkName, NetworkUse, Permissions, Reach,
     Relro, Section, Segment, SourceLanguage, StackSlot, StackState, StringEncoding, Symbol, Target,

@@ -7,13 +7,19 @@
 
 use iced_x86::Register;
 
-use crate::{BinaryFormat, emulate::registers::Registers};
+use crate::{
+    Architecture, BinaryFormat,
+    emulate::{registers::Registers, syscalls},
+};
 
 /// The ABI used by the request that stopped the emulation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SystemPlatform {
     /// Linux's x86-64 syscall ABI, the convention shown by `strace`.
     LinuxX86_64,
+    /// Linux's aarch64 (ARM64) `svc #0` ABI: the number is in `x8`, the
+    /// arguments in `x0`–`x5`.
+    LinuxArm64,
     /// Linux's 32-bit `int 0x80` ABI.
     LinuxX86,
     /// macOS's x86-64 BSD/Mach syscall ABI, as observed by `dtruss`.
@@ -30,13 +36,84 @@ impl SystemPlatform {
     pub const fn label(self) -> &'static str {
         match self {
             Self::LinuxX86_64 => "Linux x86-64",
+            Self::LinuxArm64 => "Linux ARM64",
             Self::LinuxX86 => "Linux x86",
             Self::MacOsX86_64 => "macOS x86-64",
             Self::WindowsX86_64 => "Windows x86-64",
             Self::Unknown => "unknown ABI",
         }
     }
+
+    /// Chooses the ABI from the architecture and container. The architecture
+    /// decides first: an ELF may be x86-64 or aarch64, and only the machine
+    /// type tells them apart — their syscall numbers do not agree.
+    #[must_use]
+    const fn identify(architecture: Architecture, format: BinaryFormat, bitness: u32) -> Self {
+        if matches!(architecture, Architecture::Arm64) {
+            // The interpreter is x86-only today, so a `svc #0` is reached only
+            // once an aarch64 interpreter exists; the ABI is decoded now so
+            // the number resolves against the right table when it does.
+            return match format {
+                BinaryFormat::Elf { .. } => Self::LinuxArm64,
+                _ => Self::Unknown,
+            };
+        }
+        match (format, bitness) {
+            (BinaryFormat::Elf { .. }, 64) => Self::LinuxX86_64,
+            (BinaryFormat::Elf { .. }, 32) => Self::LinuxX86,
+            (BinaryFormat::MachO { .. }, 64) => Self::MacOsX86_64,
+            (BinaryFormat::Pe, 64) => Self::WindowsX86_64,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Reads the service number and the six argument registers this ABI uses.
+    fn capture_registers(self, registers: &Registers) -> (u64, [SystemArgument; 6]) {
+        if matches!(self, Self::LinuxArm64) {
+            // aarch64: the number is in `x8`, the arguments in `x0`–`x5`,
+            // reached by slot because this register file has no aarch64 names.
+            let arguments = [0, 1, 2, 3, 4, 5].map(|index| SystemArgument {
+                register: AARCH64_ARGUMENTS[index],
+                value: registers.slot(index),
+            });
+            return (registers.slot(8), arguments);
+        }
+        let (number_register, argument_registers) = match self {
+            Self::LinuxX86 => (
+                ("eax", Register::EAX),
+                [
+                    ("ebx", Register::EBX),
+                    ("ecx", Register::ECX),
+                    ("edx", Register::EDX),
+                    ("esi", Register::ESI),
+                    ("edi", Register::EDI),
+                    ("ebp", Register::EBP),
+                ],
+            ),
+            // Every other 64-bit ABI here numbers the syscall in `rax` and
+            // passes arguments in the System V order with `r10` for the fourth.
+            _ => (
+                ("rax", Register::RAX),
+                [
+                    ("rdi", Register::RDI),
+                    ("rsi", Register::RSI),
+                    ("rdx", Register::RDX),
+                    ("r10", Register::R10),
+                    ("r8", Register::R8),
+                    ("r9", Register::R9),
+                ],
+            ),
+        };
+        let arguments = argument_registers.map(|(register, source)| SystemArgument {
+            register,
+            value: registers.get(source),
+        });
+        (registers.get(number_register.1), arguments)
+    }
 }
+
+/// The aarch64 argument registers, in call order.
+const AARCH64_ARGUMENTS: [&str; 6] = ["x0", "x1", "x2", "x3", "x4", "x5"];
 
 /// One argument as the ABI presents it.  Pointer values are not dereferenced:
 /// a pointer may be invalid, and displaying a fabricated string would be as
@@ -59,63 +136,23 @@ pub struct SystemCall {
 }
 
 impl SystemCall {
-    /// Identifies the ABI from the binary container and captures its register
-    /// state.  Nothing is executed and no argument pointer is read.
+    /// Identifies the ABI from the architecture and binary container, and
+    /// captures its register state.  Nothing is executed and no argument
+    /// pointer is read.
     #[must_use]
-    pub fn capture(format: BinaryFormat, bitness: u32, registers: &Registers) -> Self {
-        let platform = match (format, bitness) {
-            (BinaryFormat::Elf { .. }, 64) => SystemPlatform::LinuxX86_64,
-            (BinaryFormat::Elf { .. }, 32) => SystemPlatform::LinuxX86,
-            (BinaryFormat::MachO { .. }, 64) => SystemPlatform::MacOsX86_64,
-            (BinaryFormat::Pe, 64) => SystemPlatform::WindowsX86_64,
-            _ => SystemPlatform::Unknown,
-        };
-        let (number_register, argument_registers) = match platform {
-            SystemPlatform::LinuxX86_64
-            | SystemPlatform::MacOsX86_64
-            | SystemPlatform::WindowsX86_64 => (
-                ("rax", Register::RAX),
-                [
-                    ("rdi", Register::RDI),
-                    ("rsi", Register::RSI),
-                    ("rdx", Register::RDX),
-                    ("r10", Register::R10),
-                    ("r8", Register::R8),
-                    ("r9", Register::R9),
-                ],
-            ),
-            SystemPlatform::LinuxX86 => (
-                ("eax", Register::EAX),
-                [
-                    ("ebx", Register::EBX),
-                    ("ecx", Register::ECX),
-                    ("edx", Register::EDX),
-                    ("esi", Register::ESI),
-                    ("edi", Register::EDI),
-                    ("ebp", Register::EBP),
-                ],
-            ),
-            SystemPlatform::Unknown => (
-                ("rax", Register::RAX),
-                [
-                    ("rdi", Register::RDI),
-                    ("rsi", Register::RSI),
-                    ("rdx", Register::RDX),
-                    ("r10", Register::R10),
-                    ("r8", Register::R8),
-                    ("r9", Register::R9),
-                ],
-            ),
-        };
-        let number = registers.get(number_register.1);
+    pub fn capture(
+        architecture: Architecture,
+        format: BinaryFormat,
+        bitness: u32,
+        registers: &Registers,
+    ) -> Self {
+        let platform = SystemPlatform::identify(architecture, format, bitness);
+        let (number, arguments) = platform.capture_registers(registers);
         Self {
             platform,
             number,
             name: name(platform, number),
-            arguments: argument_registers.map(|(register, value)| SystemArgument {
-                register,
-                value: registers.get(value),
-            }),
+            arguments,
         }
     }
 
@@ -129,85 +166,15 @@ impl SystemCall {
 
 const fn name(platform: SystemPlatform, number: u64) -> Option<&'static str> {
     match platform {
-        SystemPlatform::LinuxX86_64 => linux_x86_64(number),
-        SystemPlatform::LinuxX86 => linux_x86(number),
-        SystemPlatform::MacOsX86_64 => macos_x86_64(number),
+        SystemPlatform::LinuxX86_64 => syscalls::linux_x86_64(number),
+        SystemPlatform::LinuxArm64 => syscalls::linux_arm64(number),
+        SystemPlatform::LinuxX86 => syscalls::linux_x86(number),
+        // macOS tags each syscall's class in the high bits (the UNIX/BSD
+        // class is `0x0200_0000`); the table is keyed by the plain ordinal.
+        SystemPlatform::MacOsX86_64 => syscalls::macos_x86_64(number & 0x00ff_ffff),
         // NT service IDs are deliberately not decoded: Microsoft changes them
         // between releases, so a fixed table would confidently lie.
         SystemPlatform::WindowsX86_64 | SystemPlatform::Unknown => None,
-    }
-}
-
-const fn linux_x86_64(number: u64) -> Option<&'static str> {
-    match number {
-        0 => Some("read"),
-        1 => Some("write"),
-        2 => Some("open"),
-        3 => Some("close"),
-        9 => Some("mmap"),
-        10 => Some("mprotect"),
-        11 => Some("munmap"),
-        12 => Some("brk"),
-        39 => Some("getpid"),
-        56 => Some("clone"),
-        57 => Some("fork"),
-        59 => Some("execve"),
-        60 => Some("exit"),
-        61 => Some("wait4"),
-        72 => Some("fcntl"),
-        80 => Some("chdir"),
-        89 => Some("readlink"),
-        158 => Some("arch_prctl"),
-        202 => Some("futex"),
-        217 => Some("getdents64"),
-        231 => Some("exit_group"),
-        257 => Some("openat"),
-        262 => Some("newfstatat"),
-        273 => Some("set_robust_list"),
-        318 => Some("getrandom"),
-        334 => Some("rseq"),
-        435 => Some("clone3"),
-        _ => None,
-    }
-}
-
-const fn linux_x86(number: u64) -> Option<&'static str> {
-    match number {
-        1 => Some("exit"),
-        2 => Some("fork"),
-        3 => Some("read"),
-        4 => Some("write"),
-        5 => Some("open"),
-        6 => Some("close"),
-        11 => Some("execve"),
-        20 => Some("getpid"),
-        45 => Some("brk"),
-        54 => Some("ioctl"),
-        90 => Some("mmap"),
-        91 => Some("munmap"),
-        120 => Some("clone"),
-        125 => Some("mprotect"),
-        252 => Some("exit_group"),
-        295 => Some("openat"),
-        _ => None,
-    }
-}
-
-const fn macos_x86_64(number: u64) -> Option<&'static str> {
-    // macOS prefixes BSD calls with the UNIX class (0x0200_0000).
-    let bsd = number & 0x00ff_ffff;
-    match bsd {
-        1 => Some("exit"),
-        3 => Some("read"),
-        4 => Some("write"),
-        5 => Some("open"),
-        6 => Some("close"),
-        20 => Some("getpid"),
-        73 => Some("munmap"),
-        74 => Some("mprotect"),
-        197 => Some("mmap"),
-        240 => Some("nanosleep"),
-        _ => None,
     }
 }
 
@@ -223,6 +190,7 @@ mod tests {
         registers.set(Register::RSI, 0x401000);
         registers.set(Register::RDX, 7);
         let call = SystemCall::capture(
+            Architecture::X86_64,
             BinaryFormat::Elf {
                 bits: 64,
                 endianness: crate::Endianness::Little,
@@ -252,9 +220,38 @@ mod tests {
     fn windows_keeps_the_number_without_a_false_stable_name() {
         let mut registers = Registers::new();
         registers.set(Register::RAX, 0x55);
-        let call = SystemCall::capture(BinaryFormat::Pe, 64, &registers);
+        let call = SystemCall::capture(Architecture::X86_64, BinaryFormat::Pe, 64, &registers);
         assert_eq!(call.platform, SystemPlatform::WindowsX86_64);
         assert_eq!(call.name, None);
         assert_eq!(call.display_name(), "syscall_0x55");
+    }
+
+    #[test]
+    fn aarch64_reads_x8_and_names_it_against_the_arm_table() {
+        // The interpreter has no aarch64 register names, so the ABI reaches
+        // `x8`/`x0`… by slot; slot 8 is `r8` under the x86-64 file's naming.
+        let mut registers = Registers::new();
+        registers.set(Register::R8, 221); // x8: the service number
+        registers.set(Register::RAX, 42); // x0: the first argument
+        let call = SystemCall::capture(
+            Architecture::Arm64,
+            BinaryFormat::Elf {
+                bits: 64,
+                endianness: crate::Endianness::Little,
+            },
+            64,
+            &registers,
+        );
+        assert_eq!(call.platform, SystemPlatform::LinuxArm64);
+        assert_eq!(call.number, 221);
+        // 221 is `execve` on aarch64, not the `fadvise64` it is on x86-64.
+        assert_eq!(call.name, Some("execve"));
+        assert_eq!(
+            call.arguments[0],
+            SystemArgument {
+                register: "x0",
+                value: 42
+            }
+        );
     }
 }
