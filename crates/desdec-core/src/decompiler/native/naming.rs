@@ -272,19 +272,17 @@ fn frame_slots(blocks: &[Vec<Statement>]) -> BTreeMap<(String, i64), Local> {
     let mut accessed: Vec<(String, i64)> = Vec::new();
     let mut next = 0_u32;
     let mut offer = |root: &str, offset: i64, width: Width, found: &mut BTreeMap<_, _>| {
-        let entry = found
-            .entry((root.to_owned(), offset))
-            .or_insert_with(|| {
-                let id = next;
-                next += 1;
-                Local {
-                    id,
-                    name: slot_name(root, offset),
-                    width,
-                    label: label_of(root, offset),
-                    buffer: None,
-                }
-            });
+        let entry = found.entry((root.to_owned(), offset)).or_insert_with(|| {
+            let id = next;
+            next += 1;
+            Local {
+                id,
+                name: slot_name(root, offset),
+                width,
+                label: label_of(root, offset),
+                buffer: None,
+            }
+        });
         // The widest access is the one that says how big the slot is: a byte
         // read out of a word is a read of part of it.
         if width > entry.width {
@@ -771,9 +769,8 @@ fn answered(blocks: &[Vec<Statement>], convention: Convention) -> Option<Width> 
             }
         }
         if let Some(width) = last_here {
-            last_in_any_block = Some(
-                last_in_any_block.map_or(width, |widest: Width| widest.max(width)),
-            );
+            last_in_any_block =
+                Some(last_in_any_block.map_or(width, |widest: Width| widest.max(width)));
             if leaves {
                 on_the_way_out = Some(width);
             }
@@ -898,8 +895,7 @@ pub fn arguments_of_calls(blocks: &mut [Vec<Statement>], convention: Convention)
                     place: Place::Register(register),
                     ..
                 } => {
-                    if let Some(position) =
-                        registers.iter().position(|name| *name == register.root)
+                    if let Some(position) = registers.iter().position(|name| *name == register.root)
                     {
                         loaded[position] = Some(register.width);
                     }
@@ -1070,7 +1066,10 @@ mod tests {
     #[test]
     fn the_count_is_the_run_and_not_the_set() {
         let blocks = vec![vec![
-            assign(frame(-0x8), Expr::register(Register::new("rdi", Width::Qword))),
+            assign(
+                frame(-0x8),
+                Expr::register(Register::new("rdi", Width::Qword)),
+            ),
             assign(
                 frame(-0x10),
                 Expr::register(Register::new("rdx", Width::Qword)),
@@ -1085,10 +1084,7 @@ mod tests {
     fn two_accesses_at_one_offset_are_one_slot() {
         let blocks = vec![vec![
             assign(frame(-0x18), Expr::constant(1, Width::Dword)),
-            assign(
-                register("rax", Width::Dword),
-                Expr::read(frame(-0x18)),
-            ),
+            assign(register("rax", Width::Dword), Expr::read(frame(-0x18))),
         ]];
         let naming = recognise(&blocks, Convention::SystemV);
         assert_eq!(naming.locals.len(), 1);
@@ -1193,7 +1189,10 @@ mod tests {
                     address: 0x2000,
                 },
             ),
-            assign(register("rsi", Width::Dword), Expr::constant(4, Width::Dword)),
+            assign(
+                register("rsi", Width::Dword),
+                Expr::constant(4, Width::Dword),
+            ),
             Statement::new(
                 0x20,
                 Stmt::Call {
@@ -1222,11 +1221,11 @@ mod tests {
     #[test]
     fn an_argument_that_arrives_already_in_place_is_still_an_argument() {
         let mut blocks = vec![vec![
-            assign(register("rdx", Width::Dword), Expr::constant(0x400, Width::Dword)),
             assign(
-                register("rsi", Width::Qword),
-                Expr::read(frame(-0x408)),
+                register("rdx", Width::Dword),
+                Expr::constant(0x400, Width::Dword),
             ),
+            assign(register("rsi", Width::Qword), Expr::read(frame(-0x408))),
             Statement::new(
                 0x20,
                 Stmt::Call {
@@ -1292,7 +1291,10 @@ mod tests {
     #[test]
     fn a_function_that_writes_the_answer_register_returns_it() {
         let blocks = vec![vec![
-            assign(register("rax", Width::Dword), Expr::constant(0, Width::Dword)),
+            assign(
+                register("rax", Width::Dword),
+                Expr::constant(0, Width::Dword),
+            ),
             Statement::new(0x14, Stmt::Return(None)),
         ]];
         let mut blocks = blocks;

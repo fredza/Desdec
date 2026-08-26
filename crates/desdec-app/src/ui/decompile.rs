@@ -388,18 +388,21 @@ fn pseudocode_menu(
 /// Functions the engine can be pointed at: named, defined here, with an
 /// address. Sorted by address so the list reads like the image itself.
 fn decompilable_functions(app: &DesdecApp) -> Vec<(u64, String)> {
-    let Some(analysis) = app.analysis.as_ref() else {
-        return Vec::new();
-    };
-    let mut functions: Vec<(u64, String)> = analysis
-        .symbols
+    // From the same list the rest of the program bounds a function with, and
+    // not from the symbol table directly. Reading the symbols here meant the
+    // picker could offer an address that `functions::all` never produced a
+    // body for — and then the decompiler, which looks the function up in that
+    // list, found nothing and the whole card vanished. On a PE, where the two
+    // lists really do differ, the Decompilation view drew nothing at all.
+    //
+    // A function with no decoded body is left out rather than offered and
+    // refused: it is in a section the decoder does not read, or past the
+    // analysis limit, and picking it would empty the view again.
+    app.functions
         .iter()
-        .filter(|symbol| !symbol.imported)
-        .filter_map(|symbol| Some((symbol.address?, symbol.name.clone())))
-        .collect();
-    functions.sort_by_key(|(address, _)| *address);
-    functions.dedup_by_key(|(address, _)| *address);
-    functions
+        .filter(|function| !function.instructions.is_empty())
+        .map(|function| (function.start, function.name.clone()))
+        .collect()
 }
 
 /// Where a reader starts: `main` when the binary has one, otherwise the entry
@@ -872,10 +875,18 @@ mod tests {
 
     /// The view's whole point: C, not a listing with C punctuation.
     ///
-    /// Says nothing about *which* C, because the reference binary is the test
-    /// executable itself and that is a different program on every machine.
-    /// What is checked is what holds whatever it decompiles: a signature, a
-    /// body, and the decompiler's own name on the card.
+    /// Says nothing about *which* C, and now nothing about the layout either.
+    /// The reference binary is the test executable, which is a different
+    /// program on every machine — a Mach-O on macOS, a PE on Windows — and the
+    /// first version of this test asserted two things that depend on it: that
+    /// a body with braces was drawn, and that the line-by-line card below fit
+    /// on screen underneath. Both held here and neither held on the runners,
+    /// so the test measured the host rather than the view, and it took the CI
+    /// down on two platforms out of three.
+    ///
+    /// What is checked is what holds whatever the host happens to be: the
+    /// decompiler's card is named, and the C behind it — asked of the data
+    /// rather than of the pixels — has a signature and a body.
     #[test]
     fn the_view_shows_reconstructed_c_and_not_only_a_translation() {
         let ctx = egui::Context::default();
@@ -887,20 +898,34 @@ mod tests {
             views::show_central_panel(&mut app, ctx);
         });
 
-        let drawn = drawn_text(&output.shapes);
+        let Some(address) = app.selected_function else {
+            // A host whose test executable offers no function with a decoded
+            // body. There is nothing to decompile, so there is nothing this
+            // test can say — and saying it anyway is exactly the mistake being
+            // corrected.
+            return;
+        };
         assert!(
-            drawn.contains(text(Language::French, Text::DecompiledC)),
+            drawn_text(&output.shapes).contains(text(Language::French, Text::DecompiledC)),
             "the decompiler's own output must be named as what it is"
         );
+
+        // The body, asked of the decompiler rather than of the drawing: what
+        // fits on a screen is a question about the window, and this is a
+        // question about the C. And asked of the function the *view* chose,
+        // not of one this test picked on its own — otherwise it stops testing
+        // the view.
+        let decompiled = app
+            .native_decompilation(address)
+            .expect("the function the view just decompiled");
+        let text = decompiled.text();
         assert!(
-            drawn.contains('{') && drawn.contains('}'),
-            "a decompiled function has a body"
+            text.contains('{') && text.contains('}'),
+            "a decompiled function has a body:\n{text}"
         );
-        // And the translation it grew out of is still there: it is the only
-        // one of the two that shows a whole binary rather than one function.
         assert!(
-            drawn.contains(text(Language::French, Text::LineByLineTranslation)),
-            "the line-by-line translation must not have been taken away"
+            text.lines().next().is_some_and(|line| line.contains('(')),
+            "and a signature on its first line:\n{text}"
         );
     }
 
@@ -909,9 +934,13 @@ mod tests {
     #[test]
     fn the_lines_of_the_c_know_which_instruction_they_came_from() {
         let mut app = crate::testing::opened_app(WorkspaceView::Decompile);
-        let Some(address) = app.functions.first().map(|function| function.start) else {
-            // A host whose executable names no function at all: there is
-            // nothing to decompile and nothing this test can say.
+        // The functions the view would offer, which is not the same as the
+        // first symbol in the table: a Mach-O names its own file header
+        // `_mh_execute_header`, and that is not a function and has no body.
+        let functions = decompilable_functions(&app);
+        let Some(address) = default_function(&functions) else {
+            // A host whose executable offers no function with a decoded body:
+            // there is nothing to decompile and nothing this test can say.
             return;
         };
         let Some(decompiled) = app.native_decompilation(address) else {

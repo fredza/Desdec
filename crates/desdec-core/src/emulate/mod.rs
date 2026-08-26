@@ -513,6 +513,7 @@ impl Machine {
             registers: &mut self.registers,
             memory: &mut self.memory,
             bitness: self.bitness,
+            retired: self.executed,
             branched_through: None,
         }
     }
@@ -868,6 +869,10 @@ impl Machine {
             registers: &mut self.registers,
             memory: &mut self.memory,
             bitness: self.bitness,
+            // A count of instructions rather than of cycles: it is the only
+            // clock this machine has, and unlike a real counter it is the same
+            // on every run of the same program.
+            retired: self.executed,
             branched_through: None,
         };
         let outcome = cpu.execute(&instruction, &text);
@@ -1238,6 +1243,124 @@ mod tests {
         let mut machine = machine(assemble);
         machine.run();
         machine
+    }
+
+    /// `cpuid` is a question for the processor, and there is one: the one this
+    /// module builds. Refusing it alongside the system calls made the refusal
+    /// read `rax` as a call number and name it — so a `cpuid` came back as a
+    /// `read`, which is not a smaller answer than the truth but a different
+    /// one.
+    ///
+    /// It also could not be run past, and glibc asks `cpuid` within the first
+    /// few hundred instructions of every statically linked program: such a
+    /// binary stopped there and could not be emulated at all.
+    #[test]
+    fn asking_the_processor_what_it_is_is_answered_and_not_mistaken_for_a_system_call() {
+        let mut machine = machine(|assembler| {
+            assembler.mov(iced_x86::code_asm::eax, 0u32).expect("mov");
+            assembler.cpuid().expect("cpuid");
+            assembler.ret().expect("ret");
+        });
+        let stop = machine.run().cloned();
+        assert!(
+            matches!(stop, Some(Stop::Finished)),
+            "the run should carry on past cpuid, got {stop:?}"
+        );
+        assert!(
+            machine.registers.get(iced_x86::Register::EAX) >= 1,
+            "leaf 0 answers with the highest leaf supported"
+        );
+    }
+
+    /// And the claim it makes has to be the truth about this interpreter.
+    /// Claiming AVX would send glibc down a path of instructions this
+    /// interpreter cannot carry out, and the run would stop a hundred
+    /// instructions later on something far harder to understand.
+    #[test]
+    fn the_processor_claims_nothing_it_cannot_carry_out() {
+        let mut machine = machine(|assembler| {
+            assembler.mov(iced_x86::code_asm::eax, 1u32).expect("mov");
+            assembler.cpuid().expect("cpuid");
+            assembler.ret().expect("ret");
+        });
+        machine.run();
+        let features = machine.registers.get(iced_x86::Register::EDX);
+        let extended = machine.registers.get(iced_x86::Register::ECX);
+        assert!(features & (1 << 26) != 0, "SSE2 is carried out and is claimed");
+        assert!(
+            extended & (1 << 28) == 0,
+            "AVX is not carried out and must not be claimed"
+        );
+    }
+
+    /// A clock that is the same on every run of the same program, which a real
+    /// cycle counter is not — and which is what makes a run repeatable.
+    #[test]
+    fn the_cycle_counter_advances_and_is_the_same_every_run() {
+        let counts = || {
+            let mut machine = machine(|assembler| {
+                assembler.rdtsc().expect("rdtsc");
+                assembler.mov(iced_x86::code_asm::rbx, iced_x86::code_asm::rax).expect("mov");
+                assembler.rdtsc().expect("rdtsc");
+                assembler.ret().expect("ret");
+            });
+            machine.run();
+            (
+                machine.registers.get(iced_x86::Register::RBX),
+                machine.registers.get(iced_x86::Register::RAX),
+            )
+        };
+        let (first, second) = counts();
+        assert!(second > first, "the counter must advance: {first} then {second}");
+        assert_eq!(counts(), (first, second), "and be the same on the next run");
+    }
+
+    /// `movq` into a vector register clears everything above the eight bytes
+    /// it writes. That is what makes it a way of zeroing the top half, and a
+    /// read-modify-write would leave stale bytes there instead.
+    #[test]
+    fn a_narrow_move_into_a_vector_register_clears_what_is_above_it() {
+        use iced_x86::code_asm::{rax, xmm0};
+        let mut machine = machine(|assembler| {
+            // Fill the whole register, then write eight bytes into it.
+            assembler.mov(rax, -1i64).expect("mov");
+            assembler.movq(xmm0, rax).expect("movq");
+            assembler.movq(xmm0, xmm0).expect("movq");
+            assembler.mov(rax, 7i64).expect("mov");
+            assembler.movq(xmm0, rax).expect("movq");
+            assembler.ret().expect("ret");
+        });
+        machine.run();
+        assert_eq!(
+            machine.registers.xmm(iced_x86::Register::XMM0),
+            Some(7),
+            "the low eight bytes are what was written and the top half is clear"
+        );
+    }
+
+    /// And back out again, which is the other half of what a compiler uses
+    /// these for.
+    #[test]
+    fn a_narrow_move_out_of_a_vector_register_takes_the_low_bytes() {
+        use iced_x86::code_asm::{eax, rax, rbx, xmm0};
+        let mut machine = machine(|assembler| {
+            assembler.mov(rax, 0x1122_3344_5566_7788u64 as i64).expect("mov");
+            assembler.movq(xmm0, rax).expect("movq");
+            assembler.movd(eax, xmm0).expect("movd");
+            assembler.movq(rbx, xmm0).expect("movq");
+            assembler.ret().expect("ret");
+        });
+        machine.run();
+        assert_eq!(
+            machine.registers.get(iced_x86::Register::RAX),
+            0x5566_7788,
+            "movd takes four bytes, and a 32-bit write clears the top half"
+        );
+        assert_eq!(
+            machine.registers.get(iced_x86::Register::RBX),
+            0x1122_3344_5566_7788,
+            "movq takes eight"
+        );
     }
 
     #[test]

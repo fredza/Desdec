@@ -168,13 +168,16 @@ pub fn decompile(request: &Request<'_>) -> Decompiled {
         .iter()
         .enumerate()
         .filter_map(|(index, block)| {
-            block.iter().rev().find_map(|statement| match &statement.effect {
-                Stmt::Branch {
-                    condition: Some(condition),
-                    ..
-                } => Some((index, (condition.clone(), statement.address))),
-                _ => None,
-            })
+            block
+                .iter()
+                .rev()
+                .find_map(|statement| match &statement.effect {
+                    Stmt::Branch {
+                        condition: Some(condition),
+                        ..
+                    } => Some((index, (condition.clone(), statement.address))),
+                    _ => None,
+                })
         })
         .collect();
     let structure = structure::recover(&blocks, &conditions);
@@ -517,12 +520,13 @@ mod tests {
     /// external engine gives, and what lets a click go somewhere.
     #[test]
     fn every_line_from_an_instruction_carries_its_address() {
-        let body = function(&[
-            (0x1000, "mov $1,%eax"),
-            (0x1005, "ret"),
-        ]);
+        let body = function(&[(0x1000, "mov $1,%eax"), (0x1005, "ret")]);
         let decompiled = decompiled(&body);
-        let addresses: Vec<u64> = decompiled.lines.iter().filter_map(|line| line.address).collect();
+        let addresses: Vec<u64> = decompiled
+            .lines
+            .iter()
+            .filter_map(|line| line.address)
+            .collect();
         assert!(
             addresses.contains(&0x1005),
             "the return should map to the ret, got {addresses:x?}"
@@ -563,10 +567,7 @@ mod tests {
     /// What is not modelled must be visible as not modelled, and countable.
     #[test]
     fn an_unmodelled_instruction_is_reported_rather_than_dropped() {
-        let body = function(&[
-            (0x1000, "fldt 0x1FDE0"),
-            (0x1006, "ret"),
-        ]);
+        let body = function(&[(0x1000, "fldt 0x1FDE0"), (0x1006, "ret")]);
         let decompiled = decompiled(&body);
         assert_eq!(decompiled.unmodelled, 1);
         assert!(decompiled.text().contains("fldt 0x1FDE0"));
@@ -579,10 +580,7 @@ mod tests {
     fn a_function_that_takes_and_answers_nothing_says_so() {
         let body = function(&[(0x1000, "ret")]);
         let text = decompiled(&body).text();
-        assert!(
-            text.starts_with("void example(void)"),
-            "got:\n{text}"
-        );
+        assert!(text.starts_with("void example(void)"), "got:\n{text}");
     }
 
     #[test]
@@ -782,9 +780,6 @@ mod tests {
             (0x1012, "ret"),
         ]);
         let text = decompiled(&body).text();
-        assert!(
-            text.contains("while ("),
-            "expected a loop, got:\n{text}"
-        );
+        assert!(text.contains("while ("), "expected a loop, got:\n{text}");
     }
 }

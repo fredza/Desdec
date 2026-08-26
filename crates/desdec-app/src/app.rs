@@ -733,9 +733,8 @@ pub struct DesdecApp {
     /// Free-text filter applied to the extracted strings.
     pub strings_filter: String,
     /// Hide strings that do not belong to a mapped memory region.
-    pub strings_hide_unmapped: bool,
-    /// Hide strings without a direct reference in decoded code.
-    pub strings_hide_unreferenced: bool,
+    /// Which strings the reader is asking to see; see [`crate::ui::strings::Scope`].
+    pub strings_scope: crate::ui::strings::Scope,
     /// Free-text filter applied to the declared symbols.
     pub symbols_filter: String,
     /// Hide the imported names in the Symbols view.
@@ -1549,19 +1548,26 @@ impl DesdecApp {
                     self.request_assistance(ctx, assistant::Question::Instruction { address });
                 }
             }
-            Command::StringsHideUnmapped => {
+            Command::StringsScopeAll => {
                 self.open_view(command);
-                self.strings_hide_unmapped = !self.strings_hide_unmapped;
+                self.strings_scope = crate::ui::strings::Scope::All;
             }
-            Command::StringsHideUnreferenced => {
+            Command::StringsScopeUsed => {
                 self.open_view(command);
-                self.strings_hide_unreferenced = !self.strings_hide_unreferenced;
+                self.strings_scope = crate::ui::strings::Scope::Used;
+            }
+            Command::StringsScopeMappedUnreferenced => {
+                self.open_view(command);
+                self.strings_scope = crate::ui::strings::Scope::MappedUnreferenced;
+            }
+            Command::StringsScopeUnmapped => {
+                self.open_view(command);
+                self.strings_scope = crate::ui::strings::Scope::Unmapped;
             }
             Command::StringsClearFilter => {
                 self.open_view(command);
                 self.strings_filter.clear();
-                self.strings_hide_unmapped = false;
-                self.strings_hide_unreferenced = false;
+                self.strings_scope = crate::ui::strings::Scope::All;
             }
             Command::ThemeSystem => self.set_theme(ctx, ThemePreference::System),
             Command::ThemeDark => self.set_theme(ctx, ThemePreference::Dark),
@@ -2953,8 +2959,7 @@ impl DesdecApp {
         self.symbols_hide_imports = false;
         self.symbols_hide_defined = false;
         self.classes_filter.clear();
-        self.strings_hide_unmapped = false;
-        self.strings_hide_unreferenced = false;
+        self.strings_scope = crate::ui::strings::Scope::All;
         self.selected_function = None;
         self.selected_instruction = None;
         self.pending_instruction_scroll = None;

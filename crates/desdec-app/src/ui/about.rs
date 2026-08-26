@@ -66,7 +66,7 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         });
 
         ui.add_space(8.0);
-        ui.small(app.t(Text::LegalNotice));
+        ui.small(egui::RichText::new(app.t(Text::LegalNotice)).color(crate::ui::ERROR));
     });
     app.dialogs.set(Dialog::About, open);
 }

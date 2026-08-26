@@ -140,8 +140,7 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 analysis,
                 &app.string_references,
                 &mut app.strings_filter,
-                &mut app.strings_hide_unmapped,
-                &mut app.strings_hide_unreferenced,
+                &mut app.strings_scope,
                 &mut app.selected_string,
                 language,
             );
@@ -239,7 +238,11 @@ fn welcome(app: &mut DesdecApp, ui: &mut egui::Ui) {
         }
         ui.add_space(28.0);
         ui.small(app.t(Text::MenuAvailable));
-        ui.small(app.t(Text::LegalNotice));
+        // In red, and deliberately: it is the one line on this screen that is
+        // about what the reader is allowed to do rather than about what the
+        // program can do, and it reads as a footnote in the muted grey every
+        // other small line uses.
+        ui.small(egui::RichText::new(app.t(Text::LegalNotice)).color(ERROR));
     });
 }
 

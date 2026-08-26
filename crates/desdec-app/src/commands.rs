@@ -92,8 +92,10 @@ commands! {
     AskAboutInstruction => [AiAssistance, AskAboutInstruction], None,
     Functions => [Functions], Some(Shortcut::ctrl(KeyName::Num3)),
     Strings => [Strings], Some(Shortcut::ctrl(KeyName::Num4)),
-    StringsHideUnmapped => [Strings, FilterUnmappedStrings], None,
-    StringsHideUnreferenced => [Strings, FilterUnreferencedStrings], None,
+    StringsScopeAll => [Strings, StringsScopeAll], None,
+    StringsScopeUsed => [Strings, StringsScopeUsed], None,
+    StringsScopeMappedUnreferenced => [Strings, StringsScopeMappedUnreferenced], None,
+    StringsScopeUnmapped => [Strings, StringsScopeUnmapped], None,
     StringsClearFilter => [Strings, ClearFilter], None,
     Symbols => [Symbols], None,
     Classes => [Classes], None,
@@ -217,8 +219,10 @@ impl Command {
                 | Self::AskAboutBinary
                 | Self::AskAboutFunction
                 | Self::AskAboutInstruction
-                | Self::StringsHideUnmapped
-                | Self::StringsHideUnreferenced
+                | Self::StringsScopeAll
+                | Self::StringsScopeUsed
+                | Self::StringsScopeMappedUnreferenced
+                | Self::StringsScopeUnmapped
                 | Self::StringsClearFilter
                 | Self::WalkStepInto
                 | Self::WalkStepOver
@@ -263,8 +267,10 @@ impl Command {
             Self::Segments => WorkspaceView::Segments,
             Self::Functions => WorkspaceView::Functions,
             Self::Strings
-            | Self::StringsHideUnmapped
-            | Self::StringsHideUnreferenced
+            | Self::StringsScopeAll
+            | Self::StringsScopeUsed
+            | Self::StringsScopeMappedUnreferenced
+            | Self::StringsScopeUnmapped
             | Self::StringsClearFilter => WorkspaceView::Strings,
             Self::Symbols => WorkspaceView::Symbols,
             Self::Classes => WorkspaceView::Classes,
@@ -541,10 +547,10 @@ mod tests {
             (Command::AskAboutBinary, Text::AskAboutBinary),
             (Command::AskAboutFunction, Text::AskAboutFunction),
             (Command::AskAboutInstruction, Text::AskAboutInstruction),
-            (Command::StringsHideUnmapped, Text::FilterUnmappedStrings),
+            (Command::StringsScopeUsed, Text::StringsScopeUsed),
             (
-                Command::StringsHideUnreferenced,
-                Text::FilterUnreferencedStrings,
+                Command::StringsScopeMappedUnreferenced,
+                Text::StringsScopeMappedUnreferenced,
             ),
             (Command::StringsClearFilter, Text::ClearFilter),
             (Command::RunYara, Text::RunYara),

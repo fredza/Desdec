@@ -166,7 +166,17 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
 }
 
 /// Keeps the width the reader dragged to, so the menu reopens as they left it.
+///
+/// Does nothing on a frame where a button set the width instead. The panel is
+/// drawn before this runs and the button is clicked *during* that drawing, so
+/// the rectangle handed here is the width the menu had **before** the click —
+/// and writing it back overwrote the choice a few microseconds after it was
+/// made. That is why the fold-to-a-rail arrow did nothing at all: it worked,
+/// and was undone within the same frame.
 fn remember_width(app: &mut DesdecApp, ctx: &egui::Context, width: f32) {
+    if take_width_was_set(ctx) {
+        return;
+    }
     let width = width.clamp(MINIMUM_WIDTH, MAXIMUM_WIDTH).round();
     // The clamp above keeps this inside `u16`; the cast cannot lose anything a
     // menu width could hold.
@@ -211,6 +221,27 @@ fn set_width(app: &mut DesdecApp, ctx: &egui::Context, width: f32) {
     app.preferences.navigation_width = rounded;
     store_panel_width(ctx, width);
     set_agreed_width(ctx, width);
+    // Said out loud, so the end of this frame does not put back the width the
+    // panel was drawn at before the button was pressed.
+    mark_width_was_set(ctx);
+}
+
+/// Records that a button, not a drag, decided the width this frame.
+fn mark_width_was_set(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(width_set_id(), true));
+}
+
+/// Reads that mark and clears it, so it applies to one frame and no more.
+fn take_width_was_set(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|data| {
+        let set = data.get_temp::<bool>(width_set_id()).unwrap_or(false);
+        data.remove::<bool>(width_set_id());
+        set
+    })
+}
+
+fn width_set_id() -> egui::Id {
+    egui::Id::new("desdec.navigation.width_was_set")
 }
 
 fn store_panel_width(ctx: &egui::Context, width: f32) {
@@ -448,25 +479,19 @@ fn recent_row(ui: &mut egui::Ui, label: &str) -> egui::Response {
 /// something to reach. The overview is deliberately not among them: it is
 /// where a reader starts, and a menu with no way back to it is a menu you have
 /// to leave in order to use.
-const TOOLBAR_ONLY: &[WorkspaceView] = &[
-    WorkspaceView::Disassembly,
-    WorkspaceView::Decompile,
-    WorkspaceView::Functions,
-    WorkspaceView::Strings,
-    WorkspaceView::Patches,
-];
-
-/// The views the menu offers.
+/// The views the menu offers, which is every one of them.
 ///
-/// With the toolbar hidden it offers all of them: it is then the only place
-/// left that shows them, and the rest would be reachable by shortcut or the
-/// command palette alone.
-fn views_to_offer(app: &DesdecApp) -> Vec<WorkspaceView> {
-    WorkspaceView::ALL
-        .iter()
-        .copied()
-        .filter(|view| !app.preferences.show_toolbar || !TOOLBAR_ONLY.contains(view))
-        .collect()
+/// It used to leave out the five the toolbar shows, on the reasoning that
+/// naming a view twice is clutter. The reasoning was wrong in one direction
+/// that matters: the toolbar is a row of glyphs with no words on it, so a
+/// reader looking for *Strings* by name found nothing in the only place that
+/// lists views by name, and the view was in practice unreachable without
+/// knowing its icon, its shortcut, or the palette.
+///
+/// A menu is the list of everything there is. Repeating five entries costs a
+/// few lines of a scrolling panel; leaving them out cost a reader the view.
+fn views_to_offer(_app: &DesdecApp) -> Vec<WorkspaceView> {
+    WorkspaceView::ALL.to_vec()
 }
 
 fn views_section(app: &mut DesdecApp, ui: &mut egui::Ui, density: Density) {
@@ -620,6 +645,56 @@ mod tests {
         }
     }
 
+    /// The panel is drawn before the width is remembered, and the button is
+    /// clicked *during* that drawing — so what is written back at the end of
+    /// the frame is the width the menu had before the click. Left as it was,
+    /// the fold-to-a-rail arrow worked and was undone within the same frame,
+    /// which from the outside is an arrow that does nothing.
+    #[test]
+    fn a_width_set_by_a_button_survives_the_end_of_the_frame() {
+        let ctx = egui::Context::default();
+        let mut app = opened_app(WorkspaceView::Overview);
+        app.navigation_open = true;
+        app.preferences.navigation_width = DEFAULT_WIDTH;
+
+        // What the click does, in the middle of a frame that was drawn wide.
+        let _ = ctx.run(window_input(), |ctx| {
+            super::show(&mut app, ctx);
+            set_width(&mut app, ctx, MINIMUM_WIDTH);
+            // And what the end of that same frame used to undo.
+            remember_width(&mut app, ctx, f32::from(DEFAULT_WIDTH));
+        });
+
+        assert_eq!(
+            app.preferences.navigation_width,
+            points(MINIMUM_WIDTH),
+            "the width the button set must not be overwritten by the width the \
+             panel was drawn at before it was pressed"
+        );
+    }
+
+    /// And the mark lasts exactly one frame: a drag on the frame *after* a
+    /// button press must still be remembered.
+    #[test]
+    fn the_mark_does_not_outlive_the_frame_that_set_it() {
+        let ctx = egui::Context::default();
+        let mut app = opened_app(WorkspaceView::Overview);
+        app.navigation_open = true;
+
+        let _ = ctx.run(window_input(), |ctx| {
+            set_width(&mut app, ctx, MINIMUM_WIDTH);
+            remember_width(&mut app, ctx, f32::from(DEFAULT_WIDTH));
+        });
+        let _ = ctx.run(window_input(), |ctx| {
+            remember_width(&mut app, ctx, f32::from(DEFAULT_WIDTH));
+        });
+
+        assert_eq!(
+            app.preferences.navigation_width, DEFAULT_WIDTH,
+            "a drag on a later frame is the reader speaking, and is kept"
+        );
+    }
+
     /// The rail shows no labels — that is the whole point of it — and the wide
     /// menu names every view it offers.
     #[test]
@@ -720,51 +795,25 @@ mod tests {
         );
     }
 
-    /// The menu leaves the toolbar's own views to the toolbar, and keeps the
-    /// rest — including the overview, which is where a reader starts.
+    /// The menu names every view, whether or not the toolbar has a glyph for
+    /// it.
+    ///
+    /// The toolbar carries no words. A reader looking for a view by name has
+    /// exactly one place to look, and it must be complete — leaving five out
+    /// of it made them reachable only by knowing an icon, a shortcut or the
+    /// palette.
     #[test]
-    fn the_menu_leaves_out_what_the_toolbar_already_offers() {
+    fn the_menu_names_every_view_toolbar_or_no_toolbar() {
         let mut app = opened_app(WorkspaceView::Overview);
-        app.preferences.show_toolbar = true;
-
-        let offered = views_to_offer(&app);
-        for view in TOOLBAR_ONLY {
-            assert!(
-                !offered.contains(view),
-                "{view:?} is in the toolbar and in the menu"
+        for showing in [true, false] {
+            app.preferences.show_toolbar = showing;
+            assert_eq!(
+                views_to_offer(&app),
+                WorkspaceView::ALL.to_vec(),
+                "with the toolbar {}, the menu must still name every view",
+                if showing { "shown" } else { "hidden" }
             );
         }
-        assert!(
-            offered.contains(&WorkspaceView::Overview),
-            "the way back to the overview must stay in the menu"
-        );
-        assert_eq!(
-            offered.len(),
-            WorkspaceView::ALL.len() - TOOLBAR_ONLY.len(),
-            "every other view belongs to the menu"
-        );
-    }
-
-    /// What the menu hands to the toolbar, the toolbar must actually show, or
-    /// a view would be offered in neither.
-    #[test]
-    fn everything_the_menu_defers_is_in_the_toolbar() {
-        for view in TOOLBAR_ONLY {
-            assert!(
-                crate::ui::action_bar::VIEW_ACTIONS.contains(view),
-                "{view:?} is in neither the toolbar nor the menu"
-            );
-        }
-    }
-
-    /// With the toolbar hidden, the menu is the only place left, so it carries
-    /// every view rather than the handful the toolbar was not showing.
-    #[test]
-    fn hiding_the_toolbar_puts_every_view_back_in_the_menu() {
-        let mut app = opened_app(WorkspaceView::Overview);
-        app.preferences.show_toolbar = false;
-
-        assert_eq!(views_to_offer(&app), WorkspaceView::ALL.to_vec());
     }
 
     /// Everything the menu offers has to be drawn inside the window.

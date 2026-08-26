@@ -29,8 +29,7 @@ pub fn show(
     analysis: &Analysis,
     references: &CodeReferences,
     filter: &mut String,
-    hide_unmapped: &mut bool,
-    hide_unreferenced: &mut bool,
+    scope: &mut Scope,
     selected_string: &mut Option<u64>,
     language: Language,
 ) -> Action {
@@ -44,14 +43,12 @@ pub fn show(
         analysis,
         references,
         filter,
-        *hide_unmapped,
-        *hide_unreferenced,
+        *scope,
     );
     header(
         ui,
         filter,
-        hide_unmapped,
-        hide_unreferenced,
+        scope,
         matches.len(),
         analysis.strings.len(),
         language,
@@ -99,8 +96,7 @@ pub fn show(
 fn header(
     ui: &mut egui::Ui,
     filter: &mut String,
-    hide_unmapped: &mut bool,
-    hide_unreferenced: &mut bool,
+    scope: &mut Scope,
     shown: usize,
     total: usize,
     language: Language,
@@ -112,9 +108,9 @@ fn header(
                 .hint_text(text(language, Text::FilterHint))
                 .desired_width(240.0),
         );
-        criteria(ui, hide_unmapped, hide_unreferenced, language);
+        criteria(ui, scope, language);
 
-        let filtering = !filter.is_empty() || *hide_unmapped || *hide_unreferenced;
+        let filtering = !filter.is_empty() || *scope != Scope::All;
         if ui
             .add_enabled(
                 filtering,
@@ -123,8 +119,7 @@ fn header(
             .clicked()
         {
             filter.clear();
-            *hide_unmapped = false;
-            *hide_unreferenced = false;
+            *scope = Scope::All;
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -153,42 +148,94 @@ fn header(
 
 /// The criteria, folded into one drop-down.
 ///
-/// They were two toggle buttons sitting in the header, which is a row that
-/// only ever grows: the next criterion would have pushed the count off a
-/// narrow window. Folded away, the header stays one line whatever is added,
-/// and the button says what is active without being opened.
-fn criteria(
-    ui: &mut egui::Ui,
-    hide_unmapped: &mut bool,
-    hide_unreferenced: &mut bool,
-    language: Language,
-) {
-    let chosen = usize::from(*hide_unmapped) + usize::from(*hide_unreferenced);
-    let summary = match (*hide_unmapped, *hide_unreferenced) {
-        (false, false) => text(language, Text::AllStrings).to_owned(),
-        (true, false) => text(language, Text::FilterUnmappedStrings).to_owned(),
-        (false, true) => text(language, Text::FilterUnreferencedStrings).to_owned(),
-        (true, true) => format!("{chosen} {}", text(language, Text::CriteriaChosen)),
-    };
+/// They were two toggle buttons — "hide the unmapped", "hide the unreferenced"
+/// — folded into a drop-down. Two things were wrong with that. Both were
+/// **double negatives**, and a reader wanting the strings the program uses had
+/// to work out that it means switching both of them on. And the combination a
+/// reader actually asks for most often could not be expressed at all: *mapped
+/// and unreferenced* — loaded into memory, and yet nothing in the decoded code
+/// points at them — which is where a string reached by arithmetic, through a
+/// table, or built at run time shows up, and is the most interesting question
+/// the string table answers.
+///
+/// So the criteria are four named scopes, said in the positive, on the row
+/// itself. One click, no combination to work out, and the one that was
+/// impossible is now the third of them.
+fn criteria(ui: &mut egui::Ui, scope: &mut Scope, language: Language) {
+    ui.small(text(language, Text::StringsScope));
+    for choice in Scope::ALL {
+        let response = ui.selectable_label(*scope == *choice, choice.label(language));
+        let response = match choice.help(language) {
+            Some(help) => response.on_hover_text(help),
+            None => response,
+        };
+        if response.clicked() {
+            *scope = *choice;
+        }
+    }
+}
 
-    egui::ComboBox::from_id_salt("strings_criteria")
-        .selected_text(summary)
-        .width(220.0)
-        .show_ui(ui, |ui| {
-            // Checkboxes rather than entries that pick one: these narrow the
-            // list together, and a drop-down that closed on the first click
-            // would make the second criterion a second visit.
-            ui.checkbox(hide_unmapped, text(language, Text::FilterUnmappedStrings));
-            ui.small(text(language, Text::FilterUnmappedHelp));
-            ui.add_space(4.0);
-            ui.checkbox(
-                hide_unreferenced,
-                text(language, Text::FilterUnreferencedStrings),
-            );
-            ui.small(text(language, Text::FilterUnreferencedHelp));
-        })
-        .response
-        .on_hover_text(text(language, Text::FilterCriteriaHelp));
+/// Which strings a reader is asking to see.
+///
+/// Said in the positive and named for what the strings *are*, not for what is
+/// being hidden.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Scope {
+    #[default]
+    All,
+    /// Mapped and pointed at by the decoded code: what the program uses.
+    Used,
+    /// Mapped, and named by nothing in the decoded code. A string reached by
+    /// arithmetic, through a table, or assembled at run time lands here — and
+    /// so does one only an undecoded part of the file reaches.
+    MappedUnreferenced,
+    /// In the file and never loaded. A run cannot read these at all.
+    Unmapped,
+}
+
+impl Scope {
+    pub const ALL: &'static [Self] = &[
+        Self::All,
+        Self::Used,
+        Self::MappedUnreferenced,
+        Self::Unmapped,
+    ];
+
+    pub fn label(self, language: Language) -> &'static str {
+        text(
+            language,
+            match self {
+                Self::All => Text::StringsScopeAll,
+                Self::Used => Text::StringsScopeUsed,
+                Self::MappedUnreferenced => Text::StringsScopeMappedUnreferenced,
+                Self::Unmapped => Text::StringsScopeUnmapped,
+            },
+        )
+    }
+
+    /// What the scope means, for a reader who has not met the distinction
+    /// before. `All` needs none: it is the absence of a question.
+    pub fn help(self, language: Language) -> Option<&'static str> {
+        Some(text(
+            language,
+            match self {
+                Self::All => return None,
+                Self::Used => Text::StringsScopeUsedHelp,
+                Self::MappedUnreferenced => Text::StringsScopeMappedUnreferencedHelp,
+                Self::Unmapped => Text::StringsScopeUnmappedHelp,
+            },
+        ))
+    }
+
+    /// Whether a string belongs in this scope.
+    const fn keeps(self, unmapped: bool, unreferenced: bool) -> bool {
+        match self {
+            Self::All => true,
+            Self::Used => !unmapped && !unreferenced,
+            Self::MappedUnreferenced => !unmapped && unreferenced,
+            Self::Unmapped => unmapped,
+        }
+    }
 }
 
 struct StringMatch<'a> {
@@ -210,8 +257,7 @@ fn matching<'a>(
     analysis: &'a Analysis,
     references: &CodeReferences,
     filter: &str,
-    hide_unmapped: bool,
-    hide_unreferenced: bool,
+    scope: Scope,
 ) -> Vec<StringMatch<'a>> {
     let needle = filter.to_lowercase();
 
@@ -229,8 +275,7 @@ fn matching<'a>(
         })
         // Several criteria narrow together: each one is a condition the string
         // has to meet, not another list added to the first.
-        .filter(|item| !hide_unmapped || !item.unmapped)
-        .filter(|item| !hide_unreferenced || !item.unreferenced)
+        .filter(|item| scope.keeps(item.unmapped, item.unreferenced))
         .collect()
 }
 
@@ -647,41 +692,55 @@ mod tests {
         }
     }
 
-    /// Each criterion hides what fails it, and several hide together. This is
-    /// the direction that makes the view useful: a string table is mostly
-    /// noise, and the reader is after the few strings the code actually
-    /// reaches — not after the noise on its own.
+    /// Each scope keeps what belongs to it, and the four together account for
+    /// every string exactly once.
+    ///
+    /// The interesting one is `MappedUnreferenced`: loaded into memory, and yet
+    /// nothing in the decoded code points at it. That is where a string reached
+    /// by arithmetic, through a table, or built at run time shows up — and the
+    /// old pair of "hide this, hide that" toggles could not express it at all.
     #[test]
-    fn each_criterion_hides_what_fails_it_and_they_hide_together() {
+    fn each_scope_keeps_what_belongs_to_it_and_the_four_account_for_everything() {
         let analysis = analysis_for_filters();
         let references = CodeReferences::of(&analysis);
-        let shown = |hide_unmapped, hide_unreferenced| {
-            matching(&analysis, &references, "", hide_unmapped, hide_unreferenced)
+        let shown = |scope| {
+            matching(&analysis, &references, "", scope)
                 .into_iter()
                 .map(|item| item.string.value.clone())
                 .collect::<Vec<_>>()
         };
 
         assert_eq!(
-            shown(false, false),
+            shown(Scope::All),
             ["referenced", "unreferenced", "not mapped"],
-            "with no criterion, every string is shown"
+            "every string, which is the absence of a question"
         );
         assert_eq!(
-            shown(true, false),
-            ["referenced", "unreferenced"],
-            "hiding the unmapped drops the one outside every mapped section"
-        );
-        assert_eq!(
-            shown(false, true),
+            shown(Scope::Used),
             ["referenced"],
-            "hiding the unreferenced drops everything no instruction points at"
+            "loaded and pointed at: what the program uses"
         );
         assert_eq!(
-            shown(true, true),
-            ["referenced"],
-            "both at once leave only what is both loaded and pointed at"
+            shown(Scope::MappedUnreferenced),
+            ["unreferenced"],
+            "loaded, and named by nothing the decoder read"
         );
+        assert_eq!(
+            shown(Scope::Unmapped),
+            ["not mapped"],
+            "in the file and never loaded"
+        );
+
+        // The three narrow scopes partition the whole, so nothing can fall
+        // between them and nothing is counted twice.
+        let mut parts: Vec<String> = [Scope::Used, Scope::MappedUnreferenced, Scope::Unmapped]
+            .into_iter()
+            .flat_map(shown)
+            .collect();
+        parts.sort();
+        let mut whole = shown(Scope::All);
+        whole.sort();
+        assert_eq!(parts, whole);
     }
 
     /// The text filter and the criteria narrow together too.
@@ -689,7 +748,7 @@ mod tests {
     fn the_text_filter_applies_alongside_the_criteria() {
         let analysis = analysis_for_filters();
         let references = CodeReferences::of(&analysis);
-        let shown: Vec<String> = matching(&analysis, &references, "referenc", false, true)
+        let shown: Vec<String> = matching(&analysis, &references, "referenc", Scope::Used)
             .into_iter()
             .map(|item| item.string.value.clone())
             .collect();

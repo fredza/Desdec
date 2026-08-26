@@ -78,6 +78,9 @@ pub struct Cpu<'a> {
     /// Whether the code being run is sixty-four bit. It decides the width of a
     /// push, of a return address, and of the default operand size.
     pub bitness: u32,
+    /// How many instructions this run has retired, which is the only clock
+    /// this machine has. See [`Cpu::rdtsc`].
+    pub retired: u64,
     /// Where a branch read its target from, when it read one from memory.
     ///
     /// Set as the branch is carried out rather than worked out afterwards: the
@@ -134,6 +137,12 @@ impl Cpu<'_> {
             // These are integer/float names for exactly the same bitwise XOR
             // on an XMM register. Neither changes rflags.
             Mnemonic::Pxor | Mnemonic::Xorps => self.vector_xor(instruction),
+            // The narrow moves in and out of a vector register. Small, and the
+            // ones a compiler reaches for constantly: glibc's own `strlen`
+            // starts with a `movd`, so a statically linked program stopped at
+            // its first string operation without them.
+            Mnemonic::Movd => self.narrow_vector_move(instruction, 4),
+            Mnemonic::Movq => self.narrow_vector_move(instruction, 8),
             // The emulator holds only XMM's low 128 bits, so their values are
             // already what this AVX housekeeping instruction leaves behind.
             Mnemonic::Vzeroupper => Ok(Outcome::Continued),
@@ -207,15 +216,24 @@ impl Cpu<'_> {
             Mnemonic::Hlt | Mnemonic::Ud0 | Mnemonic::Ud1 | Mnemonic::Ud2 | Mnemonic::Int3 => {
                 Err(Refusal::Halted { text: text.into() })
             }
-            Mnemonic::Syscall
-            | Mnemonic::Sysenter
-            | Mnemonic::Int
-            | Mnemonic::Cpuid
-            | Mnemonic::Rdtsc
-            | Mnemonic::Rdtscp
-            | Mnemonic::Xgetbv
-            | Mnemonic::In
-            | Mnemonic::Out => Err(Refusal::SystemCall { text: text.into() }),
+            // A question for the operating system, and there is none here.
+            Mnemonic::Syscall | Mnemonic::Sysenter | Mnemonic::Int => {
+                Err(Refusal::SystemCall { text: text.into() })
+            }
+            // A question for the *processor*, which there very much is one of:
+            // the one this module builds. These used to be refused alongside
+            // the system calls, and the refusal then read `rax` as a system
+            // call number and named it — so a `cpuid` came back as a `read`,
+            // which is not a smaller answer than the truth but a different
+            // one. Worse, glibc asks `cpuid` within the first three hundred
+            // instructions of every statically linked program, so every such
+            // binary stopped there and could not be run at all.
+            Mnemonic::Cpuid => self.cpuid(),
+            Mnemonic::Rdtsc | Mnemonic::Rdtscp => self.rdtsc(instruction),
+            Mnemonic::Xgetbv => self.xgetbv(),
+            // Port access, which is privileged: a user-space program does not
+            // reach these, and a run that does is not one to guess past.
+            Mnemonic::In | Mnemonic::Out => Err(Refusal::Unsupported { text: text.into() }),
             _ => Err(Refusal::Unsupported { text: text.into() }),
         }
     }
@@ -469,6 +487,53 @@ impl Cpu<'_> {
         let value = self.read_vector_operand(instruction, 1)?;
         self.write_vector_operand(instruction, 0, value)?;
         Ok(Outcome::Continued)
+    }
+
+    /// `movd` and `movq`: four or eight bytes in or out of a vector register.
+    ///
+    /// Two things make these different from [`Self::vector_move`], and both
+    /// matter. They move *part* of a register, so the width is the
+    /// instruction's own rather than the whole hundred and twenty-eight bits.
+    /// And when the destination is a vector register the architecture **clears
+    /// everything above what was written** — which is what makes `movq` a way
+    /// of zeroing the top half, and what a naive read-modify-write would get
+    /// wrong in the direction that leaves stale bytes behind.
+    ///
+    /// Either end can be a vector register, a general register or memory, and
+    /// the pairing decides how each end is read and written.
+    fn narrow_vector_move(
+        &mut self,
+        instruction: &Instruction,
+        width: usize,
+    ) -> Result<Outcome, Refusal> {
+        let value = if Self::is_vector_operand(instruction, 1) {
+            // The low bytes of the vector, and nothing above them.
+            let whole = self.read_vector_operand(instruction, 1)?;
+            u128_low(whole, width)
+        } else {
+            u128::from(self.read_operand(instruction, 1, width)?)
+        };
+
+        if Self::is_vector_operand(instruction, 0) {
+            // Zero-extended into the whole register: `value` already carries
+            // nothing above `width`, so writing it is the clearing.
+            self.write_vector_operand(instruction, 0, value)?;
+        } else {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the value was masked to `width`, which is at most eight bytes"
+            )]
+            let narrow = value as u64;
+            self.write_operand(instruction, 0, width, narrow)?;
+        }
+        Ok(Outcome::Continued)
+    }
+
+    /// Whether an operand names a vector register, as against a general one or
+    /// a location in memory.
+    fn is_vector_operand(instruction: &Instruction, operand: u32) -> bool {
+        instruction.op_kind(operand) == OpKind::Register
+            && instruction.op_register(operand).is_xmm()
     }
 
     /// The state effect shared by `pxor` and `xorps`.
@@ -986,6 +1051,78 @@ impl Cpu<'_> {
         Ok(Outcome::Continued)
     }
 
+    /// `cpuid` — what this processor is, answered by this processor.
+    ///
+    /// Not an invention about the file: it is a question about the machine the
+    /// code is running on, and the machine it is running on is the one this
+    /// module builds. The honest answer is therefore what this interpreter
+    /// really carries out — a 64-bit x86 with SSE2 and nothing above it.
+    ///
+    /// Answering *more* would be the dangerous direction. glibc asks `cpuid`
+    /// precisely to choose between an SSE2 `memcpy`, an AVX one and an AVX-512
+    /// one; claiming AVX would send it down a path of instructions this
+    /// interpreter cannot execute, and the run would stop a hundred
+    /// instructions later on something far harder to understand than a
+    /// `cpuid`.
+    fn cpuid(&mut self) -> Result<Outcome, Refusal> {
+        use iced_x86::Register as R;
+        let leaf = self.registers.get(R::EAX);
+        let (eax, ebx, ecx, edx) = match leaf {
+            // Highest leaf supported, and the vendor string in EBX:EDX:ECX.
+            // "DesdecVirtualCPU" is not a vendor anyone tests for, which is
+            // the point: nothing should take a path meant for real silicon.
+            0 => (1, 0x6365_7344, 0x5550_4356, 0x6c61_7574),
+            // Feature bits. EDX bit 26 is SSE2, bit 25 SSE, bit 24 FXSR,
+            // bit 23 MMX, bit 15 CMOV, bit 8 CMPXCHG8B, bit 4 TSC, bit 0 FPU.
+            // ECX bit 13 is CMPXCHG16B, which 64-bit code assumes. Nothing
+            // above SSE2 is claimed.
+            1 => (0x0000_0f00, 0, 0x0000_2000, 0x0788_a131),
+            // Extended leaves: the highest one, and long mode in leaf
+            // 0x80000001 EDX bit 29.
+            0x8000_0000 => (0x8000_0001, 0, 0, 0),
+            0x8000_0001 => (0, 0, 0, 0x2000_0000),
+            // Anything else is answered with zeroes, which is what a
+            // processor does for a leaf it does not implement.
+            _ => (0, 0, 0, 0),
+        };
+        self.registers.set(R::RAX, eax);
+        self.registers.set(R::RBX, ebx);
+        self.registers.set(R::RCX, ecx);
+        self.registers.set(R::RDX, edx);
+        Ok(Outcome::Continued)
+    }
+
+    /// `rdtsc` and `rdtscp` — the cycle counter.
+    ///
+    /// A count of instructions retired rather than of cycles, which is the
+    /// only clock this machine has and is the one property a reader can check
+    /// against the trace. It advances, it never goes backwards, and it is the
+    /// same on every run of the same program — which a real counter is not,
+    /// and which is what makes a decompiler's run repeatable.
+    fn rdtsc(&mut self, instruction: &Instruction) -> Result<Outcome, Refusal> {
+        use iced_x86::Register as R;
+        let ticks = self.retired;
+        self.registers.set(R::RAX, ticks & 0xFFFF_FFFF);
+        self.registers.set(R::RDX, ticks >> 32);
+        // `rdtscp` also reports which processor answered. There is one.
+        if instruction.mnemonic() == Mnemonic::Rdtscp {
+            self.registers.set(R::RCX, 0);
+        }
+        Ok(Outcome::Continued)
+    }
+
+    /// `xgetbv` — which extended processor state is enabled.
+    ///
+    /// None of it, consistently with [`Self::cpuid`] claiming nothing above
+    /// SSE2: bit 0 is the x87 state and bit 1 the SSE state, and the AVX bit
+    /// is deliberately clear.
+    fn xgetbv(&mut self) -> Result<Outcome, Refusal> {
+        use iced_x86::Register as R;
+        self.registers.set(R::RAX, 0b11);
+        self.registers.set(R::RDX, 0);
+        Ok(Outcome::Continued)
+    }
+
     fn setcc(&mut self, instruction: &Instruction) -> Result<Outcome, Refusal> {
         let holds = self.condition_holds(instruction).unwrap_or(false);
         self.write_operand(instruction, 0, 1, u64::from(holds))?;
@@ -1280,6 +1417,15 @@ enum Shift {
     Arithmetic,
     RotateLeft,
     RotateRight,
+}
+
+/// The same for a vector-wide value: the low `size` bytes, nothing above.
+const fn u128_low(value: u128, size: usize) -> u128 {
+    match size {
+        4 => value & 0xffff_ffff,
+        8 => value & 0xffff_ffff_ffff_ffff,
+        _ => value,
+    }
 }
 
 /// Keeps the low `size` bytes of a value and clears the rest.

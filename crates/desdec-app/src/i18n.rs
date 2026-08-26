@@ -248,23 +248,6 @@ translations! {
         "No se pudo leer la respuesta:",
     ],
     ClearFilter => ["Effacer le filtre", "Clear filter", "Borrar el filtro"],
-    AllStrings => ["Toutes les chaînes", "All strings", "Todas las cadenas"],
-    CriteriaChosen => ["critères", "criteria", "criterios"],
-    FilterCriteriaHelp => [
-        "Restreindre la liste ; plusieurs critères se cumulent.",
-        "Narrow the list; several criteria apply together.",
-        "Restringir la lista; varios criterios se aplican juntos.",
-    ],
-    FilterUnmappedHelp => [
-        "Ne garde que les chaînes situées dans une section chargée en mémoire.",
-        "Keeps only strings inside a section the loader maps.",
-        "Conserva solo las cadenas dentro de una sección que el cargador mapea.",
-    ],
-    FilterUnreferencedHelp => [
-        "Ne garde que les chaînes qu’une instruction décodée désigne directement.",
-        "Keeps only strings a decoded instruction points at directly.",
-        "Conserva solo las cadenas a las que apunta directamente una instrucción decodificada.",
-    ],
     AssistantProvider => ["Fournisseur", "Provider", "Proveedor"],
     NoAssistant => ["Aucun (désactivé)", "None (off)", "Ninguno (desactivado)"],
     LocalModel => [
@@ -1172,16 +1155,30 @@ translations! {
         "No se encontró ninguna cadena legible.",
     ],
     FilterStrings => ["Filtrer les chaînes", "Filter strings", "Filtrar cadenas"],
-    FilterUnmappedStrings => [
-        "Masquer les non mappées",
-        "Hide unmapped",
-        "Ocultar las no mapeadas",
+    StringsScopeAll => ["Toutes", "All", "Todas"],
+    StringsScopeUsed => ["Utilisées par le code", "Used by the code", "Usadas por el código"],
+    StringsScopeMappedUnreferenced => [
+        "Mappées, sans référence",
+        "Mapped, unreferenced",
+        "Mapeadas, sin referencia",
     ],
-    FilterUnreferencedStrings => [
-        "Masquer les sans référence",
-        "Hide unreferenced",
-        "Ocultar las sin referencia",
+    StringsScopeUnmapped => ["Hors mémoire", "Not mapped", "Sin mapear"],
+    StringsScopeUsedHelp => [
+        "Chargées en mémoire et pointées par le code : ce que le programme se sert.",
+        "Loaded into memory and pointed at by the code: what the program uses.",
+        "Cargadas en memoria y señaladas por el código: lo que el programa usa.",
     ],
+    StringsScopeMappedUnreferencedHelp => [
+        "Chargées en mémoire, mais rien dans le code décodé ne les désigne : atteintes par un calcul, par une table, ou construites à l’exécution.",
+        "Loaded into memory, but nothing in the decoded code names them: reached by arithmetic, through a table, or built at run time.",
+        "Cargadas en memoria, pero nada en el código decodificado las nombra: alcanzadas por aritmética, por una tabla, o construidas en ejecución.",
+    ],
+    StringsScopeUnmappedHelp => [
+        "Présentes dans le fichier mais jamais chargées : la course ne peut pas les lire.",
+        "In the file but never loaded: a run cannot read them.",
+        "En el archivo pero nunca cargadas: una ejecución no puede leerlas.",
+    ],
+    StringsScope => ["Portée", "Scope", "Alcance"],
     FilterHint => ["Ex. http, .dll, erreur…", "E.g. http, .dll, error…", "Ej. http, .dll, error…"],
     ShownOfTotal => ["affichées sur", "shown of", "mostradas de"],
     TruncatedAnalysis => [
