@@ -225,16 +225,24 @@ impl Writer<'_> {
             return;
         }
         for local in &self.source.naming.locals {
-            self.lines.push(Line::new(
-                1,
-                None,
-                format!(
+            // A slot nothing ever read is a buffer, and its extent came from
+            // the frame rather than from an instruction. Declared as what it
+            // is: `uint8_t local_408[0x400]` says both that it is an array and
+            // how the size was arrived at, which `uint64_t local_408` says
+            // neither of.
+            let declaration = match local.buffer {
+                Some(bytes) => format!(
+                    "uint8_t {}[{bytes:#x}];  // {} — extent from the frame",
+                    local.name, local.label
+                ),
+                None => format!(
                     "{} {};  // {}",
                     local.width.c_name(false),
                     local.name,
                     local.label
                 ),
-            ));
+            };
+            self.lines.push(Line::new(1, None, declaration));
         }
         self.lines.push(Line::new(1, None, String::new()));
     }
@@ -485,7 +493,18 @@ fn expression(
     match value {
         Expr::Const { value, width } => constant(*value, *width),
         Expr::Read(inner) => place(inner, locals, naming),
-        Expr::AddressOf(inner) => format!("&{}", place(inner, locals, naming)),
+        Expr::AddressOf(inner) => {
+            // In C an array's name already is the address of its first
+            // element, and `&` in front of one has a different type from the
+            // pointer the code is actually passing.
+            if let Place::Local { id, .. } = inner.as_ref()
+                && naming.is_buffer(*id)
+            {
+                place(inner, locals, naming)
+            } else {
+                format!("&{}", place(inner, locals, naming))
+            }
+        }
         Expr::Symbol { name, .. } => name.clone(),
         Expr::Unknown(text) => text.clone(),
         Expr::Unary { operator, operand } => {

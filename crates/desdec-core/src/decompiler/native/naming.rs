@@ -122,6 +122,20 @@ pub struct Local {
     pub width: Width,
     /// How the listing writes the address, so a reader can find it there.
     pub label: String,
+    /// How many bytes the slot holds, when it is a buffer rather than a value.
+    ///
+    /// A slot the code only ever takes the *address* of — `lea -0x408(%rbp)`,
+    /// which is a compiler handing a scratch buffer to `strerror_r` — has no
+    /// width, because nothing ever reads it at one. What it has is an extent,
+    /// and the extent is readable from the frame: the space between a slot and
+    /// the next one up belongs to it. `ls` puts its buffer at `rbp-0x408` and
+    /// its stack canary at `rbp-0x8`, so the buffer is `0x400` bytes — which is
+    /// the number the same function passes to `strerror_r` as its length.
+    ///
+    /// A reading, and it says so: it is exact only if every slot between the
+    /// two was seen. A slot the function never touches at all is invisible
+    /// here, and its space is attributed to the slot below it.
+    pub buffer: Option<u64>,
 }
 
 /// One value the function was given.
@@ -149,6 +163,19 @@ impl Naming {
     #[must_use]
     pub fn name_of(&self, register: Register) -> Option<&str> {
         self.by_register.get(register.root).map(String::as_str)
+    }
+
+    /// Whether a slot is an array rather than a value.
+    ///
+    /// What the emitter needs to know to write `local_408` where it would
+    /// otherwise write `&local_408`: in C an array's name already is the
+    /// address of its first element, and `&` in front of one has a different
+    /// type from the pointer the code is actually passing.
+    #[must_use]
+    pub fn is_buffer(&self, id: u32) -> bool {
+        self.locals
+            .iter()
+            .any(|local| local.id == id && local.buffer.is_some())
     }
 
     /// What is live when the function returns.
@@ -233,35 +260,161 @@ pub fn apply(naming: &Naming, blocks: &mut [Vec<Statement>]) {
 // ---------------------------------------------------------------------------
 
 /// Every fixed offset from the frame or stack pointer the body touches.
+///
+/// Two ways of touching one, and they say different things. An *access* —
+/// `mov -0x18(%rbp),%eax` — says the slot holds a value and how wide it is. An
+/// *address taken* — `lea -0x408(%rbp),%rsi` — says only that the slot exists
+/// and that something else will read it: a buffer being handed out. A slot
+/// reached only the second way gets its extent from the frame rather than a
+/// width from an instruction; see [`Local::buffer`].
 fn frame_slots(blocks: &[Vec<Statement>]) -> BTreeMap<(String, i64), Local> {
     let mut found: BTreeMap<(String, i64), Local> = BTreeMap::new();
+    let mut accessed: Vec<(String, i64)> = Vec::new();
     let mut next = 0_u32;
+    let mut offer = |root: &str, offset: i64, width: Width, found: &mut BTreeMap<_, _>| {
+        let entry = found
+            .entry((root.to_owned(), offset))
+            .or_insert_with(|| {
+                let id = next;
+                next += 1;
+                Local {
+                    id,
+                    name: slot_name(root, offset),
+                    width,
+                    label: label_of(root, offset),
+                    buffer: None,
+                }
+            });
+        // The widest access is the one that says how big the slot is: a byte
+        // read out of a word is a read of part of it.
+        if width > entry.width {
+            entry.width = width;
+        }
+    };
+
     for statements in blocks {
         for statement in statements {
             for (place, width) in memory_places(&statement.effect) {
                 let Some((root, offset)) = frame_offset(&place) else {
                     continue;
                 };
-                let key = (root.clone(), offset);
-                let entry = found.entry(key).or_insert_with(|| {
-                    let id = next;
-                    next += 1;
-                    Local {
-                        id,
-                        name: slot_name(&root, offset),
-                        width,
-                        label: label_of(&root, offset),
-                    }
-                });
-                // The widest access is the one that says how big the slot is:
-                // a byte read out of a word is a read of part of it.
-                if width > entry.width {
-                    entry.width = width;
-                }
+                offer(&root, offset, width, &mut found);
+                accessed.push((root, offset));
+            }
+            for (root, offset) in addresses_taken(&statement.effect) {
+                // Nothing states a width, so it starts at the narrowest and is
+                // widened by any real access at the same offset.
+                offer(&root, offset, Width::Byte, &mut found);
             }
         }
     }
+
+    // What is left is a slot nothing ever read: a buffer. Its extent is the
+    // distance to the slot above it, which is the space the frame gives it.
+    let extents: Vec<((String, i64), Option<u64>)> = found
+        .keys()
+        .map(|key| {
+            let next_up = found
+                .keys()
+                .filter(|(root, offset)| *root == key.0 && *offset > key.1)
+                .map(|(_, offset)| *offset)
+                .min();
+            let bytes = next_up.and_then(|above| u64::try_from(above - key.1).ok());
+            (key.clone(), bytes)
+        })
+        .collect();
+    for (key, bytes) in extents {
+        if accessed.contains(&key) {
+            continue;
+        }
+        // A slot with nothing above it has no stated extent, and a one-byte
+        // one is a value rather than an array. Both stay scalar.
+        let Some(bytes) = bytes.filter(|bytes| *bytes > 1) else {
+            continue;
+        };
+        if let Some(local) = found.get_mut(&key) {
+            local.buffer = Some(bytes);
+        }
+    }
     found
+}
+
+/// Every frame slot a statement takes the address of.
+fn addresses_taken(effect: &Stmt) -> Vec<(String, i64)> {
+    let mut found = Vec::new();
+    match effect {
+        Stmt::Assign { place, value } => {
+            gather_addresses(value, &mut found);
+            if let Place::Memory { address, .. } = place {
+                // The address of a store is arithmetic being done, not a slot
+                // being handed out — unless it is itself frame-relative, in
+                // which case the place is the slot and is handled elsewhere.
+                if offset_in_frame(address).is_none() {
+                    gather_addresses(address, &mut found);
+                }
+            }
+        }
+        Stmt::Call { arguments, .. } => {
+            for argument in arguments {
+                gather_addresses(argument, &mut found);
+            }
+        }
+        Stmt::Return(Some(value)) | Stmt::IndirectBranch(value) => {
+            gather_addresses(value, &mut found);
+        }
+        Stmt::Branch {
+            condition: Some(condition),
+            ..
+        } => gather_addresses(condition, &mut found),
+        _ => {}
+    }
+    found
+}
+
+/// Frame arithmetic appearing as a value rather than as an address to read
+/// through — which is a slot being pointed at.
+fn gather_addresses(expression: &Expr, into: &mut Vec<(String, i64)>) {
+    // Arithmetic only. A bare read of `rbp` is the frame pointer being used,
+    // not a slot being pointed at, and taking it for one invented a `frame_0`
+    // in every function that touches the stack pointer at all.
+    if matches!(expression, Expr::Binary { .. })
+        && let Some(slot) = offset_in_frame(expression)
+    {
+        into.push(slot);
+        return;
+    }
+    match expression {
+        // Not descended into: the address of a read is the slot itself, and
+        // [`frame_offset`] has already claimed it.
+        Expr::Read(place) | Expr::AddressOf(place) => {
+            if let Place::Memory { address, .. } = place.as_ref()
+                && offset_in_frame(address).is_none()
+            {
+                gather_addresses(address, into);
+            }
+        }
+        Expr::Unary { operand, .. } => gather_addresses(operand, into),
+        Expr::Binary { left, right, .. } => {
+            gather_addresses(left, into);
+            gather_addresses(right, into);
+        }
+        Expr::Cast { value, .. } => gather_addresses(value, into),
+        Expr::Call { arguments, .. } => {
+            for argument in arguments {
+                gather_addresses(argument, into);
+            }
+        }
+        Expr::Select {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            gather_addresses(condition, into);
+            gather_addresses(when_true, into);
+            gather_addresses(when_false, into);
+        }
+        Expr::Const { .. } | Expr::Symbol { .. } | Expr::Unknown(_) => {}
+    }
 }
 
 /// What to call a slot.
@@ -303,7 +456,16 @@ fn frame_offset(place: &Place) -> Option<(String, i64)> {
     let Place::Memory { address, .. } = place else {
         return None;
     };
-    match address.as_ref() {
+    offset_in_frame(address)
+}
+
+/// The frame register and offset an expression computes, when it computes one.
+///
+/// The same reading as [`frame_offset`], on the arithmetic itself rather than
+/// on a place built from it: `rbp - 0x408` is the address of a slot whether it
+/// is being read through or handed to a function.
+fn offset_in_frame(address: &Expr) -> Option<(String, i64)> {
+    match address {
         Expr::Read(register) => match register.as_ref() {
             Place::Register(register) if is_frame(register.root) => {
                 Some((register.root.to_owned(), 0))
@@ -453,6 +615,19 @@ fn rewrite_expression(
     slots: &HashMap<(String, i64), u32>,
     widths: &HashMap<u32, Width>,
 ) {
+    // Frame arithmetic standing on its own is the address of a slot, not a
+    // sum: `lea -0x408(%rbp),%rsi` hands out a buffer, and `rbp - 1032` says
+    // that in the machine's terms rather than the program's. Checked before
+    // the shape below, because an address being read *through* is the slot
+    // itself and is claimed there.
+    if matches!(expression, Expr::Binary { .. })
+        && let Some(key) = offset_in_frame(expression)
+        && let Some(id) = slots.get(&key)
+    {
+        let width = widths.get(id).copied().unwrap_or(Width::Byte);
+        *expression = Expr::AddressOf(Box::new(Place::Local { id: *id, width }));
+        return;
+    }
     match expression {
         Expr::Read(place) | Expr::AddressOf(place) => {
             if let Some(key) = frame_offset(place)
@@ -919,6 +1094,80 @@ mod tests {
         assert_eq!(naming.locals.len(), 1);
         assert_eq!(naming.locals[0].name, "local_18");
         assert_eq!(naming.locals[0].label, "rbp-0x18");
+    }
+
+    /// `lea -0x408(%rbp),%rsi` hands out a buffer. Written as `rbp - 1032` it
+    /// is the machine's arithmetic; what the program says is `&local_408`.
+    #[test]
+    fn an_address_taken_of_the_frame_is_the_slot_it_points_at() {
+        let mut blocks = vec![vec![
+            assign(
+                register("rsi", Width::Qword),
+                Expr::binary(
+                    crate::decompiler::native::ir::Binary::Subtract,
+                    Expr::register(Register::new("rbp", Width::Qword)),
+                    Expr::constant(0x408, Width::Qword),
+                ),
+            ),
+            assign(frame(-0x8), Expr::constant(0, Width::Qword)),
+        ]];
+        let naming = recognise(&blocks, Convention::SystemV);
+        apply(&naming, &mut blocks);
+        let Stmt::Assign { value, .. } = &blocks[0][0].effect else {
+            panic!("the assignment survives");
+        };
+        let Expr::AddressOf(place) = value else {
+            panic!("frame arithmetic is the address of a slot, got {value:?}");
+        };
+        assert!(matches!(place.as_ref(), Place::Local { .. }));
+    }
+
+    /// A slot nothing ever reads has no width; what it has is the space the
+    /// frame gives it, which is the distance to the slot above. In `ls` that
+    /// is `0x400` — the very number the same function passes as the length.
+    #[test]
+    fn a_slot_only_ever_pointed_at_takes_its_extent_from_the_frame() {
+        let blocks = vec![vec![
+            assign(
+                register("rsi", Width::Qword),
+                Expr::binary(
+                    crate::decompiler::native::ir::Binary::Subtract,
+                    Expr::register(Register::new("rbp", Width::Qword)),
+                    Expr::constant(0x408, Width::Qword),
+                ),
+            ),
+            assign(frame(-0x8), Expr::constant(0, Width::Qword)),
+        ]];
+        let naming = recognise(&blocks, Convention::SystemV);
+        let buffer = naming
+            .locals
+            .iter()
+            .find(|local| local.label == "rbp-0x408")
+            .expect("the slot that was pointed at");
+        assert_eq!(buffer.buffer, Some(0x400));
+        assert!(naming.is_buffer(buffer.id));
+        let read = naming
+            .locals
+            .iter()
+            .find(|local| local.label == "rbp-0x8")
+            .expect("the slot that was written");
+        assert_eq!(
+            read.buffer, None,
+            "a slot something really reads is a value, not an array"
+        );
+    }
+
+    /// A bare read of the frame pointer is the frame pointer being used, not a
+    /// slot being pointed at — and taking it for one invented a `frame_0` in
+    /// every function that touches the stack at all.
+    #[test]
+    fn using_the_frame_pointer_is_not_pointing_at_a_slot() {
+        let blocks = vec![vec![assign(
+            register("rsi", Width::Qword),
+            Expr::register(Register::new("rsp", Width::Qword)),
+        )]];
+        let naming = recognise(&blocks, Convention::SystemV);
+        assert!(naming.locals.is_empty(), "got {:?}", naming.locals);
     }
 
     #[test]
