@@ -40,6 +40,7 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     let step = app.dialogs.opening_step(Dialog::Library);
     app.explaining_library_at = None;
     window = crate::ui::centred(window, ctx, step.is_some());
+    let mut describe = false;
     window.show(ctx, |ui| {
         ui.label(egui::RichText::new(&library).monospace().strong());
         ui.add_space(10.0);
@@ -55,6 +56,11 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
             );
             ui.add_space(10.0);
             ui.small(app.t(Text::DescribeItYourself));
+            ui.add_space(6.0);
+            // The offer is made where the gap is noticed, with the name
+            // already filled in: the alternative is the reader carrying a
+            // library name to another window and typing it back in.
+            describe = ui.button(app.t(Text::DescribeThisLibrary)).clicked();
             return;
         };
 
@@ -71,6 +77,9 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     app.dialogs.set(Dialog::Library, open);
     if !open {
         app.explaining_library = None;
+    }
+    if describe {
+        crate::ui::library_file::open_for(app, Some(&library));
     }
 }
 

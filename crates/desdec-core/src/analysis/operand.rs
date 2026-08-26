@@ -206,8 +206,7 @@ fn bracketed(bytes: &[u8], start: usize) -> bool {
 /// not knowable from the text.
 #[must_use]
 pub fn branch_target(instruction: &Instruction) -> Option<u64> {
-    let mut words = instruction.text.split_whitespace();
-    if !is_branch(words.next()?) {
+    if !is_branch(mnemonic(&instruction.text)) {
         return None;
     }
     if let Some(target) = target_address(instruction) {
@@ -235,6 +234,170 @@ pub fn is_branch(mnemonic: &str) -> bool {
         || mnemonic.starts_with("b.")
         || mnemonic.starts_with("call")
         || matches!(mnemonic, "b" | "bl" | "cbz" | "cbnz" | "tbz" | "tbnz")
+}
+
+/// The mnemonic of a line, with whatever prefixes stand in front of it
+/// skipped.
+///
+/// The first word of a line is not always the instruction. `bnd jmpq *0x3f61`
+/// is a jump whose first word is `bnd`, and every entry of the procedure table
+/// a modern linker writes is spelled that way — so reading the first word as
+/// the mnemonic lost exactly the branches that lead to a file's imported
+/// functions, and lost them in every file built in the last ten years.
+#[must_use]
+pub fn mnemonic(text: &str) -> &str {
+    /// The prefixes gas prints as a word of their own.
+    const PREFIXES: &[&str] = &[
+        "bnd", "lock", "notrack", "rep", "repe", "repne", "repnz", "repz", "data16", "data32",
+        "addr16", "addr32", "xacquire", "xrelease", "cs", "ds", "es", "fs", "gs", "ss",
+    ];
+    let mut words = text.split_whitespace();
+    let mut word = words.next().unwrap_or_default();
+    while PREFIXES.contains(&word) {
+        let Some(next) = words.next() else { break };
+        word = next;
+    }
+    word
+}
+
+/// How far an `adrp`'s register is followed before the answer stops being one.
+///
+/// The pair is written back to back by every compiler; a page still held in a
+/// register sixteen instructions later has usually been through a branch this
+/// scan refuses to cross anyway.
+const PAGE_REACH: usize = 16;
+
+/// The addresses an `AArch64` `adrp` goes on to form, each against the
+/// instruction that finishes it.
+///
+/// No `AArch64` instruction is wide enough to hold an address, so every one is
+/// built in two: `adrp x0, #0x420000` takes the page, and an `add` or a load
+/// supplies the rest. Neither half is a reference on its own — a page is
+/// arithmetic and an offset is a number — and the consequence was that a file
+/// for this architecture had no data cross-references whatever: not one string
+/// load, not one global read, in a listing that is otherwise complete.
+/// Together the two state an exact address, which is what is returned here.
+///
+/// The register is followed only while the answer stays true: the run stops at
+/// the first branch, at a gap in the listing, and at anything that writes the
+/// register for a purpose of its own. One `adrp` may serve several accesses,
+/// so the run is not stopped by the first of them.
+#[must_use]
+pub fn page_formed(instructions: &[Instruction], index: usize) -> Vec<(u64, u64)> {
+    let Some(adrp) = instructions.get(index) else {
+        return Vec::new();
+    };
+    let mut words = adrp.text.split_whitespace();
+    if words.next() != Some("adrp") {
+        return Vec::new();
+    }
+    let Some(register) = words.next().map(|word| word.trim_end_matches(',')) else {
+        return Vec::new();
+    };
+    let Some(page) = words.next().and_then(read_number) else {
+        return Vec::new();
+    };
+
+    let mut formed = Vec::new();
+    let mut expected = adrp.address.saturating_add(adrp.bytes.len() as u64);
+    for next in instructions.iter().skip(index + 1).take(PAGE_REACH) {
+        // A gap in the listing is another section, or bytes nothing decoded:
+        // what a register held before it is not what it holds after.
+        if next.address != expected {
+            break;
+        }
+        expected = next.address.saturating_add(next.bytes.len() as u64);
+        let mnemonic = mnemonic(&next.text);
+        if is_branch(mnemonic) || matches!(mnemonic, "br" | "blr" | "ret") {
+            break;
+        }
+        if let Some(offset) = completes(next, register) {
+            formed.push((next.address, page.saturating_add(offset)));
+        }
+        if overwrites(&next.text, register) {
+            break;
+        }
+    }
+    formed
+}
+
+/// The offset an instruction adds to a page held in `register`, when it is one
+/// of the two spellings that finish an `adrp`.
+///
+/// `add x0, x0, #0x18` names the address outright; `ldr x1, [x0, #0x18]` and
+/// its store counterpart name it by going there.
+fn completes(instruction: &Instruction, register: &str) -> Option<u64> {
+    let operands = instruction
+        .text
+        .split_once(char::is_whitespace)
+        .map(|(_, rest)| rest)?;
+    if mnemonic(&instruction.text) == "add" {
+        let mut parts = operands.split(',').map(str::trim);
+        let _destination = parts.next()?;
+        if parts.next()? != register {
+            return None;
+        }
+        let offset = read_number(parts.next()?)?;
+        // `add x0, x0, #0x1, lsl #12` adds something else than what it spells;
+        // the plain form is the only one read here.
+        if parts.next().is_some() {
+            return None;
+        }
+        return Some(offset);
+    }
+
+    // A memory operand reaches the address through its base register.
+    let inside = operands.split_once('[')?.1;
+    let inside = inside.split_once(']').map_or(inside, |(within, _)| within);
+    let mut parts = inside.split(',').map(str::trim);
+    if parts.next()? != register {
+        return None;
+    }
+    let Some(offset) = parts.next() else {
+        return Some(0); // `[x0]`, which is the page itself.
+    };
+    // `[x0, x1, lsl #3]` is indexed by a register, whose value is not known
+    // here and is not the offset the shift is written with.
+    if parts.next().is_some() {
+        return None;
+    }
+    read_number(offset)
+}
+
+/// Whether an instruction leaves something of its own in `register`.
+///
+/// Read conservatively, and in the direction that costs a reference rather
+/// than invents one: a line taken to write the register ends the run, and a
+/// run that ended too early merely misses what came after it.
+fn overwrites(text: &str, register: &str) -> bool {
+    // Pre- and post-indexed accesses write their base back: `ldr x1, [x0, #8]!`
+    // and `ldr x1, [x0], #8`.
+    if text.contains('!') || text.contains("],") {
+        return true;
+    }
+    let mnemonic = mnemonic(text);
+    // A store's first operand is what is stored, and a comparison writes only
+    // the flags.
+    if mnemonic.starts_with("st") || matches!(mnemonic, "cmp" | "cmn" | "tst" | "prfm") {
+        return false;
+    }
+    let Some(operands) = text.split_once(char::is_whitespace).map(|(_, rest)| rest) else {
+        return false;
+    };
+    // The written register is the first operand — and a pair load writes two.
+    let written = usize::from(mnemonic.starts_with("ldp")) + 1;
+    operands
+        .split(',')
+        .take(written)
+        .any(|part| part.trim() == register)
+}
+
+/// A number as an operand spells it: `#0x18`, `#8`, `0x18`.
+fn read_number(word: &str) -> Option<u64> {
+    let digits = word
+        .trim_start_matches(['#', '$'])
+        .trim_end_matches([',', ']', '!']);
+    read_hex(digits).or_else(|| digits.parse().ok())
 }
 
 fn read_hex(word: &str) -> Option<u64> {
@@ -603,6 +766,113 @@ mod tests {
         // A symbol of unknown extent claims its own address and nothing more.
         assert_eq!(name_for(0x2000), Some("no_size".to_owned()));
         assert_eq!(name_for(0x2001), None);
+    }
+
+    /// A prefix is not the instruction. Every entry of a modern procedure
+    /// table is a `bnd jmp`, and reading `bnd` as the mnemonic made all of
+    /// them something nothing recognises.
+    #[test]
+    fn a_prefix_is_read_past_to_reach_the_instruction() {
+        assert_eq!(mnemonic("bnd jmpq *0x3f61"), "jmpq");
+        assert_eq!(mnemonic("bnd call 0x401030"), "call");
+        assert_eq!(mnemonic("lock cmpxchg %ecx,(%rdx)"), "cmpxchg");
+        assert_eq!(mnemonic("repz retq"), "retq");
+        assert_eq!(mnemonic("callq *0x3f60"), "callq");
+        assert_eq!(mnemonic("b.eq #0x1234"), "b.eq");
+        assert_eq!(mnemonic(""), "");
+
+        assert_eq!(
+            branch_target(&instruction(0x1000, "bnd call 0x401030", 6)),
+            Some(0x0040_1030),
+            "a call is a call whatever stands in front of it"
+        );
+    }
+
+    /// The pair that gives `AArch64` its addresses. Neither half is a
+    /// reference alone, and the file's data references are all in this shape.
+    #[test]
+    fn an_adrp_and_what_finishes_it_state_one_exact_address() {
+        let listing = |texts: &[&str]| -> Vec<Instruction> {
+            texts
+                .iter()
+                .enumerate()
+                .map(|(step, text)| instruction(0x1000 + 4 * step as u64, text, 4))
+                .collect()
+        };
+
+        // The two spellings: an `add` that names the address, and a load that
+        // goes there.
+        let formed = page_formed(&listing(&["adrp x0, #0x420000", "add x0, x0, #0x18"]), 0);
+        assert_eq!(formed, vec![(0x1004, 0x0042_0018)]);
+        let formed = page_formed(&listing(&["adrp x8, #0x420000", "ldr x9, [x8, #0x30]"]), 0);
+        assert_eq!(formed, vec![(0x1004, 0x0042_0030)]);
+        // No offset is the page itself.
+        let formed = page_formed(&listing(&["adrp x8, #0x420000", "ldr x9, [x8]"]), 0);
+        assert_eq!(formed, vec![(0x1004, 0x0042_0000)]);
+
+        // One page, several accesses: the run is not stopped by the first.
+        let formed = page_formed(
+            &listing(&[
+                "adrp x8, #0x420000",
+                "ldr x9, [x8, #0x30]",
+                "ldr x10, [x8, #0x38]",
+                "add x8, x8, #0x40",
+            ]),
+            0,
+        );
+        assert_eq!(
+            formed,
+            vec![
+                (0x1004, 0x0042_0030),
+                (0x1008, 0x0042_0038),
+                (0x100c, 0x0042_0040),
+            ]
+        );
+    }
+
+    /// The register is followed only while following it is sound: everything
+    /// here would have the pair state an address the code never forms.
+    #[test]
+    fn a_page_is_followed_no_further_than_it_is_still_the_page() {
+        let listing = |texts: &[&str]| -> Vec<Instruction> {
+            texts
+                .iter()
+                .enumerate()
+                .map(|(step, text)| instruction(0x1000 + 4 * step as u64, text, 4))
+                .collect()
+        };
+
+        // Written for a purpose of its own.
+        assert!(
+            page_formed(
+                &listing(&["adrp x8, #0x420000", "mov x8, x1", "add x0, x8, #0x18"]),
+                0,
+            )
+            .is_empty()
+        );
+        // The flow leaves, and what a register held before a branch is not
+        // what it holds after one.
+        assert!(
+            page_formed(
+                &listing(&["adrp x8, #0x420000", "bl #0x2000", "add x0, x8, #0x18"]),
+                0,
+            )
+            .is_empty()
+        );
+        // Indexed by a register: the offset is not the number in the line.
+        assert!(
+            page_formed(
+                &listing(&["adrp x8, #0x420000", "ldr x9, [x8, x1, lsl #3]"]),
+                0,
+            )
+            .is_empty()
+        );
+        // A gap in the listing.
+        let mut apart = listing(&["adrp x8, #0x420000", "add x0, x8, #0x18"]);
+        apart[1].address = 0x2000;
+        assert!(page_formed(&apart, 0).is_empty());
+        // And nothing at all is claimed for an instruction that is not one.
+        assert!(page_formed(&listing(&["add x0, x8, #0x18"]), 0).is_empty());
     }
 
     #[test]

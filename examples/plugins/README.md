@@ -96,7 +96,7 @@ An instruction is `address`, `text`, `bytes`, `size`, `section`, `offset`.
 | `find_bytes("48 8b ?? 05")` | `??` stands for any byte |
 | `find_instructions(t)` | Text in the decoded instructions |
 | `find_notes(t)` | Text in your own labels and comments |
-| `refs_to(a)` | `from` and `kind` — `call`, `jump`, `reads`, `pointer` |
+| `refs_to(a)` | `from` and `kind` — `call`, `jump`, `reads`, `table`, `stub`, `pointer` |
 | `ref_count(a)` | How many places name this address |
 
 Each hit is `address`, `offset`, `section`, `text`.

@@ -127,7 +127,7 @@ fn named_addresses(analysis: &Analysis) -> Vec<u64> {
 /// Whether a line is a call, in either of the two syntaxes the tool decodes
 /// into.
 fn is_call(text: &str) -> bool {
-    let mnemonic = text.split_whitespace().next().unwrap_or_default();
+    let mnemonic = operand::mnemonic(text);
     // `call`, `callq`; and AArch64's `bl`, which is the same instruction under
     // another name. `blr` is an indirect call and names no target.
     matches!(mnemonic, "call" | "callq" | "calll" | "callw" | "bl")
@@ -135,7 +135,7 @@ fn is_call(text: &str) -> bool {
 
 /// Whether a line ends the flow, so what follows it is not part of it.
 fn ends_the_flow(text: &str) -> bool {
-    let mnemonic = text.split_whitespace().next().unwrap_or_default();
+    let mnemonic = operand::mnemonic(text);
     matches!(
         mnemonic,
         "ret" | "retq" | "retl" | "retw" | "jmp" | "jmpq" | "b" | "br" | "hlt" | "ud2"
@@ -144,7 +144,7 @@ fn ends_the_flow(text: &str) -> bool {
 
 /// Whether a line is padding a compiler puts between functions.
 fn is_padding(text: &str) -> bool {
-    let mnemonic = text.split_whitespace().next().unwrap_or_default();
+    let mnemonic = operand::mnemonic(text);
     // `int3` fills the gap on Windows, `nop` everywhere else, and `nopw`,
     // `nopl` and friends are the wide nops an assembler pads with.
     mnemonic.starts_with("nop") || matches!(mnemonic, "int3" | "xchg")

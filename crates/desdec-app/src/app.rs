@@ -212,10 +212,12 @@ pub enum Dialog {
     Expression,
     /// A run carried on until a condition holds.
     TraceUntil,
+    /// The reader's own descriptions of the libraries they meet.
+    LibraryFile,
 }
 
 impl Dialog {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::CommandPalette,
         Self::Preferences,
         Self::About,
@@ -232,6 +234,7 @@ impl Dialog {
         Self::Update,
         Self::Expression,
         Self::TraceUntil,
+        Self::LibraryFile,
     ];
 
     const fn index(self) -> usize {
@@ -263,6 +266,10 @@ impl Dialog {
                 // machine the reader is stepping in the view behind: a press
                 // there is how they change what it will answer.
                 | Self::Expression
+                // The descriptions are typed over several minutes, and a
+                // press on the listing behind would throw away what is in
+                // the box before it reached the file.
+                | Self::LibraryFile
         )
     }
 }
@@ -733,6 +740,8 @@ pub struct DesdecApp {
     pub cache_report: Option<usize>,
     /// What each linked library is for, read once per session.
     pub library_notes: crate::libraries::Catalogue,
+    /// The file of those descriptions, while it is being edited.
+    pub library_file: crate::ui::library_file::Draft,
     /// The library whose explanation is on screen.
     pub explaining_library: Option<String>,
     /// Where the button that asked sits, so the explanation opens over it
@@ -1337,6 +1346,14 @@ impl DesdecApp {
             .as_ref()
             .and_then(|analysis| analysis.instruction_index(address))
             .is_some()
+    }
+
+    /// What to call an address, when anything in the file or in the reader's
+    /// own notes calls it something.
+    #[must_use]
+    pub fn name_at(&self, address: u64) -> Option<String> {
+        let analysis = self.analysis.as_ref()?;
+        crate::names::describe(address, analysis, &self.functions, &self.annotations)
     }
 
     /// Selects an instruction and brings it into view in both listings.
@@ -3073,6 +3090,7 @@ impl DesdecApp {
         ui::preferences_window::show(self, ctx);
         ui::about::show(self, ctx);
         ui::library_note::show(self, ctx);
+        ui::library_file::show(self, ctx);
         ui::operand_note::show(self, ctx);
         ui::annotation::show(self, ctx);
         ui::references::show(self, ctx);

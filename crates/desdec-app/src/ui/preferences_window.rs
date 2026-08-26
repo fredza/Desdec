@@ -279,29 +279,62 @@ fn library_explanations(app: &mut DesdecApp, ui: &mut egui::Ui) {
         return;
     };
     ui.add_space(6.0);
+    let ctx = ui.ctx().clone();
+    let mut edit = false;
     ui.horizontal(|ui| {
         if path.exists() {
-            // An edit should take effect without restarting the application.
+            // The file is edited in the application that reads it: telling the
+            // reader where it lives and leaving them to find a text editor is
+            // a long way round for what is usually a single line.
+            edit = ui.button(text(language, Text::EditLibraryFile)).clicked();
+            // Still worth a button of its own, for the file changed elsewhere:
+            // an edit should take effect without restarting the application.
             if ui.button(text(language, Text::ReloadLibraryFile)).clicked() {
                 app.library_notes.reload();
+                let entries = app.library_notes.user_entries();
+                // Rereading an unchanged file looks like nothing happening;
+                // the count says it was read and what it found.
+                app.notify(
+                    &ctx,
+                    format!(
+                        "{} : {entries} {}",
+                        text(language, Text::LibraryFileReread),
+                        text(language, Text::LibraryFileEntries)
+                    ),
+                );
             }
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} {}",
-                    app.library_notes.user_entries(),
-                    text(language, Text::LibraryFileEntries)
-                ))
-                .color(MUTED),
-            );
         } else if ui.button(text(language, Text::CreateLibraryFile)).clicked() {
             // Written with its format shown as comments, so there is nothing
-            // to look up before the first entry.
-            if crate::libraries::write_example_file(language).is_ok() {
-                app.library_notes.reload();
+            // to look up before the first entry, and opened straight away:
+            // creating an empty file is not what the reader came for.
+            match crate::libraries::write_example_file(language) {
+                Ok(_) => {
+                    app.library_notes.reload();
+                    edit = true;
+                }
+                Err(error) => app.notify(
+                    &ctx,
+                    format!("{} : {error}", text(language, Text::LibraryFileNotWritten)),
+                ),
             }
         }
     });
+    // On its own line rather than beside the buttons: three items across a
+    // window this narrow would push it wider every time the count changed.
+    if path.exists() {
+        ui.small(
+            egui::RichText::new(format!(
+                "{} {}",
+                app.library_notes.user_entries(),
+                text(language, Text::LibraryFileEntries)
+            ))
+            .color(MUTED),
+        );
+    }
     ui.small(egui::RichText::new(path.display().to_string()).color(MUTED));
+    if edit {
+        crate::ui::library_file::open(app);
+    }
 }
 
 /// The decompilation cache: what it is for, and how to empty it.
@@ -588,5 +621,53 @@ const fn assistant_label(provider: AssistantPreference) -> Text {
         AssistantPreference::None => Text::NoAssistant,
         AssistantPreference::Ollama => Text::LocalModel,
         AssistantPreference::Claude => Text::ClaudeApi,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::WorkspaceView;
+
+    /// Every tab must lay out in every interface language: a row of controls
+    /// too wide for the window is how labels end up painted over each other.
+    #[test]
+    fn every_tab_lays_out_in_every_language() {
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
+        app.dialogs.open(Dialog::Preferences);
+
+        for tab in PreferencesTab::ALL {
+            app.preferences_tab = *tab;
+            for language in crate::i18n::Language::ALL {
+                app.preferences.language = *language;
+                let output = ctx.run(crate::testing::window_input(), |ctx| show(&mut app, ctx));
+                assert!(!output.shapes.is_empty(), "{language:?}");
+            }
+        }
+    }
+
+    /// The behaviours tab must fit the width the window opens at, or the
+    /// library buttons push everything else about.
+    #[test]
+    fn the_behaviours_tab_fits_the_window() {
+        let ctx = egui::Context::default();
+        let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);
+        app.dialogs.open(Dialog::Preferences);
+        app.preferences_tab = PreferencesTab::Behaviour;
+
+        for language in crate::i18n::Language::ALL {
+            app.preferences.language = *language;
+            let _ = ctx.run(crate::testing::window_input(), |ctx| show(&mut app, ctx));
+            let placed = ctx
+                .memory(|memory| memory.area_rect(egui::Id::new("desdec.preferences")))
+                .expect("the window was laid out");
+            // Some slack over the width it asks for: the tab strip and the
+            // longest translation both have a say in it.
+            assert!(
+                placed.width() < ASSUMED_SIZE.x + 120.0,
+                "{language:?}: {placed:?}"
+            );
+        }
     }
 }

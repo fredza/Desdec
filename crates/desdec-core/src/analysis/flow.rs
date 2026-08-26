@@ -71,7 +71,7 @@ pub fn kind(mnemonic: &str) -> Kind {
 /// The same, read from the whole text of an instruction.
 #[must_use]
 pub fn kind_of(text: &str) -> Kind {
-    kind(text.split_whitespace().next().unwrap_or_default())
+    kind(crate::analysis::operand::mnemonic(text))
 }
 
 #[cfg(test)]

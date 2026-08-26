@@ -18,7 +18,11 @@
 //! confident wrong sentence about a dependency is how a reader ends up looking
 //! in the wrong place.
 
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::i18n::Language;
 
@@ -113,6 +117,44 @@ pub fn user_catalogue_path() -> Option<PathBuf> {
     Some(base.join("desdec").join("libraries.conf"))
 }
 
+/// The user's file exactly as it stands, for the editor to show.
+///
+/// A file that is not there yet is not a failure: the editor opens on the
+/// example instead, so the reader starts from a filled-in format rather than
+/// an empty box.
+#[must_use]
+pub fn read_user_file(language: Language) -> String {
+    user_catalogue_path()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_else(|| example(language))
+}
+
+/// Writes back what the editor holds, replacing the file.
+///
+/// # Errors
+///
+/// Returns an error when the directory or the file cannot be written.
+pub fn save_user_file(text: &str) -> std::io::Result<PathBuf> {
+    let path = user_catalogue_path()
+        .ok_or_else(|| std::io::Error::other("no configuration directory on this system"))?;
+    save_at(&path, text)?;
+    Ok(path)
+}
+
+fn save_at(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // A trailing newline, so an editor opening the file next does not show a
+    // last line that looks unfinished.
+    let text = if text.ends_with('\n') || text.is_empty() {
+        text.to_owned()
+    } else {
+        format!("{text}\n")
+    };
+    fs::write(path, text)
+}
+
 /// Writes a starting file, so the format is shown rather than described.
 ///
 /// # Errors
@@ -150,6 +192,21 @@ fn example(language: Language) -> String {
     format!(
         "{heading}\n{note}\n\n# libmaison = Bibliothèque interne : accès au format de fichier maison.\n"
     )
+}
+
+/// The name a library goes by in the file, for an editor filling in a line.
+#[must_use]
+pub fn catalogue_key(library: &str) -> String {
+    normalise(library)
+}
+
+/// Whether the text of a file already describes `library`, under any of the
+/// names it goes by: a second line for a name already answered would leave two
+/// answers in the file.
+#[must_use]
+pub fn describes_any(text: &str, library: &str) -> bool {
+    let name = normalise(library);
+    parse(text).keys().any(|key| describes(key, &name))
 }
 
 /// Reads `name = description` lines, ignoring blanks and `#` comments.
@@ -814,6 +871,50 @@ mod tests {
                 .note("libcompletelyunknown.so.1", Language::French)
                 .is_none()
         );
+    }
+
+    /// What the editor saves must be what the catalogue reads back: a round
+    /// trip through the file is the whole point of editing it in Desdec.
+    #[test]
+    fn what_the_editor_saves_is_what_the_catalogue_reads() {
+        let directory = std::env::temp_dir().join(format!(
+            "desdec-libraries-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let path = directory.join("nested").join("libraries.conf");
+        save_at(&path, "libmaison = Format maison.").expect("a temporary file is writable");
+
+        let written = fs::read_to_string(&path).expect("just written");
+        // A trailing newline, so the last line never looks unfinished.
+        assert!(written.ends_with('\n'), "{written:?}");
+        let parsed = parse(&written);
+        assert_eq!(
+            parsed.get("libmaison").map(String::as_str),
+            Some("Format maison.")
+        );
+
+        // Saving again replaces the file rather than appending to it.
+        save_at(&path, "libmaison = Autre chose.\n").expect("writable");
+        let parsed = parse(&fs::read_to_string(&path).expect("just written"));
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(
+            parsed.get("libmaison").map(String::as_str),
+            Some("Autre chose.")
+        );
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    /// The editor opens on something to read even when there is no file yet:
+    /// an empty box says nothing about the format.
+    #[test]
+    fn the_editor_opens_on_the_example_when_there_is_no_file() {
+        for language in Language::ALL {
+            let example = example(*language);
+            assert!(example.contains('='), "{language:?}: {example:?}");
+            assert!(example.starts_with('#'), "{language:?}: {example:?}");
+        }
     }
 
     #[test]

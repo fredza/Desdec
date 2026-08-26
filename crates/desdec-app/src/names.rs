@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use desdec_core::Analysis;
 
-use crate::ui::functions::Function;
+use crate::{annotations::Annotations, ui::functions::Function};
 
 /// Names and the addresses they stand for.
 #[derive(Clone, Debug, Default)]
@@ -54,9 +54,63 @@ impl Table {
     }
 }
 
+/// What to call an address, and how far into that thing it is.
+///
+/// The other direction of [`Table`], and the one a cross-reference needs: a
+/// list of the twenty places that name an address is twenty hexadecimal
+/// numbers, and a reader has to walk to each of them to find out that
+/// nineteen were the same function. `main+0x2c` is the whole answer, on the
+/// row, before anyone goes anywhere.
+///
+/// Four answers, and the strongest is given: what the reader named the address
+/// themselves, then the imported name the loader is to write into it, then the
+/// function or symbol whose extent covers it, and failing all of those the
+/// section it is in. Nothing is invented — an address in nothing named stays a
+/// number, and the caller shows the number.
+#[must_use]
+pub fn describe(
+    address: u64,
+    analysis: &Analysis,
+    functions: &[Function],
+    annotations: &Annotations,
+) -> Option<String> {
+    if let Some(label) = annotations.label(address) {
+        return Some(label.to_owned());
+    }
+    // An import slot holds nothing until the loader fills it in, so the file
+    // itself is the only thing that can say whose address belongs there.
+    if let Some(import) = analysis.import_at(address) {
+        return Some(import.to_owned());
+    }
+    // The functions are in address order and their extents do not overlap, so
+    // the one that can hold this address is the last one starting at or before
+    // it — and it holds it only if it really reaches that far.
+    let past = functions.partition_point(|function| function.start <= address);
+    if let Some(function) = functions[..past]
+        .last()
+        .filter(|function| address < function.end)
+    {
+        return Some(with_offset(&function.name, address - function.start));
+    }
+    let section = analysis.section_at(address)?;
+    Some(with_offset(
+        &section.name,
+        address.saturating_sub(section.virtual_address),
+    ))
+}
+
+/// `main` at its first byte, and `main+0x2c` anywhere else inside it.
+fn with_offset(name: &str, offset: u64) -> String {
+    if offset == 0 {
+        name.to_owned()
+    } else {
+        format!("{name}+{offset:#x}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Table;
+    use super::{Table, describe};
     use desdec_core::Symbol;
 
     /// A real analysis, with its symbol table replaced by the one a test is
@@ -78,6 +132,53 @@ mod tests {
             size: 0,
             imported: false,
         }
+    }
+
+    /// The answer a cross-reference row needs: not a number, but the name of
+    /// the thing the number is inside, and how far in.
+    #[test]
+    fn an_address_is_named_by_the_place_it_falls_in_and_how_far_into_it() {
+        let sample = crate::testing::samples()
+            .into_iter()
+            .next()
+            .expect("a fixture");
+        let functions = crate::ui::functions::all(&sample.analysis);
+        let function = functions.first().expect("the fixture names a function");
+        let mut annotations = crate::annotations::Annotations::default();
+
+        assert_eq!(
+            describe(function.start, &sample.analysis, &functions, &annotations),
+            Some(function.name.clone())
+        );
+        assert_eq!(
+            describe(
+                function.start + 4,
+                &sample.analysis,
+                &functions,
+                &annotations
+            ),
+            Some(format!("{}+0x4", function.name)),
+            "inside a function is that function, and says how far inside"
+        );
+        // An address in nothing at all stays a number, and the caller shows it.
+        assert_eq!(
+            describe(0xffff_ffff_0000, &sample.analysis, &functions, &annotations),
+            None
+        );
+
+        // What the reader called it themselves outranks everything: they are
+        // the one who has to recognise the row.
+        annotations.set(
+            function.start,
+            crate::annotations::Annotation {
+                label: "the parser".to_owned(),
+                ..crate::annotations::Annotation::default()
+            },
+        );
+        assert_eq!(
+            describe(function.start, &sample.analysis, &functions, &annotations),
+            Some("the parser".to_owned())
+        );
     }
 
     #[test]

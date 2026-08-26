@@ -16,6 +16,7 @@ pub mod expression;
 pub mod flags;
 pub mod functions;
 pub mod graph;
+pub mod library_file;
 pub mod library_note;
 pub mod machine;
 pub mod navigation;

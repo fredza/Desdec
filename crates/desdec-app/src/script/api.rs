@@ -812,6 +812,8 @@ const fn kind(kind: xrefs::Kind) -> &'static str {
         xrefs::Kind::Call => "call",
         xrefs::Kind::Jump => "jump",
         xrefs::Kind::Reads => "reads",
+        xrefs::Kind::Table => "table",
+        xrefs::Kind::Stub => "stub",
         xrefs::Kind::Pointer => "pointer",
     }
 }

@@ -5,11 +5,18 @@
 //! away, and the pointer holding its address is not code at all. This window
 //! answers that, for whichever address the reader is standing on.
 //!
-//! Two strengths of answer, kept apart. An instruction that computes an
-//! address is arithmetic on decoded bytes and is exact. A data word holding a
-//! value that lands in the image is a likely pointer — a function table, a
-//! relocation — but it may be a number that merely looks like one, and it is
-//! labelled as such rather than counted among the calls.
+//! Three strengths of answer, kept apart. An instruction that computes an
+//! address is arithmetic on decoded bytes and is exact. A branch that arrives
+//! by way of something the file states — a table of cases, the stub in front
+//! of an imported function — arrives all the same, but does not name the
+//! address, and the row says so. A data word holding a value that lands in the
+//! image is a likely pointer — a function table, a relocation — but it may be
+//! a number that merely looks like one, and it is labelled as such rather than
+//! counted among the calls.
+//!
+//! And every row says what the place it names is called. Twenty references
+//! used to be twenty hexadecimal numbers, and finding out that nineteen of
+//! them were the same function meant walking to all twenty.
 
 use eframe::egui;
 
@@ -34,7 +41,14 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
 
     let id = egui::Id::new("desdec.references");
     let mut open = true;
-    let mut window = egui::Window::new(format!("{} {address:#018x}", app.t(Text::ReferencesTo)))
+    // The address is kept in the title whatever it is called: a reader who
+    // arrived here from a number must be able to see that it is the number
+    // they asked about.
+    let title = match app.name_at(address) {
+        Some(name) => format!("{} {name} — {address:#018x}", app.t(Text::ReferencesTo)),
+        None => format!("{} {address:#018x}", app.t(Text::ReferencesTo)),
+    };
+    let mut window = egui::Window::new(title)
         .id(id)
         .open(&mut open)
         .collapsible(false)
@@ -79,7 +93,7 @@ fn contents(app: &DesdecApp, ui: &mut egui::Ui, address: u64) -> Option<u64> {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             egui::Grid::new("references")
-                .num_columns(3)
+                .num_columns(4)
                 .striped(true)
                 .spacing([14.0, 4.0])
                 .show(ui, |ui| {
@@ -96,7 +110,8 @@ fn contents(app: &DesdecApp, ui: &mut egui::Ui, address: u64) -> Option<u64> {
     go_to
 }
 
-/// One reference: where it is, what it does, and the line it sits on.
+/// One reference: where it is, what it does, what that place is called, and
+/// the line it sits on.
 fn row(app: &DesdecApp, ui: &mut egui::Ui, from: u64, kind: Kind) -> bool {
     let language = app.preferences.language;
     let decoded = app.is_decoded(from);
@@ -115,6 +130,8 @@ fn row(app: &DesdecApp, ui: &mut egui::Ui, from: u64, kind: Kind) -> bool {
                 Kind::Call => Text::ReferenceCall,
                 Kind::Jump => Text::ReferenceJump,
                 Kind::Reads => Text::ReferenceReads,
+                Kind::Table => Text::ReferenceTable,
+                Kind::Stub => Text::ReferenceStub,
                 Kind::Pointer => Text::ReferencePointer,
             },
         ))
@@ -122,8 +139,17 @@ fn row(app: &DesdecApp, ui: &mut egui::Ui, from: u64, kind: Kind) -> bool {
         .color(MUTED),
     );
 
-    // The instruction the reference sits on, or — for a pointer, which is not
-    // code — the section the word lives in.
+    // What the place is called. Twenty references used to be twenty numbers,
+    // and finding out that nineteen of them were the same function meant
+    // walking to all twenty.
+    ui.label(
+        egui::RichText::new(app.name_at(from).unwrap_or_default())
+            .monospace()
+            .color(MUTED),
+    );
+
+    // The instruction the reference sits on. A pointer is not code and has
+    // none — the column before it has already said where the word lives.
     if let Some(instruction) = app
         .analysis
         .as_ref()
@@ -135,12 +161,7 @@ fn row(app: &DesdecApp, ui: &mut egui::Ui, from: u64, kind: Kind) -> bool {
             egui::Color32::TRANSPARENT,
         ));
     } else {
-        let section = app
-            .analysis
-            .as_ref()
-            .and_then(|analysis| analysis.section_at(from))
-            .map_or_else(String::new, |section| section.name.clone());
-        ui.label(egui::RichText::new(section).monospace().color(MUTED));
+        ui.label("");
     }
 
     if decoded {
@@ -185,10 +206,26 @@ mod tests {
         let _ = ctx.run(window_input(), |ctx| show(&mut app, ctx));
         let output = ctx.run(window_input(), |ctx| show(&mut app, ctx));
 
+        let drawn = crate::testing::drawn_text(&output.shapes);
         assert!(
-            crate::testing::drawn_text(&output.shapes).contains(&format!("{from:#018x}")),
+            drawn.contains(&format!("{from:#018x}")),
             "the call must be listed among what names {target:#x}"
         );
+        // And the row says what that place is called: a list of numbers makes
+        // the reader walk to twenty addresses to learn that nineteen of them
+        // were the same function.
+        if let Some(name) = app.name_at(from) {
+            assert!(
+                drawn.contains(&name),
+                "the row must name the place the call sits in, which is {name}"
+            );
+        }
+        if let Some(name) = app.name_at(target) {
+            assert!(
+                drawn.contains(&name),
+                "and the window must say whose references these are: {name}"
+            );
+        }
     }
 
     /// An address nothing names says so, rather than showing an empty box.

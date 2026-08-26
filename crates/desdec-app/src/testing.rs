@@ -389,6 +389,22 @@ mod window_sheet {
                 app.trace_until.condition = String::from("rax == 0 && [rsp]:8 != 0");
                 app.dialogs.open(Dialog::TraceUntil);
             }
+            // The library descriptions: the preferences tab that points at
+            // the file, and the editor it opens. `DESDEC_WINDOW=libraries`.
+            // `=libraries-tab` for the preferences alone, without the editor
+            // covering the buttons that open it.
+            Ok("libraries" | "libraries-tab") => {
+                app.dialogs.close(Dialog::Plugins);
+                app.dialogs.close(Dialog::Console);
+                app.preferences_tab = crate::ui::preferences_window::PreferencesTab::Behaviour;
+                app.dialogs.open(Dialog::Preferences);
+                app.library_file.text = String::from(
+                    "# Descriptions de bibliothèques, une par ligne : nom = explication.\n\nlibmaison = Bibliothèque interne : accès au format de fichier maison.\n",
+                );
+                if std::env::var("DESDEC_WINDOW").as_deref() == Ok("libraries") {
+                    app.dialogs.open(Dialog::LibraryFile);
+                }
+            }
             _ => {}
         }
         // The update windows, on demand: they are the two a reader meets
