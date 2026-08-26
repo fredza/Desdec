@@ -13,6 +13,7 @@ pub mod disassembly;
 pub mod dump;
 pub mod expert;
 pub mod expression;
+pub mod external_analysis;
 pub mod flags;
 pub mod functions;
 pub mod graph;

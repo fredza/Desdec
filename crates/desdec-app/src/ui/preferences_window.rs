@@ -7,8 +7,8 @@ use crate::{
     commands::{Command, Shortcut},
     i18n::{Language, Text, text},
     preferences::{
-        AssistantPreference, DecompilerPreference, DisassemblyStart, ThemePreference, accent,
-        success,
+        AssistantPreference, BinaryAnalyzerPreference, DecompilerPreference, DisassemblyStart,
+        ThemePreference, accent, success,
     },
     ui::{ERROR, MUTED, format_size},
 };
@@ -20,6 +20,7 @@ pub enum PreferencesTab {
     Shortcuts,
     Behaviour,
     Decompiler,
+    ExternalAnalysis,
     Assistant,
     Yara,
 }
@@ -30,6 +31,7 @@ impl PreferencesTab {
         Self::Shortcuts,
         Self::Behaviour,
         Self::Decompiler,
+        Self::ExternalAnalysis,
         Self::Assistant,
         Self::Yara,
     ];
@@ -40,6 +42,7 @@ impl PreferencesTab {
             Self::Shortcuts => Text::Shortcuts,
             Self::Behaviour => Text::Behaviour,
             Self::Decompiler => Text::Decompiler,
+            Self::ExternalAnalysis => Text::ExternalAnalysis,
             Self::Assistant => Text::AiAssistance,
             Self::Yara => Text::Yara,
         }
@@ -82,23 +85,76 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         app.dialogs.opening_step(Dialog::Preferences).is_some(),
     );
     window.show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            for tab in PreferencesTab::ALL {
-                let label = app.t(tab.text());
-                ui.selectable_value(&mut app.preferences_tab, *tab, label);
-            }
-        });
+        // Seven translated labels cannot truthfully fit in the narrow
+        // preference window on one row. Two deliberately short rows are more
+        // stable than an auto-wrap whose break point changes with a language.
+        for row in PreferencesTab::ALL.chunks(4) {
+            ui.horizontal(|ui| {
+                for tab in row {
+                    let label = app.t(tab.text());
+                    ui.selectable_value(&mut app.preferences_tab, *tab, label);
+                }
+            });
+        }
         ui.separator();
         match app.preferences_tab {
             PreferencesTab::Appearance => appearance(app, ctx, ui),
             PreferencesTab::Shortcuts => shortcuts(app, ctx, ui),
             PreferencesTab::Behaviour => behaviour(app, ui),
             PreferencesTab::Decompiler => decompiler(app, ui),
+            PreferencesTab::ExternalAnalysis => external_analysis(app, ui),
             PreferencesTab::Assistant => assistant(app, ui),
             PreferencesTab::Yara => yara(app, ui),
         }
     });
     app.dialogs.set(Dialog::Preferences, open);
+}
+
+/// Configures the process-isolated report producer. It complements the local
+/// analysis rather than replacing it: all existing Desdec views keep their
+/// bounded in-process data even when this optional command is unavailable.
+fn external_analysis(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    let language = app.preferences.language;
+    ui.heading(text(language, Text::ExternalAnalysis));
+    ui.small(text(language, Text::ExternalAnalyzerInfo));
+    ui.add_space(10.0);
+    ui.radio_value(
+        &mut app.preferences.binary_analyzer,
+        BinaryAnalyzerPreference::Internal,
+        text(language, Text::InternalAnalyzer),
+    );
+    ui.radio_value(
+        &mut app.preferences.binary_analyzer,
+        BinaryAnalyzerPreference::ExternalJson,
+        text(language, Text::ExternalJsonAnalyzer),
+    );
+    if app.preferences.binary_analyzer != BinaryAnalyzerPreference::ExternalJson {
+        return;
+    }
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label(text(language, Text::ExternalAnalyzerPath));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.preferences.external_analyzer_path)
+                .hint_text(text(language, Text::ExternalAnalyzerPathHint))
+                .desired_width(230.0),
+        );
+    });
+    ui.add_space(8.0);
+    if app.external_analysis.running {
+        ui.small(text(language, Text::ExternalAnalyzerRunning));
+    } else if app.external_analysis.report.is_some() {
+        if ui
+            .button(text(language, Text::ShowExternalReport))
+            .clicked()
+        {
+            app.dialogs.open(crate::app::Dialog::ExternalAnalysis);
+        }
+    } else if let Some(error) = &app.external_analysis.error {
+        ui.colored_label(ERROR, error);
+    } else {
+        ui.small(text(language, Text::ExternalAnalyzerNoReport));
+    }
 }
 
 fn appearance(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {

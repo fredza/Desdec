@@ -866,6 +866,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "desdec-analyzer"
+version = "0.1.0"
+dependencies = [
+ "desdec-core",
+ "serde_json",
+]
+
+[[package]]
 name = "desdec-app"
 version = "0.4.46"
 dependencies = [

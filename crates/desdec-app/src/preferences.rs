@@ -27,6 +27,19 @@ pub enum DecompilerPreference {
     RetDec,
 }
 
+/// Which process produces the portable, complete binary-analysis report.
+///
+/// The internal engine remains the default and feeds Desdec's interactive
+/// views. The external choice runs a separate JSON-speaking executable as a
+/// second, isolated pass; future applications can share it without linking
+/// arbitrary native code.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum BinaryAnalyzerPreference {
+    #[default]
+    Internal,
+    ExternalJson,
+}
+
 /// Where a newly opened binary is first selected in the disassembly.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DisassemblyStart {
@@ -133,6 +146,11 @@ pub struct Preferences {
     pub anthropic_key_path: String,
     pub decompiler: DecompilerPreference,
     pub engine_paths: EnginePaths,
+    /// Optional process that emits the versioned external analysis report.
+    pub binary_analyzer: BinaryAnalyzerPreference,
+    /// Explicit path to that process, or empty to search `desdec-analyzer` on
+    /// PATH. The path is configuration, not executable code loaded here.
+    pub external_analyzer_path: String,
     /// Whether decompiled functions are kept on disk between runs.
     pub cache_decompilations: bool,
     /// Successfully analysed binaries, newest first. This is local UI state;
@@ -201,6 +219,8 @@ impl Default for Preferences {
             anthropic_key_path: String::new(),
             decompiler: DecompilerPreference::Builtin,
             engine_paths: EnginePaths::default(),
+            binary_analyzer: BinaryAnalyzerPreference::Internal,
+            external_analyzer_path: String::new(),
             cache_decompilations: true,
             recent_binaries: Vec::new(),
             yara_enabled: false,
@@ -478,6 +498,7 @@ mod tests {
         assert!(defaults.show_operand_hints);
         assert!(defaults.save_annotations);
         assert!(defaults.persistence_enabled);
+        assert_eq!(defaults.binary_analyzer, BinaryAnalyzerPreference::Internal);
     }
 
     #[test]
@@ -527,6 +548,8 @@ mod tests {
             theme: ThemePreference::Catppuccin,
             language: Language::Spanish,
             show_toolbar: false,
+            binary_analyzer: BinaryAnalyzerPreference::ExternalJson,
+            external_analyzer_path: "/opt/desdec/bin/analyzer".to_owned(),
             ..Preferences::default()
         };
         let encoded = ron::to_string(&preferences).expect("preferences should serialise");
