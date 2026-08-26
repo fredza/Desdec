@@ -15,3 +15,10 @@ docs/ai-collaboration/
 # fonctions : soixante-dix mégaoctets et son propre dépôt git, qui n'ont
 # rien à faire dans celui-ci.
 /x64dbg/
+
+# Les captures d'écran de travail et les images ramassées en cours de route :
+# elles servent à regarder un rendu ou à chercher une icône, elles ne font pas
+# partie de ce que le dépôt publie. `captures_moi/` est déjà ignoré plus haut ;
+# `captures/` est son équivalent produit par les sessions.
+captures/
+icon-gear-wrench-vector-illustration-600nw-2043252008.jpg
