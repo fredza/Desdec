@@ -134,6 +134,13 @@ pub fn decompile(request: &Request<'_>) -> Decompiled {
     // The prologue and the epilogue first, so the slots they use never become
     // locals with names of their own in the output.
     naming::strip_frame(&mut statements, convention);
+    // Then the jumps that leave the function, which are calls and must be read
+    // as calls before anything counts what a call is passed.
+    tail_calls(&mut statements, request.body, &names, convention);
+    // Then the arguments, because a call reading `rdi` is the evidence that
+    // `rdi` is a parameter — so this has to have happened before the interface
+    // is read off the body.
+    naming::arguments_of_calls(&mut statements, convention);
     let naming = naming::recognise(&statements, convention);
     naming::apply(&naming, &mut statements);
 
@@ -180,6 +187,102 @@ pub fn decompile(request: &Request<'_>) -> Decompiled {
         naming: &naming,
         structure: &structure,
     })
+}
+
+/// Turns a jump that leaves the function into the call it is.
+///
+/// A compiler ends a function that finishes with a call by jumping to it
+/// rather than calling it: the frame is already gone, and the called function
+/// will return straight to this one's caller. `ls` does it —
+/// `jmp 1000 <fflush_unlocked@plt>` — and read as an ordinary branch it came
+/// out as `goto label_1000;`, naming a label that is nowhere in the function
+/// and cannot be. That is C which does not compile, and worse, it says nothing
+/// about what actually happens: the flow leaves for another function and does
+/// not come back here.
+///
+/// So a branch whose target is outside this body becomes the call it is,
+/// followed by the return that the jump performs on the callee's behalf.
+/// [`naming::apply`] then gives the return its value like any other.
+///
+/// Only unconditional branches. A conditional one that leaves the function is
+/// rare — a compiler tests locally and jumps away afterwards — and turning one
+/// into a call would need a statement this IR does not have, so it keeps its
+/// branch and [`emit`] gives it a label at the address it names.
+fn tail_calls(
+    statements: &mut [Vec<Statement>],
+    body: &[Instruction],
+    names: &Names<'_>,
+    convention: naming::Convention,
+) {
+    let first = body.first().map(|instruction| instruction.address);
+    let last = body.last().map(|instruction| instruction.address);
+    let (Some(first), Some(last)) = (first, last) else {
+        return;
+    };
+    let inside = |address: u64| {
+        (first..=last).contains(&address)
+            && body
+                .binary_search_by(|instruction| instruction.address.cmp(&address))
+                .is_ok()
+    };
+    let answer = convention
+        .return_register()
+        .map(|root| ir::Place::Register(ir::Register::new(root, ir::Width::Qword)));
+
+    for block in statements.iter_mut() {
+        let mut rewritten: Vec<Statement> = Vec::with_capacity(block.len() + 1);
+        for statement in block.drain(..) {
+            let callee = match &statement.effect {
+                Stmt::Branch {
+                    condition: None,
+                    target,
+                } if !inside(*target) => names
+                    .of(*target)
+                    .map_or(ir::Callee::Address(*target), ir::Callee::Named),
+                // `jmp *0x24c20` — the stub the linker put in front of an
+                // imported function, which is a tail call through the slot the
+                // loader fills in. Only where the file names that slot: a jump
+                // through a register is a switch table as often as it is a
+                // call, and this must not guess between the two.
+                Stmt::IndirectBranch(through) => {
+                    let Some(name) = slot_named(through, names) else {
+                        rewritten.push(statement);
+                        continue;
+                    };
+                    ir::Callee::Named(name)
+                }
+                _ => {
+                    rewritten.push(statement);
+                    continue;
+                }
+            };
+            let at = statement.address;
+            rewritten.push(Statement::new(
+                at,
+                Stmt::Call {
+                    result: answer.clone(),
+                    callee,
+                    arguments: Vec::new(),
+                },
+            ));
+            rewritten.push(Statement::new(at, Stmt::Return(None)));
+        }
+        *block = rewritten;
+    }
+}
+
+/// The imported name a jump goes through, when the file names it.
+fn slot_named(through: &Expr, names: &Names<'_>) -> Option<String> {
+    let ir::Expr::Read(place) = through else {
+        return None;
+    };
+    let ir::Place::Memory { address, .. } = place.as_ref() else {
+        return None;
+    };
+    let ir::Expr::Const { value, .. } = address.as_ref() else {
+        return None;
+    };
+    names.analysis.import_at(*value).map(ToOwned::to_owned)
 }
 
 /// What the file calls an address.
@@ -567,6 +670,103 @@ mod tests {
             decompiled.text().contains("/* not modelled:"),
             "the instructions themselves must still be there"
         );
+    }
+
+    /// A compiler ends a function that finishes with a call by jumping to it.
+    /// Read as an ordinary branch it came out as `goto label_1000;`, naming a
+    /// label that is nowhere in the function — C that does not compile, and
+    /// that says nothing about the flow leaving for good.
+    #[test]
+    fn a_jump_that_leaves_the_function_is_the_call_it_is() {
+        let body = function(&[
+            (0x1000, "mov 0x24f80,%rax"),
+            (0x1007, "mov (%rax),%rdi"),
+            (0x100a, "jmp 0x0000000000000fe0"),
+        ]);
+        let text = decompiled(&body).text();
+        assert!(
+            !text.contains("goto"),
+            "a tail call is a call, not a jump to nowhere:\n{text}"
+        );
+        assert!(
+            text.contains("function_fe0("),
+            "and it must name where it goes:\n{text}"
+        );
+        assert!(
+            text.contains("return "),
+            "the jump returns on the callee's behalf:\n{text}"
+        );
+    }
+
+    /// The distinction that makes the rule safe: a jump *inside* the function
+    /// is flow this decompiler structures, and must not be turned into a call.
+    #[test]
+    fn a_jump_inside_the_function_stays_flow() {
+        let body = function(&[
+            (0x1000, "mov $1,%eax"),
+            (0x1005, "jmp 0x000000000000100c"),
+            (0x100a, "mov $2,%eax"),
+            (0x100c, "ret"),
+        ]);
+        let text = decompiled(&body).text();
+        assert!(
+            !text.contains("function_100c"),
+            "a local jump is not a call:\n{text}"
+        );
+    }
+
+    /// Every `goto` the output prints must name a label the output has.
+    /// Anything else is C that does not compile, and a reader cannot tell
+    /// which of the two kinds of mistake they are looking at.
+    #[test]
+    fn no_goto_names_a_label_that_is_not_there() {
+        for fixture in crate::fixtures::all() {
+            let analysis = crate::analyse_bytes(
+                std::path::Path::new(fixture.label),
+                fixture.bytes.len() as u64,
+                &fixture.bytes,
+            );
+            let mut starts: Vec<u64> = analysis
+                .symbols
+                .iter()
+                .filter(|symbol| !symbol.imported)
+                .filter_map(|symbol| symbol.address)
+                .collect();
+            starts.sort_unstable();
+            starts.dedup();
+            for (index, start) in starts.iter().enumerate() {
+                let end = starts.get(index + 1).copied().unwrap_or(u64::MAX);
+                let span = analysis.instruction_span(*start..end);
+                let decompiled = decompile(&Request {
+                    analysis: &analysis,
+                    name: "function",
+                    start: *start,
+                    body: &analysis.instructions[span],
+                    file: Some(&fixture.bytes),
+                });
+                let text = decompiled.text();
+                for line in text.lines() {
+                    let Some(target) = line
+                        .trim()
+                        .strip_prefix("goto ")
+                        .or_else(|| line.split_once(") goto ").map(|(_, rest)| rest))
+                    else {
+                        continue;
+                    };
+                    // `goto *…` is a jump through a value, not a jump to a
+                    // label: it names no label and needs none.
+                    if target.starts_with('*') {
+                        continue;
+                    }
+                    let target = target.trim_end_matches(';');
+                    assert!(
+                        text.contains(&format!("{target}:")),
+                        "{} at {start:#x} jumps to {target}, which is nowhere in:\n{text}",
+                        fixture.label
+                    );
+                }
+            }
+        }
     }
 
     /// The loop is the shape a reader is looking for, and the whole reason the

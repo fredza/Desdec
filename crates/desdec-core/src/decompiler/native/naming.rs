@@ -18,6 +18,11 @@
 //! moved into them like anything else, and come out as
 //! `printf("%s: %d\n", name, count)`.
 //!
+//! That is also why [`arguments_of_calls`] runs before [`recognise`] rather
+//! than inside [`apply`]: a call reading `rdi` is the evidence that `rdi` is a
+//! parameter, so the arguments have to exist before the interface can be read
+//! off the body.
+//!
 //! # What is recovered, and how sure each part is
 //!
 //! - **The locals.** Exact. An access at a fixed offset from the frame or
@@ -30,10 +35,11 @@
 //!   The count is the longest run of them, because a convention fills them in
 //!   order.
 //! - **The arguments of a call.** A reading, and a weaker one: the registers
-//!   loaded before the call, in the order the convention names. A function
-//!   whose third argument happens to already hold the right value gets one
-//!   argument too few. This is the same evidence every decompiler without type
-//!   information works from, and it is right far more often than not.
+//!   loaded before the call, counted to the last one written rather than to
+//!   the first one skipped — a register the compiler did not touch is one that
+//!   already held what the call wanted. This is the same evidence every
+//!   decompiler without type information works from, and it is right far more
+//!   often than not.
 //! - **The return.** A reading. A function that writes the return register on
 //!   its way out returns something; one that does not returns `void`.
 
@@ -185,10 +191,10 @@ pub fn recognise(blocks: &[Vec<Statement>], convention: Convention) -> Naming {
 
 /// Rewrites a body in the names just recovered.
 ///
-/// Three changes, and each is what a later pass needs to have already
-/// happened: frame accesses become locals, calls read the arguments the
-/// convention says they take, and a return carries the value the function
-/// leaves behind.
+/// Two changes, and each is what a later pass needs to have already happened:
+/// frame accesses become the locals they name, and a return carries the value
+/// the function leaves behind. The arguments of each call are put in earlier
+/// still, by [`arguments_of_calls`], because the parameters are read off them.
 pub fn apply(naming: &Naming, blocks: &mut [Vec<Statement>]) {
     let slots: HashMap<(String, i64), u32> = naming
         .locals
@@ -206,7 +212,6 @@ pub fn apply(naming: &Naming, blocks: &mut [Vec<Statement>]) {
             rewrite_places(&mut statement.effect, &slots, &widths);
         }
     }
-    arguments_of_calls(blocks, naming.convention);
     if let Some(root) = naming
         .returns
         .and_then(|_| naming.convention.return_register())
@@ -686,7 +691,20 @@ fn is_frame_pointer(root: &str) -> bool {
 /// cautious answer but a wrong one. Address order is the executed order while
 /// nothing jumps into the middle of it, the same limit [`crate::operand`] and
 /// [`crate::analysis::stack`] draw and for the same reason.
-fn arguments_of_calls(blocks: &mut [Vec<Statement>], convention: Convention) {
+///
+/// The count is the **last** register loaded and not the first gap, which are
+/// different numbers whenever an argument arrives already in place. `ls` has
+/// a function that loads `rdx` and `rsi` and never touches `rdi`, because
+/// `rdi` still holds what its own caller put there; counting to the first gap
+/// called that `strerror_r()`, with no arguments at all, which is a confident
+/// wrong answer about a function of three. A register the compiler skipped is
+/// a register it did not need to write — the same reading [`incoming`] makes
+/// of the parameters, and for the same reason.
+///
+/// Run before [`recognise`], because a call reading `rdi` is the evidence that
+/// `rdi` is a parameter: the two questions would otherwise each be waiting for
+/// the other's answer.
+pub fn arguments_of_calls(blocks: &mut [Vec<Statement>], convention: Convention) {
     let registers = convention.argument_registers();
     if registers.is_empty() {
         return;
@@ -714,8 +732,8 @@ fn arguments_of_calls(blocks: &mut [Vec<Statement>], convention: Convention) {
                 Stmt::Call { .. } => {
                     let count = loaded
                         .iter()
-                        .position(Option::is_none)
-                        .unwrap_or(registers.len());
+                        .rposition(Option::is_some)
+                        .map_or(0, |last| last + 1);
                     let arguments: Vec<Expr> = (0..count)
                         .map(|position| {
                             Expr::register(Register::new(
@@ -936,8 +954,7 @@ mod tests {
                 },
             ),
         ]];
-        let naming = recognise(&blocks, Convention::SystemV);
-        apply(&naming, &mut blocks);
+        arguments_of_calls(&mut blocks, Convention::SystemV);
         let Stmt::Call { arguments, .. } = &blocks[0][2].effect else {
             panic!("the call survives");
         };
@@ -946,6 +963,72 @@ mod tests {
             arguments[0],
             Expr::register(Register::new("rdi", Width::Qword))
         );
+    }
+
+    /// A register the compiler skipped is one it did not need to write, not
+    /// one the call does not take. `ls` has a function that loads `rdx` and
+    /// `rsi` and never touches `rdi`, because `rdi` still holds what its own
+    /// caller put there — and counting to the first gap called that
+    /// `strerror_r()`, a confident wrong answer about a function of three.
+    #[test]
+    fn an_argument_that_arrives_already_in_place_is_still_an_argument() {
+        let mut blocks = vec![vec![
+            assign(register("rdx", Width::Dword), Expr::constant(0x400, Width::Dword)),
+            assign(
+                register("rsi", Width::Qword),
+                Expr::read(frame(-0x408)),
+            ),
+            Statement::new(
+                0x20,
+                Stmt::Call {
+                    result: Some(register("rax", Width::Qword)),
+                    callee: Callee::Named("strerror_r".to_owned()),
+                    arguments: Vec::new(),
+                },
+            ),
+        ]];
+        arguments_of_calls(&mut blocks, Convention::SystemV);
+        let Stmt::Call { arguments, .. } = &blocks[0][2].effect else {
+            panic!("the call survives");
+        };
+        assert_eq!(
+            arguments.len(),
+            3,
+            "rdx is the third register, so the call takes three"
+        );
+        assert_eq!(
+            arguments[0],
+            Expr::register(Register::new("rdi", Width::Qword)),
+            "the one that was never written is the one the caller filled in"
+        );
+    }
+
+    /// And the reading must not run the other way: a call that loads only the
+    /// first register takes one argument, not six.
+    #[test]
+    fn a_call_that_loads_only_the_first_register_takes_one_argument() {
+        let mut blocks = vec![vec![
+            assign(
+                register("rdi", Width::Qword),
+                Expr::Symbol {
+                    name: "message".to_owned(),
+                    address: 0x2000,
+                },
+            ),
+            Statement::new(
+                0x20,
+                Stmt::Call {
+                    result: Some(register("rax", Width::Qword)),
+                    callee: Callee::Named("puts".to_owned()),
+                    arguments: Vec::new(),
+                },
+            ),
+        ]];
+        arguments_of_calls(&mut blocks, Convention::SystemV);
+        let Stmt::Call { arguments, .. } = &blocks[0][1].effect else {
+            panic!("the call survives");
+        };
+        assert_eq!(arguments.len(), 1);
     }
 
     /// A function that never touches the return register returns `void`, and
