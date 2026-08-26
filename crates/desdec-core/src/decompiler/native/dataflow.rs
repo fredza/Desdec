@@ -247,6 +247,19 @@ fn substitute_within(statements: &mut Vec<Statement>) {
                 // wherever they are read.
                 if !matches!(place, Place::Local { .. }) {
                     let remaining = reads_of(&statements[index + 1..], &place);
+                    // A definition that reads the place it defines —
+                    // `r8 = r8 + 1`, which is every counter there is — cannot
+                    // be moved into a read below it. The assignment *stays*:
+                    // the register is live further on, nothing removes the
+                    // line, and by the time the substituted text is reached
+                    // `r8` already holds the new value. `r8 = r8 + 1;`
+                    // followed by `if (r8 + 1 == 7)` tests the wrong number
+                    // and reads exactly like code that tests the right one,
+                    // which is the one kind of wrong output this decompiler
+                    // must never produce. The value of a call is the
+                    // exception below, because there the statement goes with
+                    // it and nothing is left behind to have changed.
+                    let reads_itself = value.depends_on(&place);
                     // A value that has effects of its own — one holding a call
                     // — moves only where it is read exactly once, and the
                     // statement it came from is removed with it. Written out
@@ -257,7 +270,7 @@ fn substitute_within(statements: &mut Vec<Statement>) {
                     let moves = if value.has_effects() {
                         remaining == 1
                     } else {
-                        true
+                        !reads_itself
                     };
                     if moves {
                         let from = value.has_effects().then_some(index);

@@ -593,6 +593,45 @@ mod tests {
         );
     }
 
+    /// A definition that reads the place it defines cannot be moved into a
+    /// read below it. Found on a crackme whose key counter wrapped at seven:
+    /// the output said `r8 = r8 + 1;` and then `if (r8 + 1 == 7)`, which tests
+    /// the wrong number — the assignment stays, so by that line `r8` already
+    /// holds the new value. Wrong C that reads exactly like right C is the one
+    /// kind of output this decompiler must never produce, and a reader
+    /// following those two lines derives the wrong answer.
+    #[test]
+    fn a_register_that_increments_itself_is_not_substituted_into_the_test_below_it() {
+        // The counter has to come from *outside* the block for the bug to
+        // exist at all: where the previous value is known here, the increment
+        // is substituted with that value and says something true. It is the
+        // loop that makes `r8` an unknown the block adds one to.
+        let body = function(&[
+            (0x1000, "xor %r8,%r8"),
+            (0x1003, "cmp $0xA,%rsi"),
+            (0x1007, "je 0x0000000000001020"),
+            (0x1009, "inc %rsi"),
+            (0x100c, "inc %r8"),
+            (0x100f, "cmp $7,%r8"),
+            (0x1013, "jne 0x0000000000001003"),
+            (0x1015, "xor %r8,%r8"),
+            (0x1018, "jmp 0x0000000000001003"),
+            (0x1020, "ret"),
+        ]);
+        let text = decompiled(&body).text();
+        // The increment itself is expected — `r8 = r8 + 1;` is the line the
+        // instruction is. What must not appear is that expression *inside the
+        // test*, where the register has already been incremented.
+        assert!(
+            !text.contains("if (r8 + 1"),
+            "the increment must not be substituted into the test that follows it:\n{text}"
+        );
+        assert!(
+            text.contains("if (r8 != 7)") || text.contains("if (r8 == 7)"),
+            "the test is on the register as it stands by then:\n{text}"
+        );
+    }
+
     /// Every line that came from an instruction knows which one — the thing no
     /// external engine gives, and what lets a click go somewhere.
     #[test]
