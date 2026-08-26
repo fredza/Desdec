@@ -35,7 +35,7 @@ deviner.
 | **Chaînes** | Les chaînes imprimables avec leur décalage et leur encodage, filtrables, et les instructions qui les référencent. |
 | **Références** | Ce qui nomme une adresse, pour celle devant laquelle vous êtes. Les appels et les sauts, et ce qu'aucun listing ne montre : l'adresse qu'un AArch64 construit en deux instructions — sans quoi un tel fichier n'a aucune référence à ses données —, les cas d'un `switch` lus dans la table que consulte son `jmp *%rax`, et les vrais appelants d'une fonction importée, derrière le relais que l'éditeur de liens a mis devant elle. Chaque ligne nomme l'endroit où elle se trouve — `main+0x2c` — et dit de quelle force est la réponse : une instruction exacte, une arrivée par une table ou par un relais, ou un mot de données qui n'est peut-être qu'un nombre qui y ressemble. |
 | **Désassemblage** | Listings x86, x86-64 (iced-x86) et AArch64 (Capstone), avec édition des octets d'une instruction. Un clic droit explique ce que désigne l'opérande et ce qui a écrit en dernier dans chaque registre nommé. La barre porte les drapeaux de condition de la ligne sélectionnée — ceux qu'elle établit, ceux qu'elle consulte, et ceux dont les octets fixent la valeur quoi qu'il se soit passé avant — et une ligne sur laquelle vous avez écrit est marquée en marge. |
-| **Pseudo-code** | Une traduction prudente du flot décodé, intégrée à l'outil — ou la sortie de Rizin/rz-ghidra ou de RetDec si l'un d'eux est installé et choisi. |
+| **Décompilation** | Du C, reconstruit par Desdec lui-même et sans rien à installer : le cadre de pile devient des variables nommées, la convention d'appel donne les paramètres et les arguments de chaque appel, `cmp` et `jle` deviennent `if (i <= n)`, et les arcs retour deviennent des boucles. Chaque ligne connaît l'instruction dont elle vient, donc un clic l'ouvre — ce qu'aucun moteur externe ne propose, faute de publier une correspondance ligne-adresse. Ce qui n'est pas modélisé reste en commentaire avec son assembleur, et la carte dit quelle part du corps a été comprise. En dessous, la traduction ligne à ligne du binaire entier ; et à la place des deux, la sortie de Rizin/rz-ghidra ou de RetDec si l'un d'eux est installé et choisi. |
 | **Machine** | Un processeur émulé, éteint tant que vous n’en demandez pas un. Registres, mémoire, pile, points d’arrêt, surveillances, pas à pas détaillé/principal/sortant, exécution jusqu’au curseur et pile des appels — autant de mesures, puisque quelque chose s’est réellement exécuté. Cela tourne sur un processeur que Desdec construit, jamais sur le vôtre : aucun octet du fichier n’atteint le processeur de votre machine. À un appel système, la vue donne un relevé de type `strace` (ABI, numéro, nom fiable et registres d’arguments) sans lancer l’appel ni lui inventer de résultat ; Linux x86/x86-64, macOS x86-64 et Windows x86-64 sont distingués. Une bibliothèque absente ou une instruction non émulée arrêtent aussi la course et sont nommées plutôt que devinées. x86 et x86-64. Les registres XMM sont visibles, et les mouvements SSE 128 bits usuels (`movaps`, `movups`, `movdqa`, `movdqu`) ainsi que les XOR (`pxor`, `xorps`) s’exécutent avec leur état exact, y compris en reculant ; les instructions YMM/ZMM plus larges restent arrêtées et nommées. Les points d'arrêt portent des conditions (`rcx == 4`, `[rdi]:1 != 0`) et un nombre de passages à laisser filer, de sorte qu'un point d'arrêt dans une boucle de dix mille tours vaut la peine d'être posé. Les emplacements du cadre — ce qu'un débogueur appelle les variables locales — sont lus du code de la fonction où la course s'est arrêtée : chaque `-0x14(%rbp)` et chaque `0x8(%rsp)` qu'elle touche, avec sa largeur, le nombre de lectures et d'écritures, et ce que la course y a effectivement mis. Et la course va **en arrière** : l'état d'avant chaque instruction est conservé, donc reculer le restaure exactement — y compris pour sortir d'une faute, ce qu'un débogueur attaché à un processus ne peut pas faire du tout. |
 | **Graphe** | Une fonction dessinée comme son flot de contrôle : ses blocs de base, et les flèches entre eux avec leur raison — la branche prise, celle qui ne l'est pas, un saut, la suite du listing. Un `ret` va quelque part de parfaitement connu et n'a donc pas de flèche ; un saut par registre n'en a pas non plus, et c'est dit autrement, parce que les deux ne sont pas la même chose. |
 | **Structures** | Ce que veulent dire les octets à une adresse. Un fichier ne dit presque rien de ses données : le listing écrit `mov 0x18(%rbx),%rax`, et ce que sont ces huit octets est votre savoir, pas le sien. Écrivez-le une fois en C — structures, unions, énumérations, `typedef`, pointeurs, tableaux, champs de bits ; un en-tête se colle tel quel — et il s'applique sur la mémoire de la Machine quand elle tourne, sur les octets du fichier sinon. La disposition est calculée contre la forme du fichier ouvert, y compris le `long` de quatre octets qu'un PE 64 bits emploie là où un ELF en emploie huit. Les structures du format du fichier — `Elf64_Ehdr`, `IMAGE_DOS_HEADER`, `mach_header_64` et ce qui va avec — s'ajoutent d'un bouton, et se lisent au décalage du fichier, seule façon d'atteindre un en-tête qu'aucune section ne mappe. Et une structure se **déduit du code qui la parcourt** : chaque `0x18(%rbx)` d'une fonction est un membre à cet endroit, le reste est nommé comme remplissage, et ce que le code ne dit pas — la longueur d'un tableau, la largeur d'un accès — est rapporté à part plutôt qu'inventé. |
@@ -69,9 +69,13 @@ référencées.
 
 ![La vue Chaînes, avec son filtre et ses deux restrictions](docs/screenshots/strings.png)
 
-**Décompilateur externe.** Rizin avec rz-ghidra, ou RetDec, quand l'un d'eux
-est installé et choisi — le moteur qui a produit le texte est toujours nommé,
-et le désassemblage correspondant est à un bouton de là.
+**Décompilateur.** Celui de Desdec, en six passes sur l'analyse qu'il fait
+déjà — l'élévation, la convention d'appel, la substitution et la suppression
+des écritures mortes, les dominateurs et les arcs retour, puis le C. Il ne
+dépend que du fichier ouvert, répond en une milliseconde environ par
+fonction, et n'exécute aucun octet. Et Rizin avec rz-ghidra, ou RetDec, quand
+l'un d'eux est installé et choisi — le moteur qui a produit le texte est
+toujours nommé, et le désassemblage correspondant est à un bouton de là.
 
 ![Du pseudo-code produit par rizin et rz-ghidra, le moteur nommé au-dessus](docs/screenshots/decompile.png)
 
@@ -133,6 +137,25 @@ cargo run --release -p desdec-app -- /bin/ls # ou analyser un fichier tout de su
 
 On peut aussi déposer un binaire sur la fenêtre, ou utiliser **Ouvrir un
 binaire** (`Ctrl+O`).
+
+Pour installer ce que le dépôt construit — le binaire sur votre `PATH`, son
+icône et une entrée de menu qu'un dock peut épingler — et pour le retirer :
+
+```sh
+scripts/insl.sh              # ~/.local/bin/desdec, icône, entrée de menu, ligne PATH
+scripts/insl.sh --build      # recompile d'abord, même si target/release en a un
+scripts/unsl.sh --dry-run    # dit ce qui partirait, ne retire rien
+scripts/unsl.sh              # le binaire, l'icône, l'entrée de menu et cette ligne PATH
+scripts/unsl.sh --purge      # et les notes, préférences et le catalogue de bibliothèques
+```
+
+Les deux acceptent `--prefix` et `--name`, de sorte qu'une compilation de
+développement peut cohabiter avec une release installée. `insl.sh` vérifie que
+ce qu'il installe est bien un ELF 64 bits pour cette machine, et `unsl.sh`
+refuse de retirer ce qui n'est pas Desdec — `--name ls --prefix /usr/bin` ne
+retire rien. Vos notes et préférences survivent à une désinstallation
+ordinaire ; `--purge` est le drapeau qui dit le contraire, et il nomme chaque
+répertoire qu'il vide.
 
 Des archives précompilées pour Windows x86-64, macOS Apple Silicon et Linux
 x86-64 sont publiées par le workflow `Platform binaries` à chaque étiquette

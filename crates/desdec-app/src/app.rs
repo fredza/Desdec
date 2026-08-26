@@ -567,6 +567,19 @@ pub struct Assistance {
     pub availability: Option<assistant::Availability>,
 }
 
+/// The C that Desdec's own decompiler last produced, and what it was for.
+///
+/// Kept rather than recomputed each frame — a function of a few hundred
+/// instructions decompiles in about a millisecond, which is fine once and not
+/// fine sixty times a second — and thrown away when the selection moves, so
+/// nothing stale is ever shown under a different name.
+#[derive(Default)]
+pub struct NativeDecompilation {
+    /// The function the text belongs to.
+    pub source: Option<u64>,
+    pub result: Option<desdec_core::decompiler::native::emit::Decompiled>,
+}
+
 /// Result of the selected external decompiler.
 #[derive(Default)]
 pub struct ExternalDecompilation {
@@ -768,6 +781,8 @@ pub struct DesdecApp {
     pub file_bytes: Vec<u8>,
     /// Text produced by the selected external decompiler.
     pub external: ExternalDecompilation,
+    /// C produced by Desdec's own decompiler, for the selected function.
+    pub native: NativeDecompilation,
     pub yara: YaraScan,
     /// The assistant's last reading, and the request behind it.
     pub assistance: Assistance,
@@ -939,12 +954,48 @@ impl DesdecApp {
         self.request_decompilation_without_cache(ctx, self.selected_function);
     }
 
+    /// Decompiles a function with Desdec's own decompiler, keeping the result.
+    ///
+    /// Returns `None` for a selection that names no function of this binary —
+    /// which is what a stripped file with nothing decoded gives — rather than
+    /// an empty body that would read as a function with nothing in it.
+    pub fn native_decompilation(
+        &mut self,
+        address: u64,
+    ) -> Option<&desdec_core::decompiler::native::emit::Decompiled> {
+        if self.native.source != Some(address) {
+            let analysis = self.analysis.as_ref()?;
+            let function = self
+                .functions
+                .iter()
+                .find(|function| function.start == address)?;
+            let body = function.body(analysis);
+            self.native.result = Some(desdec_core::decompiler::native::decompile(
+                &desdec_core::decompiler::native::Request {
+                    analysis,
+                    name: &function.name,
+                    start: function.start,
+                    body,
+                    file: Some(&self.file_bytes),
+                },
+            ));
+            self.native.source = Some(address);
+        }
+        self.native.result.as_ref()
+    }
+
     /// What the pseudo-code pane currently represents, ready for a deliberate
     /// copy action. The local translation shares the analysis instruction cap
     /// with the pane, rather than creating a second unbounded operation.
     fn displayed_pseudocode(&self) -> Option<String> {
         if let Some(text) = &self.external.text {
             return Some(text.clone());
+        }
+        // What the view is showing: the decompiler's own C, for the function
+        // the reader is looking at. Copying the line-by-line translation of a
+        // whole binary from under it would be a different thing entirely.
+        if let Some(decompiled) = &self.native.result {
+            return Some(decompiled.text());
         }
         let analysis = self.analysis.as_ref()?;
         if analysis.instructions.is_empty() {
@@ -2837,6 +2888,7 @@ impl DesdecApp {
         self.file_bytes.clear();
         self.export_report = None;
         self.external = ExternalDecompilation::default();
+        self.native = NativeDecompilation::default();
         self.yara = YaraScan::default();
         // An answer about a file that is no longer open reads as an answer
         // about the next one.

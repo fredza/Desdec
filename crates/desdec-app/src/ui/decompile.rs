@@ -18,6 +18,14 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
         let answered = external(app, ui);
         if !answered {
             ui.add_space(12.0);
+            // Said between the engine that did not answer and the decompiler
+            // standing in for it, which is where the reader is looking when
+            // they want to know why the text below is not the one they chose.
+            ui.small(
+                egui::RichText::new(text(app.preferences.language, Text::BuiltinFallbackNote))
+                    .color(MUTED),
+            );
+            ui.add_space(4.0);
             builtin(app, ui);
         }
         show_assembly_preview(app, ui.ctx());
@@ -27,19 +35,135 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) {
     show_assembly_preview(app, ui.ctx());
 }
 
-/// The translation this tool makes itself, from the flow it decoded.
+/// What this tool makes itself: its own decompiler first, and under it the
+/// line-by-line translation the decompiler grew out of.
+///
+/// Both are kept and neither is hidden. The C is what a reader wants nine
+/// times in ten; the line-by-line translation is what answers the tenth, where
+/// an instruction was not modelled or the shape of the flow is itself the
+/// question — and it is the only one of the two that shows a whole binary
+/// rather than one function.
 fn builtin(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    native(app, ui);
+    ui.add_space(8.0);
+    line_by_line(app, ui);
+}
+
+/// Desdec's own decompiler: the C, and every line knowing its instruction.
+fn native(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    let language = app.preferences.language;
+    let actions = PseudocodeActions::from_app(app);
+    let functions = decompilable_functions(app);
+    if app.selected_function.is_none() {
+        app.selected_function = default_function(&functions);
+    }
+    let Some(address) = app.selected_function else {
+        return;
+    };
+    if app.native_decompilation(address).is_none() {
+        return;
+    }
+
+    // Taken out for the duration of the drawing, so the rows can be read while
+    // the picker below them writes to the application. Put back at the end,
+    // which is what keeps the result from being computed again next frame.
+    let decompiled = app.native.result.take();
+    let mut clicked: Option<u64> = None;
+    let mut chosen = None;
+    // Bounded rather than filling what is left: the line-by-line translation
+    // sits below this card, and a listing that takes the whole panel puts it
+    // off the bottom of the screen where nothing tells the reader it is there.
+    let room = (ui.available_height() * 0.62).max(160.0);
+    card(ui, text(language, Text::DecompiledC), |ui| {
+        let Some(decompiled) = decompiled.as_ref() else {
+            return;
+        };
+        ui.horizontal(|ui| {
+            ui.small(text(language, Text::Function));
+            function_picker(app, ui, &functions, language);
+            if let Some(share) = decompiled.coverage() {
+                ui.separator();
+                // What fraction of the body this is a reading of. Said next to
+                // the text rather than buried: C with a hole in it can be
+                // acted on, C that looks complete and is not cannot.
+                ui.small(
+                    egui::RichText::new(format!(
+                        "{:.0}% {}",
+                        share * 100.0,
+                        text(language, Text::ModelledShare)
+                    ))
+                    .color(if share > 0.95 { MUTED } else { ERROR }),
+                );
+            }
+        });
+        let help = ui.small(
+            egui::RichText::new(text(language, Text::NativeDecompilerHelp)).color(MUTED),
+        );
+        help.context_menu(|ui| {
+            chosen = pseudocode_menu(ui, language, actions);
+        });
+        if decompiled.unmodelled > 0 {
+            ui.small(egui::RichText::new(text(language, Text::UnmodelledNote)).color(MUTED));
+        }
+        ui.add_space(6.0);
+
+        // Only the visible rows are laid out, as everywhere else in this
+        // program: a large function is thousands of lines and a widget per
+        // line costs more each frame than the decompilation itself.
+        let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        egui::ScrollArea::both()
+            .id_salt("native_decompilation")
+            .max_height(room)
+            .auto_shrink([false, true])
+            .show_rows(ui, row_height, decompiled.lines.len(), |ui, rows| {
+                for line in &decompiled.lines[rows] {
+                    let response = ui.add(
+                        egui::Label::new(syntax::pseudo_code(
+                            ui,
+                            &line.rendered(),
+                            egui::Color32::TRANSPARENT,
+                        ))
+                        .sense(if line.address.is_some() {
+                            egui::Sense::click()
+                        } else {
+                            egui::Sense::hover()
+                        }),
+                    );
+                    if let Some(at) = line.address {
+                        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if response.clicked() {
+                            clicked = Some(at);
+                        }
+                        response.context_menu(|ui| {
+                            chosen = pseudocode_menu(ui, language, actions);
+                        });
+                    }
+                }
+            });
+    });
+    app.native.result = decompiled;
+
+    // The one thing no external engine offers: the line knows its instruction,
+    // so a click on it can go there.
+    if let Some(at) = clicked {
+        app.selected_instruction = Some(at);
+        app.pseudocode_assembly = Some(PseudocodeAssembly::Instruction(at));
+        app.dialogs.open(Dialog::Assembly);
+    }
+    if let Some(command) = chosen {
+        app.run_command(ui.ctx(), command);
+    }
+}
+
+/// The translation this tool makes itself, one instruction at a time.
+fn line_by_line(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let language = app.preferences.language;
     let actions = PseudocodeActions::from_app(app);
     let Some(analysis) = &app.analysis else {
         return;
     };
     let mut chosen = None;
-    card(ui, text(language, Text::PseudoCode), |ui| {
-        if app.preferences.decompiler.engine().is_some() {
-            ui.small(egui::RichText::new(text(language, Text::BuiltinFallbackNote)).color(MUTED));
-            ui.add_space(4.0);
-        }
+    card(ui, text(language, Text::LineByLineTranslation), |ui| {
         let help = ui.small(text(language, Text::PseudoCodeHelp));
         help.context_menu(|ui| {
             chosen = pseudocode_menu(ui, language, actions);
@@ -746,6 +870,63 @@ mod tests {
     };
     use eframe::egui;
 
+    /// The view's whole point: C, not a listing with C punctuation.
+    ///
+    /// Says nothing about *which* C, because the reference binary is the test
+    /// executable itself and that is a different program on every machine.
+    /// What is checked is what holds whatever it decompiles: a signature, a
+    /// body, and the decompiler's own name on the card.
+    #[test]
+    fn the_view_shows_reconstructed_c_and_not_only_a_translation() {
+        let ctx = egui::Context::default();
+        let mut app = crate::testing::opened_app(WorkspaceView::Decompile);
+        app.preferences.language = Language::French;
+        app.preferences.decompiler = DecompilerPreference::Builtin;
+
+        let output = ctx.run(window_input(), |ctx| {
+            views::show_central_panel(&mut app, ctx);
+        });
+
+        let drawn = drawn_text(&output.shapes);
+        assert!(
+            drawn.contains(text(Language::French, Text::DecompiledC)),
+            "the decompiler's own output must be named as what it is"
+        );
+        assert!(
+            drawn.contains('{') && drawn.contains('}'),
+            "a decompiled function has a body"
+        );
+        // And the translation it grew out of is still there: it is the only
+        // one of the two that shows a whole binary rather than one function.
+        assert!(
+            drawn.contains(text(Language::French, Text::LineByLineTranslation)),
+            "the line-by-line translation must not have been taken away"
+        );
+    }
+
+    /// The one thing no external engine offers. A line that came from an
+    /// instruction carries its address, which is what lets a click go there.
+    #[test]
+    fn the_lines_of_the_c_know_which_instruction_they_came_from() {
+        let mut app = crate::testing::opened_app(WorkspaceView::Decompile);
+        let Some(address) = app.functions.first().map(|function| function.start) else {
+            // A host whose executable names no function at all: there is
+            // nothing to decompile and nothing this test can say.
+            return;
+        };
+        let Some(decompiled) = app.native_decompilation(address) else {
+            return;
+        };
+        assert!(
+            decompiled
+                .lines
+                .iter()
+                .any(|line| line.address.is_some()),
+            "no line of {} maps back to an instruction",
+            decompiled.name
+        );
+    }
+
     /// A card titled "local pseudocode" that says "produced by `RetDec`"
     /// underneath contradicts itself on the face of it.
     #[test]
@@ -776,6 +957,15 @@ mod tests {
         let mut app = crate::testing::opened_app(WorkspaceView::Decompile);
         app.preferences.language = Language::French;
         app.preferences.decompiler = DecompilerPreference::RetDec;
+        // The failure has to be one the view will not go and retry, or this
+        // stops being a test of the fallback and becomes a test of whether
+        // RetDec happens to be installed on the machine running it — which on
+        // a machine where it is, it was: the view started the engine, drew
+        // "decompiling…", and the fallback never appeared. Naming the engine
+        // and the function the error belongs to is what says "this has already
+        // been asked and this is the answer".
+        app.selected_function = app.functions.first().map(|function| function.start);
+        app.external.source = Some((DecompilerPreference::RetDec, app.selected_function));
         app.external.error = Some("Ce décompilateur n’est pas installé.".to_owned());
 
         let output = ctx.run(window_input(), |ctx| {

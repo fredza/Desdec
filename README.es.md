@@ -34,7 +34,7 @@ dice. Cuando no lo sabe, también lo dice, en lugar de adivinar.
 | **Cadenas** | Las cadenas imprimibles con su desplazamiento y su codificación, filtrables, y las instrucciones que las referencian. |
 | **Referencias** | Lo que nombra una dirección, la que tenga delante. Las llamadas y los saltos, y lo que ningún listado muestra: la dirección que un AArch64 construye en dos instrucciones — sin lo cual un archivo así no tiene ninguna referencia a sus datos —, los casos de un `switch` leídos en la tabla que consulta su `jmp *%rax`, y quienes llaman de verdad a una función importada, detrás del enlace que el enlazador puso delante. Cada fila nombra el lugar donde está — `main+0x2c` — y dice con qué fuerza responde: una instrucción exacta, una llegada por una tabla o por un enlace, o una palabra de datos que quizá solo sea un número que lo parece. |
 | **Desensamblado** | Listados x86, x86-64 (iced-x86) y AArch64 (Capstone), con edición de los bytes de una instrucción. Con el botón derecho se explica qué designa el operando y qué escribió por última vez en cada registro nombrado. La barra lleva las banderas de condición de la fila seleccionada —las que establece, las que consulta, y aquellas cuyo valor fijan los bytes pasara lo que pasara antes— y una fila sobre la que usted ha escrito se marca al margen. |
-| **Pseudocódigo** | Una traducción prudente del flujo decodificado, integrada en la herramienta —o la salida de Rizin/rz-ghidra o de RetDec si alguno está instalado y elegido. |
+| **Decompilación** | Código C, reconstruido por el propio Desdec y sin nada que instalar: el marco de pila se convierte en variables con nombre, la convención de llamada da los parámetros y los argumentos de cada llamada, `cmp` y `jle` se convierten en `if (i <= n)`, y los arcos de retorno en bucles. Cada línea conoce la instrucción de la que viene, así que un clic la abre —algo que ningún motor externo ofrece, porque ninguno publica una correspondencia línea-dirección. Lo que no está modelado queda como comentario con su propio ensamblador, y la tarjeta dice qué parte del cuerpo se entendió. Debajo, la traducción línea por línea del binario entero; y en lugar de ambas, la salida de Rizin/rz-ghidra o de RetDec si alguno está instalado y elegido. |
 | **Máquina** | Un procesador emulado, apagado hasta que pida uno. Registros, memoria, pila, puntos de interrupción, vigilancias, paso a paso detallado/por procedimientos/para salir, ejecución hasta el cursor y pila de llamadas: todo ello mediciones, porque algo se ejecutó de verdad. Corre en un procesador que Desdec construye, nunca en el suyo: ningún byte del archivo llega al procesador de su máquina, y una llamada al sistema, una biblioteca ausente o una instrucción no emulada detienen la ejecución y se nombran en lugar de adivinarse. x86 y x86-64. Los registros XMM son visibles, y los movimientos SSE comunes de 128 bits (`movaps`, `movups`, `movdqa`, `movdqu`) y los XOR (`pxor`, `xorps`) se ejecutan con estado exacto, también al retroceder; las instrucciones YMM/ZMM más anchas siguen deteniéndose y se nombran. Los puntos de interrupción llevan condiciones (`rcx == 4`, `[rdi]:1 != 0`) y un número de pasos a dejar pasar, de modo que uno dentro de un bucle de diez mil vueltas vale la pena. Los espacios del marco — lo que un depurador llama variables locales — se leen del código de la función donde se detuvo la ejecución: cada `-0x14(%rbp)` y cada `0x8(%rsp)` que toca, con su ancho, cuántas veces se lee y se escribe, y lo que la ejecución puso realmente allí. Y la ejecución va **hacia atrás**: se conserva el estado anterior a cada instrucción, así que retroceder lo restaura exactamente — incluso para salir de un fallo, algo que un depurador conectado a un proceso no puede hacer en absoluto. |
 | **Grafo** | Una función dibujada como su flujo de control: sus bloques básicos, y las flechas entre ellos con su razón — la rama tomada, la que no lo es, un salto, la continuación del listado. Un `ret` va a un lugar perfectamente conocido y por eso no tiene flecha; un salto por registro tampoco la tiene, y se dice de otro modo, porque las dos cosas no son lo mismo. |
 | **Estructuras** | Qué significan los bytes en una dirección. Un archivo no dice casi nada sobre sus propios datos: el listado escribe `mov 0x18(%rbx),%rax`, y qué son esos ocho bytes es su conocimiento, no el suyo. Escríbalo una vez en C — estructuras, uniones, enumeraciones, `typedef`, punteros, arreglos, campos de bits; un encabezado se pega tal cual — y se aplica sobre la memoria de la Máquina mientras corre, y sobre los bytes del archivo si no. La disposición se calcula contra la forma del archivo abierto, incluido el `long` de cuatro bytes que un PE de 64 bits usa donde un ELF usa ocho. Las estructuras del formato del archivo — `Elf64_Ehdr`, `IMAGE_DOS_HEADER`, `mach_header_64` y lo que las acompaña — se añaden con un botón, y se leen en el desplazamiento del archivo, única manera de alcanzar un encabezado que ninguna sección mapea. Y una estructura se **deduce del código que la recorre**: cada `0x18(%rbx)` de una función es un miembro en ese desplazamiento, lo que nada toca se nombra como relleno, y lo que el código no dice — la longitud de un arreglo, el ancho de un acceso — se informa aparte en vez de inventarse. |
@@ -70,9 +70,13 @@ filtrable, y reducible a las que no están mapeadas o nunca se referencian.
 
 ![La vista Cadenas, con su filtro y sus dos restricciones](docs/screenshots/strings.png)
 
-**Decompilador externo.** Rizin con rz-ghidra, o RetDec, cuando alguno está
-instalado y elegido —el motor que produjo el texto siempre se nombra, y el
-desensamblado correspondiente está a un botón.
+**Decompilador.** El propio de Desdec, en seis pasadas sobre el análisis que
+ya hace —el levantamiento, la convención de llamada, la sustitución y la
+eliminación de escrituras muertas, los dominadores y los arcos de retorno, y
+luego el C. Solo depende del archivo abierto, responde en aproximadamente un
+milisegundo por función, y no ejecuta ningún byte. Y Rizin con rz-ghidra, o
+RetDec, cuando alguno está instalado y elegido —el motor que produjo el texto
+siempre se nombra, y el desensamblado correspondiente está a un botón.
 
 ![Pseudocódigo producido por rizin y rz-ghidra, con el motor nombrado encima](docs/screenshots/decompile.png)
 
@@ -135,6 +139,25 @@ cargo run --release -p desdec-app -- /bin/ls # o analizar un archivo de inmediat
 
 También se puede arrastrar un binario a la ventana, o usar **Abrir un binario**
 (`Ctrl+O`).
+
+Para instalar lo que compila una copia del repositorio —el binario en su
+`PATH`, su icono y una entrada de menú que un dock puede anclar— y para
+retirarlo:
+
+```sh
+scripts/insl.sh              # ~/.local/bin/desdec, icono, entrada de menú, línea PATH
+scripts/insl.sh --build      # recompila primero, aunque target/release tenga uno
+scripts/unsl.sh --dry-run    # dice qué se quitaría, no quita nada
+scripts/unsl.sh              # el binario, el icono, la entrada de menú y esa línea PATH
+scripts/unsl.sh --purge      # y las notas, preferencias y el catálogo de bibliotecas
+```
+
+Ambos aceptan `--prefix` y `--name`, de modo que una compilación de desarrollo
+puede convivir con una versión instalada. `insl.sh` comprueba que lo que va a
+instalar es realmente un ELF de 64 bits para esta máquina, y `unsl.sh` se niega
+a quitar lo que no es Desdec —`--name ls --prefix /usr/bin` no quita nada. Sus
+notas y preferencias sobreviven a una desinstalación ordinaria; `--purge` es la
+opción que dice lo contrario, y nombra cada directorio que vacía.
 
 El flujo de trabajo `Platform binaries` publica archivos precompilados para
 Windows x86-64, macOS Apple Silicon y Linux x86-64 en cada etiqueta que empieza

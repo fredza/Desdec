@@ -572,6 +572,27 @@ translations! {
         "The chosen engine produced nothing. Here is the built-in translation, which depends on nothing being installed.",
         "El motor elegido no produjo nada. Esta es la traducción integrada, que no depende de ninguna instalación.",
     ],
+    DecompiledC => ["Code C reconstruit", "Reconstructed C", "Código C reconstruido"],
+    NativeDecompilerHelp => [
+        "Décompilé par Desdec, sans rien d’installé : la pile, les conditions et les boucles sont reconstruites, et chaque ligne renvoie à son instruction. Clic sur une ligne pour l’ouvrir dans le désassemblage.",
+        "Decompiled by Desdec, with nothing installed: the frame, the conditions and the loops are recovered, and every line points back at its instruction. Click a line to open it in the disassembly.",
+        "Descompilado por Desdec, sin nada instalado: la pila, las condiciones y los bucles se reconstruyen, y cada línea remite a su instrucción. Clic en una línea para abrirla en el ensamblado.",
+    ],
+    ModelledShare => [
+        "des instructions sont modélisées",
+        "of the instructions are modelled",
+        "de las instrucciones están modeladas",
+    ],
+    UnmodelledNote => [
+        "Ce qui n’est pas modélisé reste en commentaire, avec son assembleur : rien n’est deviné ni passé sous silence.",
+        "What is not modelled stays as a comment carrying its own assembly: nothing is guessed at and nothing is left out.",
+        "Lo que no está modelado queda como comentario con su propio ensamblador: nada se adivina ni se omite.",
+    ],
+    LineByLineTranslation => [
+        "Traduction ligne à ligne",
+        "Line-by-line translation",
+        "Traducción línea por línea",
+    ],
     PseudoCodeHelp => [
         "Traduction déterministe du flot observé, sans code source inventé.",
         "Deterministic translation of the observed flow, with no invented source.",

@@ -34,6 +34,14 @@ what keeps it usable as a library and testable without a window.
   file gives evidence of, what an operand designates, what last wrote a
   register, which condition flags an instruction settles and consults
   (`flags`), and the stack state at each instruction (`Trace`).
+- **Decompilation** (`decompiler::native`) — C, from the analysis above and
+  nothing else. Six passes: lifting one instruction to the effects it has
+  (`lift`), the calling convention and the frame (`naming`), substitution and
+  dead-store removal (`dataflow`), dominators and back edges (`structure`),
+  and the C itself (`emit`), over a small IR (`ir`). Deterministic, about a
+  millisecond per function, and every line of the output carries the address
+  of the instruction it came from — which is what lets the view take a click
+  to the listing, and what no external engine publishes.
 - **Assembly and patching** — one typed line encoded back to bytes
   (`assemble`), and patches that keep their length and are written to a copy.
 - **Emulation** (`emulate`) — a processor Desdec builds: a register file, an
@@ -130,15 +138,47 @@ the reader's own move — which also means there is no code here that writes to 
 running executable, no restart, and none of the per-platform trouble that comes
 with both.
 
-## What the diagram above is not yet
+## The decompiler
 
-There is no intermediate representation. The pseudo-code the reader sees is
-either an external decompiler's output or a conservative, line-by-line
-translation of the decoded flow — and that translation lives in the
-application (`ui/decompile.rs`), because it is a reading offered on screen
-rather than a model the core reasons over. An IR belongs in the core if one is
-ever built; nothing depends on it today, and the diagram should not be read as
-saying it exists.
+There is an intermediate representation, and it lives in the core:
+`decompiler::native::ir`. Three ideas — a *place* a value can be written to, an
+*expression* being read, a *statement* that is one effect — and two properties
+the rest of the pipeline rests on.
+
+The first is that the conditions are ordinary places. The machine has `ZF`,
+`SF`, `CF` and `OF`, and the signed comparisons are combinations of them: `jl`
+branches on `SF ≠ OF`. Writing those four out and substituting them gives, for
+a comparison and the branch below it, an expression that is exactly true and
+exactly unreadable. So what is recorded is the *question* — `Less`,
+`LessOrEqual`, `BelowOrEqual` — which `cmp` answers in terms of its own
+operands and which `jl` reads. Everything the output has that a line-by-line
+translation lacks comes from that one decision, by way of the ordinary
+substitution every other value goes through.
+
+The second is that what is not modelled says so. An instruction the lifter does
+not know becomes `Stmt::Opaque` carrying its own assembly; nothing is
+propagated across one, nothing around one is deleted, and the view says what
+fraction of the body was understood. This makes the output look less finished
+than a decompiler that guesses, and it is the reason a reader can act on it.
+
+Two limits are deliberate and are written down where they are implemented.
+Substitution runs **within a basic block** and does not cross a branch, for the
+reason `analysis::stack` and `operand` draw the same line: a value carried
+across a branch is only the value that arrives if that branch was taken.
+Liveness *does* cross, because deleting an assignment requires knowing no other
+block reads it. And structuring recovers `while`, `if`/`else`, `break` and
+`continue` where the graph has them, and emits a `goto` where it does not —
+a function whose flow really is irreducible is one the reader needs to know is
+irreducible.
+
+The line-by-line translation is still there, in the application
+(`ui/decompile.rs`), under the C and beside the listing. It is the only one of
+the two that shows a whole binary rather than one function, and it is what
+answers where an instruction was not modelled.
+
+x86-64 is lifted; AArch64 is not yet, and reaches `Stmt::Opaque` by the same
+door everything unmodelled does — so an AArch64 function decompiles to its own
+listing inside a C frame, structured and named, rather than to nothing.
 
 ## The call graph
 

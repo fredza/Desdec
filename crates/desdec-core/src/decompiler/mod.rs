@@ -14,6 +14,7 @@
 //! The engines analyse the file statically. None of them executes it.
 
 pub mod cache;
+pub mod native;
 
 use std::{
     env,

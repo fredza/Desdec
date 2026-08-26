@@ -34,7 +34,7 @@ so. Where it does not know, it says that instead of guessing.
 | **Strings** | Printable strings with their offsets and encodings, filterable, with the instructions that reference them. |
 | **References** | What names an address, for the one you are standing on. The calls and the jumps, and what no listing shows: the address an AArch64 file builds out of two instructions — without which such a file has no data references at all —, the cases of a `switch` read from the table its `jmp *%rax` goes through, and the real callers of an imported function, behind the stub the linker put in front of it. Every row names the place it sits in — `main+0x2c` — and says how strong the answer is: an exact instruction, an arrival by way of a table or a stub, or a data word that may only be a number that looks like one. |
 | **Disassembly** | x86, x86-64 (iced-x86) and AArch64 (Capstone) listings, with per-instruction byte editing. Right-click an instruction to be told what its operand designates and what last wrote each register it names. The bar carries the condition flags of the selected row — which it settles, which it consults, and which of them the bytes settle to a value known whatever ran before — and a row you have written about is marked in the margin. |
-| **Pseudo-code** | A conservative, built-in translation of the decoded flow — or the output of Rizin/rz-ghidra or RetDec when one is installed and chosen. |
+| **Decompilation** | C, reconstructed by Desdec itself and depending on nothing being installed: the stack frame becomes named locals, the calling convention gives the parameters and the arguments of each call, `cmp` and `jle` become `if (i <= n)`, and back edges become loops. Every line knows the instruction it came from, so clicking one opens it — which no external engine offers, because none of them publishes a line-to-address map. What is not modelled stays as a comment carrying its own assembly, and the card says what fraction of the body was understood. Under it, the line-by-line translation of the whole binary; and instead of both, the output of Rizin/rz-ghidra or RetDec when one is installed and chosen. |
 | **Machine** | An emulated processor, off until you ask for one. Registers, memory, a stack, breakpoints, watchpoints, step into/over/out, run to cursor, and a call stack — all of them measurements, because something really ran. It runs on a processor Desdec builds, never on yours: no byte of the file reaches your machine's processor. At a system call, the view gives a `strace`-like observation (ABI, number, reliable name and argument registers) without making the call or inventing a result; Linux x86/x86-64, macOS x86-64 and Windows x86-64 are distinguished. A missing library or instruction the emulator does not carry out also stops the run and is named rather than guessed past. x86 and x86-64. The XMM register file is visible, and common 128-bit SSE moves (`movaps`, `movups`, `movdqa`, `movdqu`) and XORs (`pxor`, `xorps`) run with exact state, including step back; wider YMM/ZMM instructions still stop by name. Breakpoints carry conditions (`rcx == 4`, `[rdi]:1 != 0`) and pass counts, so one inside a loop of ten thousand turns is worth setting. The slots of the frame — what a debugger calls the local variables — are read out of the code of the function the run stopped in: every `-0x14(%rbp)` and every `0x8(%rsp)` it touches, with its width, how often it is read and written, and what the run actually put there. And the run goes **backwards**: the state before each instruction is kept, so a step back restores it exactly — including out of a fault, which a debugger attached to a process cannot do at all. |
 | **Graph** | One function drawn as its control flow: its basic blocks, and the arrows between them with the reason for each — the branch taken, the one not taken, a jump, the next line of the listing. A `ret` goes somewhere perfectly well known and so has no arrow; a jump through a register has none either, and it is said differently, because the two are not the same thing. |
 | **Structures** | What the bytes at an address mean. A file states almost nothing about its own data: the listing says `mov 0x18(%rbx),%rax`, and what those eight bytes are is your knowledge, not its. Write it down once in C — structures, unions, enumerations, `typedef`s, pointers, arrays, bit-fields; a header pastes in as it stands — and it applies over the Machine's memory while it runs, and over the file's own bytes otherwise. The layout is computed against the shape of the open file, the four-byte `long` a 64-bit PE uses where an ELF uses eight included. The declarations of the file's own format — `Elf64_Ehdr`, `IMAGE_DOS_HEADER`, `mach_header_64` and what goes with them — are one button away, and are read at a file offset, which is the only way to reach a header no section maps. And a structure can be **read out of the code that walks it**: every `0x18(%rbx)` in a function is a member at that offset, what nothing touches is named as padding, and what the code does not state — an array's length, an access's width — is reported apart rather than invented. |
@@ -69,9 +69,13 @@ and narrowed down to those that are unmapped or never referenced.
 
 ![The Strings view, with its filter and its two narrowing toggles](docs/screenshots/strings.png)
 
-**External decompiler.** Rizin with rz-ghidra, or RetDec, when one is
-installed and chosen — the engine that produced the text is always named, and
-the matching assembly is one button away.
+**Decompiler.** Desdec's own, in six passes over the analysis it already
+does — lifting, the calling convention, substitution and dead-store removal,
+dominators and back edges, and the C itself. It runs on nothing but the file
+in front of it, answers in about a millisecond per function, and never
+executes a byte. And Rizin with rz-ghidra, or RetDec, when one is installed
+and chosen — the engine that produced the text is always named, and the
+matching assembly is one button away.
 
 ![Pseudo-code produced by rizin and rz-ghidra, with the engine named above it](docs/screenshots/decompile.png)
 
@@ -132,6 +136,24 @@ cargo run --release -p desdec-app -- /bin/ls # or analyse a file straight away
 ```
 
 You can also drag a binary onto the window, or use **Open binary** (`Ctrl+O`).
+
+To install what a checkout builds — the binary on your `PATH`, its icon, and a
+menu entry a dock can pin — and to take it back out again:
+
+```sh
+scripts/insl.sh              # ~/.local/bin/desdec, icon, menu entry, PATH line
+scripts/insl.sh --build      # rebuild first, even if target/release has one
+scripts/unsl.sh --dry-run    # say what would go, remove nothing
+scripts/unsl.sh              # binary, icon, menu entry and that PATH line
+scripts/unsl.sh --purge      # and the notes, preferences and library catalogue
+```
+
+Both take `--prefix` and `--name`, so a development build can sit beside an
+installed release. `insl.sh` checks that what it is about to install really is
+a 64-bit ELF for this machine, and `unsl.sh` refuses to remove anything that
+is not Desdec — `--name ls --prefix /usr/bin` takes nothing out. Your notes
+and preferences survive an ordinary uninstall; `--purge` is the flag that says
+otherwise, and it names every directory it empties.
 
 Prebuilt archives for Windows x86-64, macOS Apple Silicon and Linux x86-64 are
 published by the `Platform binaries` workflow on every tag beginning with `v`,
