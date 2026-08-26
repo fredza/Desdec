@@ -41,8 +41,12 @@ use std::fmt;
 
 /// How many bytes a value occupies.
 ///
-/// The widths a general register is addressed at, and the one an SSE register
-/// is. Anything wider is not lifted, so there is nothing to name.
+/// The widths a general register is addressed at, and the three a vector
+/// register is. The vector widths are separate rather than folded into one
+/// because `%xmm0`, `%ymm0` and `%zmm0` are the same register seen at three
+/// sizes, and a copy of the first is not a copy of the second: reading
+/// `vmovdqa %ymm0,%ymm1` as sixteen bytes would lose half of what it moved
+/// and say nothing about having done so.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Width {
     Byte,
@@ -50,6 +54,8 @@ pub enum Width {
     Dword,
     Qword,
     Xmm,
+    Ymm,
+    Zmm,
 }
 
 impl Width {
@@ -61,6 +67,8 @@ impl Width {
             Self::Dword => 4,
             Self::Qword => 8,
             Self::Xmm => 16,
+            Self::Ymm => 32,
+            Self::Zmm => 64,
         }
     }
 
@@ -72,6 +80,8 @@ impl Width {
             Self::Dword => 32,
             Self::Qword => 64,
             Self::Xmm => 128,
+            Self::Ymm => 256,
+            Self::Zmm => 512,
         }
     }
 
@@ -84,6 +94,8 @@ impl Width {
             4 => Some(Self::Dword),
             8 => Some(Self::Qword),
             16 => Some(Self::Xmm),
+            32 => Some(Self::Ymm),
+            64 => Some(Self::Zmm),
             _ => None,
         }
     }
@@ -107,6 +119,8 @@ impl Width {
             // No signedness to speak of: what is in it depends entirely on the
             // instruction that put it there.
             (Self::Xmm, _) => "__m128",
+            (Self::Ymm, _) => "__m256",
+            (Self::Zmm, _) => "__m512",
         }
     }
 }
@@ -153,7 +167,10 @@ impl Register {
     /// would erase a value that is still live.
     #[must_use]
     pub const fn covers_root(self) -> bool {
-        matches!(self.width, Width::Qword | Width::Dword | Width::Xmm) && !self.high_byte
+        matches!(
+            self.width,
+            Width::Qword | Width::Dword | Width::Xmm | Width::Ymm | Width::Zmm
+        ) && !self.high_byte
     }
 
     /// The name the architecture gives this window, for printing.
@@ -168,8 +185,15 @@ impl Register {
                 other => other.to_owned(),
             };
         }
-        if self.root.starts_with("xmm") {
-            return self.root.to_owned();
+        // A vector register is interned under its `xmm` name whatever width
+        // was written, because the three names are one register; the width is
+        // what says which of them the instruction addressed.
+        if let Some(number) = self.root.strip_prefix("xmm") {
+            return match self.width {
+                Width::Zmm => format!("zmm{number}"),
+                Width::Ymm => format!("ymm{number}"),
+                _ => self.root.to_owned(),
+            };
         }
         // `r8`..`r15` narrow with a suffix; the older eight change their
         // prefix, and the four named after their purpose lose theirs entirely
@@ -186,7 +210,7 @@ impl Register {
         }
         let stem = &self.root[1..];
         match self.width {
-            Width::Qword | Width::Xmm => self.root.to_owned(),
+            Width::Qword | Width::Xmm | Width::Ymm | Width::Zmm => self.root.to_owned(),
             Width::Dword => format!("e{stem}"),
             Width::Word => stem.to_owned(),
             Width::Byte => match self.root {
@@ -281,11 +305,17 @@ pub enum Place {
     /// places and the flags themselves are not.
     Condition(Condition),
     /// `*(width *)address`, the address being an arbitrary expression.
-    Memory { address: Box<Expr>, width: Width },
+    Memory {
+        address: Box<Expr>,
+        width: Width,
+    },
     /// A slot of the frame, once [`super::naming`] has recognised one. The
     /// lifter never produces this: it emits the memory access the instruction
     /// wrote, and naming turns the ones that are frame-relative into locals.
-    Local { id: u32, width: Width },
+    Local {
+        id: u32,
+        width: Width,
+    },
 }
 
 impl Place {
@@ -464,7 +494,10 @@ pub enum Callee {
 pub enum Expr {
     /// A number, with the width it was written at so the emitter can print
     /// `-1` rather than `0xFFFFFFFF` where that is what it means.
-    Const { value: u64, width: Width },
+    Const {
+        value: u64,
+        width: Width,
+    },
     /// Reading a place.
     Read(Box<Place>),
     /// `&place`, which is what `lea` computes and what taking the address of a
@@ -506,7 +539,10 @@ pub enum Expr {
     },
     /// A named constant of the file — the address of a string, of a global —
     /// carrying both what to print and the number behind it.
-    Symbol { name: String, address: u64 },
+    Symbol {
+        name: String,
+        address: u64,
+    },
     /// Something the lifter modelled no further. Never rewritten, never
     /// evaluated; printed as it stands.
     Unknown(String),
@@ -597,9 +633,7 @@ impl Expr {
                 Place::Register(_) | Place::Condition(_) | Place::Local { .. } => false,
             },
             Self::Unary { operand, .. } => operand.depends_on(place),
-            Self::Binary { left, right, .. } => {
-                left.depends_on(place) || right.depends_on(place)
-            }
+            Self::Binary { left, right, .. } => left.depends_on(place) || right.depends_on(place),
             Self::Cast { value, .. } => value.depends_on(place),
             Self::Select {
                 condition,
@@ -719,6 +753,13 @@ pub enum Stmt {
     /// An instruction with no effect worth printing — `nop`, `endbr64`, the
     /// `xchg %ax,%ax` a compiler pads with.
     Nothing,
+    /// `ud2`: an instruction whose whole purpose is to raise, and past which
+    /// nothing runs. A compiler puts one where it has proved control cannot
+    /// arrive — the end of a diverging call, an unreachable arm, the panic
+    /// path of a bounds check — and there are more of them in an optimised
+    /// binary than of anything else this used to leave unread. It is not
+    /// `Nothing`: something happens, and it is the end of the road.
+    Trap,
 }
 
 impl fmt::Display for Register {

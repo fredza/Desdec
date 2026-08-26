@@ -186,9 +186,7 @@ fn operand(text: &str) -> Operand {
     };
     if let Some(open) = rest.find('(') {
         let (displacement, inside) = rest.split_at(open);
-        let inside = inside
-            .trim_start_matches('(')
-            .trim_end_matches(')');
+        let inside = inside.trim_start_matches('(').trim_end_matches(')');
         let mut parts = inside.split(',').map(str::trim);
         let base = parts.next().filter(|part| !part.is_empty());
         let index = parts.next().filter(|part| !part.is_empty());
@@ -227,7 +225,11 @@ fn number(text: &str) -> Option<u64> {
     } else {
         digits.parse::<u64>().ok()?
     };
-    Some(if negative { value.wrapping_neg() } else { value })
+    Some(if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    })
 }
 
 fn signed(text: &str) -> Option<i64> {
@@ -291,8 +293,17 @@ pub fn register_named(name: &str) -> Option<Register> {
     {
         return Some(Register::new(NUMBERED[digits - 8], width));
     }
-    if name.starts_with("xmm") || name.starts_with("ymm") || name.starts_with("zmm") {
-        return Some(Register::new(interned_vector(name)?, Width::Xmm));
+    // `%xmm0`, `%ymm0` and `%zmm0` are one register at three sizes, so they
+    // share a root and differ by width — the same rule `%rax`, `%eax` and
+    // `%al` follow. Claiming `Xmm` for all three, as this did, made a
+    // thirty-two byte move look like a sixteen-byte one.
+    if let Some(width) = match &name[..name.len().min(3)] {
+        "xmm" => Some(Width::Xmm),
+        "ymm" => Some(Width::Ymm),
+        "zmm" => Some(Width::Zmm),
+        _ => None,
+    } {
+        return Some(Register::new(interned_vector(name)?, width));
     }
     if name == "rip" || name == "eip" {
         return Some(Register::new("rip", Width::Qword));
@@ -355,7 +366,8 @@ fn address_of(reference: &MemoryRef, pointer: Width) -> Expr {
         });
     }
     match (sum, reference.displacement) {
-        (None, displacement) => {
+        (None, displacement) =>
+        {
             #[expect(
                 clippy::cast_sign_loss,
                 reason = "an absolute address is the displacement read as unsigned"
@@ -446,6 +458,13 @@ fn width_of(mnemonic: &str, operands: &[Operand], context: &Context<'_>) -> Widt
 /// The mnemonic with any size suffix taken off, so one arm can serve `add`,
 /// `addl` and `addq`.
 fn stem(mnemonic: &str) -> &str {
+    // `movabs` is not a size suffix and not a family of its own: it is the
+    // spelling AT&T gives `mov` when the immediate needs all sixty-four bits.
+    // Read as anything else it is a load of a constant left unread, and a
+    // constant is the one thing a reader most wants named.
+    if mnemonic == "movabs" || mnemonic == "movabsq" {
+        return "mov";
+    }
     for base in [
         "mov", "add", "sub", "and", "or", "xor", "cmp", "test", "push", "pop", "inc", "dec", "neg",
         "not", "imul", "mul", "idiv", "div", "shl", "sal", "shr", "sar", "rol", "ror", "call",
@@ -462,6 +481,38 @@ fn stem(mnemonic: &str) -> &str {
     }
     mnemonic
 }
+
+/// The whole-register vector moves, in the legacy spelling and the VEX one.
+///
+/// Aligned and unaligned, integer and floating, are all the same assignment:
+/// the difference between `movaps` and `movups` is what the processor does
+/// when the address is not aligned, which is a fault or not a fault and never
+/// a different value.
+const VECTOR_MOVES: &[&str] = &[
+    "movaps",
+    "movapd",
+    "movups",
+    "movupd",
+    "movdqa",
+    "movdqu",
+    "lddqu",
+    "vmovaps",
+    "vmovapd",
+    "vmovups",
+    "vmovupd",
+    "vmovdqa",
+    "vmovdqu",
+    "vlddqu",
+    // The AVX-512 spellings name the element width they will *later* be read
+    // at, which changes nothing about how many bytes moved. A masked form
+    // carries an operand this does not read and falls through to `Opaque`.
+    "vmovdqa32",
+    "vmovdqa64",
+    "vmovdqu8",
+    "vmovdqu16",
+    "vmovdqu32",
+    "vmovdqu64",
+];
 
 // ---------------------------------------------------------------------------
 // The instructions themselves
@@ -501,13 +552,12 @@ fn x86(
             // decompiled function — and it is safe, because `name_of` answers
             // only where the file really says something about the address.
             let value = match operands.first() {
-                Some(Operand::Immediate(literal)) => (context.name_of)(*literal).map_or(
-                    value,
-                    |name| Expr::Symbol {
+                Some(Operand::Immediate(literal)) => {
+                    (context.name_of)(*literal).map_or(value, |name| Expr::Symbol {
                         name,
                         address: *literal,
-                    },
-                ),
+                    })
+                }
                 _ => value,
             };
             vec![Stmt::Assign { place, value }]
@@ -544,6 +594,41 @@ fn x86(
                 }]
             })
         }
+        // -- the vector moves --------------------------------------------
+        // `movaps`, `movdqu` and the dozen other spellings of the same act:
+        // sixteen, thirty-two or sixty-four bytes copied without being looked
+        // at. Which spelling a compiler picked says how the address is
+        // expected to be aligned and whether the bytes will later be read as
+        // integers or as floats — neither of which changes what moved — so
+        // they all lift to one assignment at the width the register names.
+        // Together they were the largest single thing this lifter did not
+        // read: two thirds of the unmodelled instructions in an optimised
+        // build, because that is what `memcpy`, every string comparison and
+        // every vectorised loop are made of.
+        //
+        // The *partial* vector moves are deliberately not here. `movss`
+        // writes four bytes of a sixteen-byte register and leaves the other
+        // twelve standing, and this IR has no way to say "the low quarter of
+        // `%xmm0`": lifting one as a whole-register assignment would claim
+        // twelve bytes were overwritten that were not. They stay unread, and
+        // the output says so.
+        _ if VECTOR_MOVES.contains(&base) => {
+            let Some(width) = operands.iter().find_map(|operand| match operand {
+                Operand::Register(register) if register.root.starts_with("xmm") => {
+                    Some(register.width)
+                }
+                _ => None,
+            }) else {
+                // No vector register named: an AVX-512 form carrying a mask,
+                // or a spelling this does not read.
+                return opaque();
+            };
+            if operands.len() != 2 {
+                // The three-operand VEX forms merge rather than copy.
+                return opaque();
+            }
+            pair(width).map_or_else(opaque, |(value, place)| vec![Stmt::Assign { place, value }])
+        }
         // The widening moves state both widths in their name: `movzbl` reads a
         // byte and writes a long.
         _ if mnemonic.starts_with("movz") || mnemonic.starts_with("movs") => {
@@ -578,7 +663,9 @@ fn x86(
 
         // -- arithmetic and logic ---------------------------------------
         "add" | "sub" | "and" | "or" | "xor" | "adc" | "sbb" | "shl" | "sal" | "shr" | "sar"
-        | "rol" | "ror" | "imul" if operands.len() == 2 => {
+        | "rol" | "ror" | "imul"
+            if operands.len() == 2 =>
+        {
             let Some((value, place)) = pair(width) else {
                 return opaque();
             };
@@ -774,15 +861,25 @@ fn x86(
         }
 
         // -- leaving, and going elsewhere --------------------------------
-        "ret" | "retq" | "repz" => {
-            if base == "ret" {
-                // What is returned is decided by naming, which knows the ABI;
-                // the instruction itself says only that the function ends.
-                vec![Stmt::Return(None)]
-            } else {
-                opaque()
-            }
+        // What is returned is decided by naming, which knows the ABI; the
+        // instruction itself says only that the function ends.
+        "ret" => vec![Stmt::Return(None)],
+        // `rep ret` and `repz retq`: the prefix means nothing on a return —
+        // it is padding for a branch predictor that mispredicted a bare one —
+        // and the instruction is the return it looks like. Every *other* `rep`
+        // form is a loop, and a loop is not lifted by dropping its prefix, so
+        // those stay unread.
+        "rep" | "repz" | "repe" | "repnz" | "repne"
+            if operands.len() == 1
+                && matches!(operands.first(), Some(Operand::Other(text)) if stem(text) == "ret") =>
+        {
+            vec![Stmt::Return(None)]
         }
+        // `ud2` raises, and nothing below it runs. A compiler puts one
+        // wherever it has proved control cannot arrive: the far side of a
+        // diverging call, an unreachable match arm, the panic path of a bounds
+        // check. In an optimised Rust binary there are thousands.
+        "ud2" | "ud1" => vec![Stmt::Trap],
         "call" => vec![call_of(operands.first(), instruction, context)],
         "jmp" => match operands.first() {
             Some(Operand::Number(target)) => vec![Stmt::Branch {
@@ -843,6 +940,73 @@ fn x86(
                     when_false: Box::new(Expr::read(place.clone())),
                 },
                 place,
+            }]
+        }
+
+        // -- the bit instructions with an exact C spelling ---------------
+        // Only the ones that are exact. `lzcnt`, `tzcnt`, `bsf` and `bsr` are
+        // not here on purpose: each of them answers something different for a
+        // zero operand than the C builtin it resembles does, and a decompiler
+        // that papers over that disagreement is wrong precisely where the
+        // reader would never think to check.
+        "popcnt" | "bswap" if !operands.is_empty() => {
+            let Some((source, destination)) = (match base {
+                // `bswap` reads and writes the one register it names.
+                "bswap" => operands.first().zip(operands.first()),
+                _ => operands.first().zip(operands.get(1)),
+            }) else {
+                return opaque();
+            };
+            let Some(place) = place_of(destination, width, context) else {
+                return opaque();
+            };
+            let name = match (base, place.width()) {
+                ("bswap", Width::Qword) => "__builtin_bswap64",
+                ("bswap", _) => "__builtin_bswap32",
+                (_, Width::Qword) => "__builtin_popcountll",
+                _ => "__builtin_popcount",
+            };
+            vec![Stmt::Assign {
+                place,
+                value: Expr::Call {
+                    callee: Callee::Named(name.to_owned()),
+                    arguments: vec![value_of(source, width, context)],
+                },
+            }]
+        }
+        // `bt $5,%eax` answers one question and writes nothing: the carry
+        // holds bit five. Said as the shift it is, the `jb` below it reads an
+        // ordinary condition instead of an unmodelled one — which is the
+        // whole point of conditions being places.
+        "bt" if operands.len() == 2 => {
+            let (Some(index), Some(Operand::Register(register))) =
+                (operands.first(), operands.get(1))
+            else {
+                // The memory form addresses a bit *string*, whose index runs
+                // past the operand it names. That is not this.
+                return opaque();
+            };
+            let bit = match index {
+                Operand::Immediate(value) => {
+                    Expr::constant(value % u64::from(register.width.bits()), width)
+                }
+                other => value_of(other, width, context),
+            };
+            vec![Stmt::Assign {
+                place: Place::Condition(Condition::Carry),
+                value: Expr::binary(
+                    Binary::NotEqual,
+                    Expr::binary(
+                        Binary::And,
+                        Expr::binary(
+                            Binary::ShiftRight,
+                            Expr::read(Place::Register(*register)),
+                            bit,
+                        ),
+                        Expr::constant(1, width),
+                    ),
+                    Expr::constant(0, width),
+                ),
             }]
         }
 
@@ -1051,17 +1215,22 @@ fn describe(place: &Place) -> String {
 /// A call, and where it goes.
 fn call_of(target: Option<&Operand>, instruction: &Instruction, context: &Context<'_>) -> Stmt {
     let callee = match target {
-        Some(Operand::Number(address)) => (context.name_of)(*address)
-            .map_or(Callee::Address(*address), Callee::Named),
+        Some(Operand::Number(address)) => {
+            (context.name_of)(*address).map_or(Callee::Address(*address), Callee::Named)
+        }
         Some(Operand::Indirect(inner)) => match inner.as_ref() {
             // `callq *0x24F70` — through a slot the loader fills in, which is
             // how every imported function is reached. The name of the slot is
             // the name of the function, and the caller supplies it.
-            Operand::Number(address) => (context.name_of)(*address)
-                .map_or_else(|| Callee::Indirect(Box::new(Expr::read(Place::Memory {
-                    address: Box::new(Expr::constant(*address, context.pointer())),
-                    width: context.pointer(),
-                }))), Callee::Named),
+            Operand::Number(address) => (context.name_of)(*address).map_or_else(
+                || {
+                    Callee::Indirect(Box::new(Expr::read(Place::Memory {
+                        address: Box::new(Expr::constant(*address, context.pointer())),
+                        width: context.pointer(),
+                    })))
+                },
+                Callee::Named,
+            ),
             other => Callee::Indirect(Box::new(value_of(other, context.pointer(), context))),
         },
         Some(other) => Callee::Indirect(Box::new(value_of(other, context.pointer(), context))),
@@ -1132,6 +1301,117 @@ mod tests {
             .into_iter()
             .map(|statement| statement.effect)
             .collect()
+    }
+
+    /// The largest single thing this lifter did not read. `movaps` and its
+    /// dozen spellings are what `memcpy`, every string comparison and every
+    /// vectorised loop are made of, and leaving them unread put a hole in the
+    /// middle of exactly the functions a reader opens the view for.
+    #[test]
+    fn a_vector_move_is_one_assignment_of_the_width_the_register_names() {
+        let Stmt::Assign { place, value } = &effects("movdqu (%rsi),%xmm1")[0] else {
+            panic!("a vector move assigns");
+        };
+        assert_eq!(*place, Place::Register(Register::new("xmm1", Width::Xmm)));
+        let Expr::Read(read) = value else {
+            panic!("it reads what the address names");
+        };
+        assert_eq!(read.width(), Width::Xmm, "sixteen bytes moved");
+    }
+
+    /// `%xmm0`, `%ymm0` and `%zmm0` are one register at three sizes. Read as
+    /// one width they would all be sixteen bytes, and half of what a
+    /// thirty-two byte move moved would go unmentioned.
+    #[test]
+    fn a_wide_vector_move_is_as_wide_as_the_register_it_names() {
+        let Stmt::Assign { place, .. } = &effects("vmovdqa %ymm3,%ymm7")[0] else {
+            panic!("a vector move assigns");
+        };
+        assert_eq!(*place, Place::Register(Register::new("xmm7", Width::Ymm)));
+        assert_eq!(place.width().bytes(), 32);
+        let Stmt::Assign { place, .. } = &effects("vmovdqu64 %zmm1,%zmm2")[0] else {
+            panic!("the AVX-512 spelling is a move too");
+        };
+        assert_eq!(place.width().bytes(), 64);
+    }
+
+    /// The other half of being exact about the vector moves: `movss` writes
+    /// four bytes of a sixteen-byte register and leaves the other twelve
+    /// standing, and nothing here can say that. So it says nothing.
+    #[test]
+    fn a_partial_vector_move_is_left_unread_rather_than_claimed_whole() {
+        assert!(
+            matches!(effects("movss %xmm0,%xmm1")[0], Stmt::Opaque(_)),
+            "a four-byte write to a sixteen-byte register is not a copy of it"
+        );
+        assert!(matches!(effects("vmovsd (%rax),%xmm2")[0], Stmt::Opaque(_)));
+    }
+
+    /// `movabs` is not a family of its own: it is what AT&T calls `mov` when
+    /// the immediate needs all sixty-four bits. Read as anything else, the one
+    /// thing a reader most wants named — a constant — went unread.
+    #[test]
+    fn a_wide_immediate_is_the_move_it_is() {
+        let Stmt::Assign { place, value } = &effects("movabs $0x123456789,%rax")[0] else {
+            panic!("a wide immediate is still a move");
+        };
+        assert_eq!(*place, Place::Register(Register::new("rax", Width::Qword)));
+        assert_eq!(*value, Expr::constant(0x1_2345_6789, Width::Qword));
+    }
+
+    /// A compiler puts `ud2` wherever it has proved control cannot arrive.
+    /// There are thousands in an optimised Rust binary, and every one of them
+    /// used to be a hole in the output.
+    #[test]
+    fn an_instruction_that_only_raises_says_that_and_not_nothing() {
+        assert_eq!(effects("ud2")[0], Stmt::Trap);
+        assert_ne!(
+            effects("ud2")[0],
+            Stmt::Nothing,
+            "something happens: this is not padding"
+        );
+    }
+
+    /// The prefix means nothing on a return — it is padding for a branch
+    /// predictor — and the instruction is the return it looks like. Every
+    /// other `rep` form is a loop, and a loop is not lifted by dropping its
+    /// prefix.
+    #[test]
+    fn a_repeated_return_is_a_return_and_a_repeated_move_is_not_a_move() {
+        assert_eq!(effects("repz retq")[0], Stmt::Return(None));
+        assert!(
+            matches!(effects("rep stos %al,%es:(%rdi)")[0], Stmt::Opaque(_)),
+            "a string operation is a loop, and dropping the prefix would hide it"
+        );
+    }
+
+    /// `bt` answers one question and writes nothing. Said as the shift it is,
+    /// the `jb` below it reads an ordinary condition instead of an unmodelled
+    /// one — which is the whole point of conditions being places.
+    #[test]
+    fn a_bit_test_settles_the_carry_the_branch_below_it_reads() {
+        let Stmt::Assign { place, .. } = &effects("bt $0x5,%eax")[0] else {
+            panic!("a bit test writes the carry");
+        };
+        assert_eq!(*place, Place::Condition(Condition::Carry));
+    }
+
+    /// Only the ones that are exact. `lzcnt` and its family answer something
+    /// different for a zero operand than the C builtin they resemble, and are
+    /// left unread on purpose.
+    #[test]
+    fn the_bit_counts_with_an_exact_c_spelling_get_it_and_the_others_do_not() {
+        let Stmt::Assign { value, .. } = &effects("popcnt %rax,%rdx")[0] else {
+            panic!("a population count assigns");
+        };
+        let Expr::Call { callee, .. } = value else {
+            panic!("it is written as the builtin it is");
+        };
+        assert_eq!(*callee, Callee::Named("__builtin_popcountll".to_owned()));
+        assert!(
+            matches!(effects("lzcnt %eax,%edx")[0], Stmt::Opaque(_)),
+            "the zero case disagrees with __builtin_clz, so it is not claimed"
+        );
     }
 
     /// The comma inside an address is not the comma between operands.

@@ -26,7 +26,8 @@ use std::fmt::Write as _;
 use crate::{
     analysis::blocks::BasicBlock,
     decompiler::native::{
-        ir::{Callee, Expr, Place, Statement, Stmt, Unary, Width},
+        ir::{Callee, Expr, Place, Register, Statement, Stmt, Unary, Width},
+        lift::register_named,
         naming::Naming,
         structure::{Structure, Structured},
     },
@@ -108,8 +109,24 @@ pub struct Source<'a> {
 }
 
 /// Writes one function out.
+///
+/// Twice, and the second time is not waste. What a register has to be called
+/// depends on the widest window the finished text uses on it — a function that
+/// writes `%eax` and later reads `%rax` has one variable, sixty-four bits
+/// wide, and the narrow accesses are windows onto it. That is not known until
+/// the text exists, so the text is written once to find out and once to say
+/// it. Both passes are pure and take microseconds.
 #[must_use]
 pub fn write(source: &Source<'_>) -> Decompiled {
+    let first = render(source, &Registers::default());
+    let registers = Registers::of(&first.lines);
+    if registers.is_empty() {
+        return first;
+    }
+    render(source, &registers)
+}
+
+fn render(source: &Source<'_>, registers: &Registers) -> Decompiled {
     let mut writer = Writer {
         source,
         lines: Vec::new(),
@@ -119,15 +136,14 @@ pub fn write(source: &Source<'_>) -> Decompiled {
             .iter()
             .map(|local| (local.id, local.name.clone()))
             .collect(),
+        registers,
         unmodelled: 0,
         instructions: 0,
     };
     writer.signature();
     writer.declarations();
     writer.structured(&source.structure.root, 1);
-    writer
-        .lines
-        .push(Line::new(0, None, "}".to_owned()));
+    writer.lines.push(Line::new(0, None, "}".to_owned()));
     label_every_goto(&mut writer.lines);
     Decompiled {
         name: source.name.to_owned(),
@@ -149,11 +165,11 @@ pub fn write(source: &Source<'_>) -> Decompiled {
 fn label_every_goto(lines: &mut Vec<Line>) {
     let mut named: Vec<u64> = Vec::new();
     for line in lines.iter() {
-        if let Some(rest) = line.text.strip_prefix("goto ").or_else(|| {
-            line.text
-                .split_once(") goto ")
-                .map(|(_, rest)| rest)
-        }) && let Some(hexadecimal) = rest.trim_end_matches(';').strip_prefix("label_")
+        if let Some(rest) = line
+            .text
+            .strip_prefix("goto ")
+            .or_else(|| line.text.split_once(") goto ").map(|(_, rest)| rest))
+            && let Some(hexadecimal) = rest.trim_end_matches(';').strip_prefix("label_")
             && let Ok(address) = u64::from_str_radix(hexadecimal, 16)
         {
             named.push(address);
@@ -188,8 +204,148 @@ struct Writer<'a> {
     source: &'a Source<'a>,
     lines: Vec<Line>,
     locals: HashMap<u32, String>,
+    registers: &'a Registers,
     unmodelled: usize,
     instructions: usize,
+}
+
+/// The registers that survived every pass and are printed under their own
+/// names, each with the widest window the output uses on it.
+///
+/// Without this the output named `eax` and declared nothing: three quarters of
+/// the functions in an optimised binary referred to a variable that was
+/// nowhere, which is C that does not compile and, worse, C in which `eax` and
+/// `rax` look like two things when the machine has one. The declaration is per
+/// *register*, and the narrow accesses are written as what they are — windows
+/// onto it.
+///
+/// The vector registers are kept by name rather than by register: `%xmm0` and
+/// `%ymm0` are one register too, but the merge that a narrow write to one
+/// performs cannot be written as a mask over a value C has no literal for. A
+/// function that addresses the same vector register at two widths — which is
+/// the AVX/SSE transition every compiler works to avoid — therefore gets two
+/// variables, and that much is not exact.
+#[derive(Debug, Default)]
+struct Registers {
+    general: HashMap<&'static str, Width>,
+    vectors: Vec<(String, Width)>,
+}
+
+impl Registers {
+    /// Reads back the registers a first pass printed.
+    ///
+    /// From the text rather than from the statements, because what reaches the
+    /// text is what the structurer kept: a block it dropped, or an arm the
+    /// dataflow pass emptied, must not leave a declaration standing for a
+    /// value nothing mentions. The names are a closed set and the comments —
+    /// which hold the assembly, and so hold every register — are skipped.
+    fn of(lines: &[Line]) -> Self {
+        let mut general: HashMap<&'static str, Width> = HashMap::new();
+        let mut vectors: Vec<(String, Width)> = Vec::new();
+        for line in lines {
+            let text = line.text.split("/*").next().unwrap_or_default();
+            let text = text.split("//").next().unwrap_or_default();
+            for word in text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+                let Some(register) = register_named(word) else {
+                    continue;
+                };
+                if register.name() != word || register.root == "rip" {
+                    continue;
+                }
+                if register.root.starts_with("xmm") {
+                    if !vectors.iter().any(|(name, _)| name == word) {
+                        vectors.push((word.to_owned(), register.width));
+                    }
+                    continue;
+                }
+                let entry = general.entry(register.root).or_insert(register.width);
+                *entry = (*entry).max(register.width);
+            }
+        }
+        vectors.sort();
+        Self { general, vectors }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.general.is_empty() && self.vectors.is_empty()
+    }
+
+    /// The width the variable standing for this register is declared at, when
+    /// one is.
+    fn declared(&self, register: Register) -> Option<Width> {
+        self.general.get(register.root).copied()
+    }
+
+    /// The variable's own name, which is the register at its declared width.
+    fn variable(&self, register: Register) -> Option<String> {
+        self.declared(register)
+            .map(|width| Register::new(register.root, width).name())
+    }
+}
+
+/// A register being read, as a window onto the variable declared for it.
+///
+/// `%al` of a register the output also uses whole is `(uint8_t)rax`, which is
+/// exactly what the instruction read. Where the access *is* the declared width
+/// there is no window and the name stands alone.
+fn read_register(register: Register, registers: &Registers) -> String {
+    let Some(name) = registers.variable(register) else {
+        return register.name();
+    };
+    let Some(declared) = registers.declared(register) else {
+        return register.name();
+    };
+    if register.high_byte {
+        return format!("(uint8_t)({name} >> 8)");
+    }
+    if register.width >= declared {
+        return name;
+    }
+    format!("({}){name}", register.width.c_name(false))
+}
+
+/// A register being written, as the whole assignment.
+///
+/// A narrow write is not a narrow assignment. Writing `%eax` on x86-64 clears
+/// the top half of `%rax`, so `rax = (uint32_t)value` says it exactly; writing
+/// `%al` or `%ax` clears nothing, and the only exact spelling is the merge the
+/// machine performs. Getting this wrong is the difference between code that
+/// reads right and code that is quietly false, which is why it is written out
+/// rather than approximated by an assignment to a name that does not exist.
+fn write_register(register: Register, value: &str, registers: &Registers) -> String {
+    let (Some(name), Some(declared)) = (registers.variable(register), registers.declared(register))
+    else {
+        return format!("{} = {value};", register.name());
+    };
+    let narrow = register.width.c_name(false);
+    if register.high_byte {
+        let mask = mask_outside(declared, 8, 8);
+        return format!("{name} = ({name} & {mask:#x}) | ((uint64_t)(uint8_t)({value}) << 8);");
+    }
+    if register.width >= declared {
+        return format!("{name} = {value};");
+    }
+    // The one narrowing the architecture makes total: a 32-bit write zeroes
+    // the other thirty-two bits, so the assignment alone is the whole truth.
+    if register.width == Width::Dword {
+        return format!("{name} = ({narrow})({value});");
+    }
+    let mask = mask_outside(declared, 0, register.width.bits());
+    format!("{name} = ({name} & {mask:#x}) | ({narrow})({value});")
+}
+
+/// The bits of a `declared`-wide value that a write of `bits` bits starting at
+/// `offset` leaves standing.
+fn mask_outside(declared: Width, offset: u32, bits: u32) -> u64 {
+    let whole = match declared.bits() {
+        64 => u64::MAX,
+        other => (1_u64 << other) - 1,
+    };
+    let window = match bits {
+        64 => u64::MAX,
+        other => (1_u64 << other) - 1,
+    };
+    whole & !(window << offset)
 }
 
 impl Writer<'_> {
@@ -204,9 +360,7 @@ impl Writer<'_> {
             naming
                 .parameters
                 .iter()
-                .map(|parameter| {
-                    format!("{} {}", parameter.width.c_name(false), parameter.name)
-                })
+                .map(|parameter| format!("{} {}", parameter.width.c_name(false), parameter.name))
                 .collect::<Vec<_>>()
                 .join(", ")
         };
@@ -221,7 +375,7 @@ impl Writer<'_> {
     /// The frame, declared at the top the way C requires and a reader expects,
     /// each slot saying where in the listing it lives.
     fn declarations(&mut self) {
-        if self.source.naming.locals.is_empty() {
+        if self.source.naming.locals.is_empty() && self.registers.is_empty() {
             return;
         }
         for local in &self.source.naming.locals {
@@ -243,6 +397,37 @@ impl Writer<'_> {
                 ),
             };
             self.lines.push(Line::new(1, None, declaration));
+        }
+        // Then the registers nothing gave a name to. They are declared for the
+        // same reason the frame is: the text names them, and a name the text
+        // does not declare is a hole the reader has to fill from the listing.
+        let mut general: Vec<(&str, Width)> = self
+            .registers
+            .general
+            .iter()
+            .map(|(root, width)| (*root, *width))
+            .collect();
+        general.sort_unstable();
+        for (root, width) in general {
+            let name = Register::new(root, width).name();
+            self.lines.push(Line::new(
+                1,
+                None,
+                format!(
+                    "{} {name};  // %{root}, which nothing named",
+                    width.c_name(false)
+                ),
+            ));
+        }
+        for (name, width) in &self.registers.vectors {
+            self.lines.push(Line::new(
+                1,
+                None,
+                format!(
+                    "{} {name};  // %{name}, which nothing named",
+                    width.c_name(false)
+                ),
+            ));
         }
         self.lines.push(Line::new(1, None, String::new()));
     }
@@ -268,7 +453,16 @@ impl Writer<'_> {
                 self.lines.push(Line::new(
                     indent,
                     Some(*at),
-                    format!("if ({}) {{", expression(condition, 0, &self.locals, self.source.naming)),
+                    format!(
+                        "if ({}) {{",
+                        expression(
+                            condition,
+                            0,
+                            &self.locals,
+                            self.source.naming,
+                            self.registers
+                        )
+                    ),
                 ));
                 self.structured(then_branch, indent + 1);
                 // An `else` the structurer found and that has nothing in it is
@@ -293,7 +487,13 @@ impl Writer<'_> {
                     Some(*at),
                     format!(
                         "while ({}) {{",
-                        expression(condition, 0, &self.locals, self.source.naming)
+                        expression(
+                            condition,
+                            0,
+                            &self.locals,
+                            self.source.naming,
+                            self.registers
+                        )
                     ),
                 ));
                 self.structured(body, indent + 1);
@@ -311,7 +511,13 @@ impl Writer<'_> {
                     Some(*at),
                     format!(
                         "}} while ({});",
-                        expression(condition, 0, &self.locals, self.source.naming)
+                        expression(
+                            condition,
+                            0,
+                            &self.locals,
+                            self.source.naming,
+                            self.registers
+                        )
                     ),
                 ));
             }
@@ -324,10 +530,13 @@ impl Writer<'_> {
                 self.structured(body, indent + 1);
                 self.lines.push(Line::new(indent, None, "}".to_owned()));
             }
-            Structured::Break => self.lines.push(Line::new(indent, None, "break;".to_owned())),
-            Structured::Continue => self
+            Structured::Break => self
                 .lines
-                .push(Line::new(indent, None, "continue;".to_owned())),
+                .push(Line::new(indent, None, "break;".to_owned())),
+            Structured::Continue => {
+                self.lines
+                    .push(Line::new(indent, None, "continue;".to_owned()))
+            }
             Structured::Goto { target } => self.lines.push(Line::new(
                 indent,
                 Some(*target),
@@ -377,13 +586,25 @@ impl Writer<'_> {
     fn statement(&mut self, statement: &Statement) -> Option<String> {
         let naming = self.source.naming;
         let locals = &self.locals;
+        let registers = self.registers;
         Some(match &statement.effect {
             Stmt::Nothing => return None,
-            Stmt::Assign { place, value } => format!(
-                "{} = {};",
-                self::place(place, locals, naming),
-                expression(value, 0, locals, naming)
-            ),
+            // The spelling every compiler that emits `ud2` also understands,
+            // and the one that says what it does: this raises, and nothing
+            // below it runs.
+            Stmt::Trap => "__builtin_trap();".to_owned(),
+            Stmt::Assign { place, value } => {
+                let value = expression(value, 0, locals, naming, registers);
+                match place {
+                    Place::Register(register) if naming.name_of(*register).is_none() => {
+                        write_register(*register, &value, registers)
+                    }
+                    other => format!(
+                        "{} = {value};",
+                        self::place(other, locals, naming, registers)
+                    ),
+                }
+            }
             Stmt::Call {
                 result,
                 callee,
@@ -391,10 +612,10 @@ impl Writer<'_> {
             } => {
                 let call = format!(
                     "{}({})",
-                    self::callee(callee, locals, naming),
+                    self::callee(callee, locals, naming, registers),
                     arguments
                         .iter()
-                        .map(|argument| expression(argument, 0, locals, naming))
+                        .map(|argument| expression(argument, 0, locals, naming, registers))
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
@@ -404,13 +625,19 @@ impl Writer<'_> {
                 // put a register back into the output for no reason.
                 match result {
                     Some(place) if reads_result(place) => {
-                        format!("{} = {call};", self::place(place, locals, naming))
+                        format!(
+                            "{} = {call};",
+                            self::place(place, locals, naming, registers)
+                        )
                     }
                     _ => format!("{call};"),
                 }
             }
             Stmt::Return(Some(value)) => {
-                format!("return {};", expression(value, 0, locals, naming))
+                format!(
+                    "return {};",
+                    expression(value, 0, locals, naming, registers)
+                )
             }
             Stmt::Return(None) => "return;".to_owned(),
             Stmt::Branch {
@@ -418,7 +645,7 @@ impl Writer<'_> {
                 target,
             } => format!(
                 "if ({}) goto {};",
-                expression(condition, 0, locals, naming),
+                expression(condition, 0, locals, naming, registers),
                 label(*target)
             ),
             Stmt::Branch {
@@ -427,7 +654,7 @@ impl Writer<'_> {
             } => format!("goto {};", label(*target)),
             Stmt::IndirectBranch(value) => format!(
                 "goto *{};  // through a value: a switch table, or a function pointer",
-                expression(value, 12, locals, naming)
+                expression(value, 12, locals, naming, registers)
             ),
             Stmt::SystemCall { number } => match number {
                 Some(number) => format!("system_call({number:#x});"),
@@ -455,21 +682,35 @@ fn label(address: u64) -> String {
     format!("label_{address:x}")
 }
 
-fn callee(callee: &Callee, locals: &HashMap<u32, String>, naming: &Naming) -> String {
+fn callee(
+    callee: &Callee,
+    locals: &HashMap<u32, String>,
+    naming: &Naming,
+    registers: &Registers,
+) -> String {
     match callee {
         Callee::Named(name) => name.clone(),
         Callee::Address(address) => format!("function_{address:x}"),
         Callee::Indirect(value) => {
-            format!("({})", expression(value, 0, locals, naming))
+            format!("({})", expression(value, 0, locals, naming, registers))
         }
     }
 }
 
-fn place(place: &Place, locals: &HashMap<u32, String>, naming: &Naming) -> String {
+fn place(
+    place: &Place,
+    locals: &HashMap<u32, String>,
+    naming: &Naming,
+    registers: &Registers,
+) -> String {
     match place {
+        // A register the interface pass named is that name — it is a
+        // parameter, and it is declared in the signature. Anything else is a
+        // variable of this function's own, and a narrow access to one is a
+        // window onto it rather than a name of its own.
         Place::Register(register) => naming
             .name_of(*register)
-            .map_or_else(|| register.name(), ToOwned::to_owned),
+            .map_or_else(|| read_register(*register, registers), ToOwned::to_owned),
         Place::Condition(condition) => condition.name().to_owned(),
         Place::Local { id, .. } => locals
             .get(id)
@@ -478,7 +719,7 @@ fn place(place: &Place, locals: &HashMap<u32, String>, naming: &Naming) -> Strin
         Place::Memory { address, width } => format!(
             "*({} *)({})",
             width.c_name(false),
-            expression(address, 0, locals, naming)
+            expression(address, 0, locals, naming, registers)
         ),
     }
 }
@@ -489,10 +730,11 @@ fn expression(
     outer: u8,
     locals: &HashMap<u32, String>,
     naming: &Naming,
+    registers: &Registers,
 ) -> String {
     match value {
         Expr::Const { value, width } => constant(*value, *width),
-        Expr::Read(inner) => place(inner, locals, naming),
+        Expr::Read(inner) => place(inner, locals, naming, registers),
         Expr::AddressOf(inner) => {
             // In C an array's name already is the address of its first
             // element, and `&` in front of one has a different type from the
@@ -500,9 +742,9 @@ fn expression(
             if let Place::Local { id, .. } = inner.as_ref()
                 && naming.is_buffer(*id)
             {
-                place(inner, locals, naming)
+                place(inner, locals, naming, registers)
             } else {
-                format!("&{}", place(inner, locals, naming))
+                format!("&{}", place(inner, locals, naming, registers))
             }
         }
         Expr::Symbol { name, .. } => name.clone(),
@@ -513,7 +755,10 @@ fn expression(
                 Unary::Not => "~",
                 Unary::LogicalNot => "!",
             };
-            format!("{symbol}{}", expression(operand, 11, locals, naming))
+            format!(
+                "{symbol}{}",
+                expression(operand, 11, locals, naming, registers)
+            )
         }
         Expr::Binary {
             operator,
@@ -527,13 +772,13 @@ fn expression(
             // the signed test it is not.
             let (left, right) = if operator.is_unsigned_comparison() {
                 (
-                    unsigned(left, precedence, locals, naming),
-                    unsigned(right, precedence, locals, naming),
+                    unsigned(left, precedence, locals, naming, registers),
+                    unsigned(right, precedence, locals, naming, registers),
                 )
             } else {
                 (
-                    expression(left, precedence, locals, naming),
-                    expression(right, precedence + 1, locals, naming),
+                    expression(left, precedence, locals, naming, registers),
+                    expression(right, precedence + 1, locals, naming, registers),
                 )
             };
             let text = format!("{left} {symbol} {right}");
@@ -550,14 +795,14 @@ fn expression(
         } => format!(
             "({}){}",
             width.c_name(*signed),
-            expression(value, 11, locals, naming)
+            expression(value, 11, locals, naming, registers)
         ),
         Expr::Call { callee, arguments } => format!(
             "{}({})",
-            self::callee(callee, locals, naming),
+            self::callee(callee, locals, naming, registers),
             arguments
                 .iter()
-                .map(|argument| expression(argument, 0, locals, naming))
+                .map(|argument| expression(argument, 0, locals, naming, registers))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -568,9 +813,9 @@ fn expression(
         } => {
             let text = format!(
                 "{} ? {} : {}",
-                expression(condition, 3, locals, naming),
-                expression(when_true, 0, locals, naming),
-                expression(when_false, 0, locals, naming)
+                expression(condition, 3, locals, naming, registers),
+                expression(when_true, 0, locals, naming, registers),
+                expression(when_false, 0, locals, naming, registers)
             );
             if outer > 0 { format!("({text})") } else { text }
         }
@@ -584,15 +829,16 @@ fn unsigned(
     precedence: u8,
     locals: &HashMap<u32, String>,
     naming: &Naming,
+    registers: &Registers,
 ) -> String {
     let width = value.width().unwrap_or(Width::Qword);
     if matches!(value, Expr::Const { .. }) {
-        return expression(value, precedence, locals, naming);
+        return expression(value, precedence, locals, naming, registers);
     }
     format!(
         "({}){}",
         width.c_name(false),
-        expression(value, 11, locals, naming)
+        expression(value, 11, locals, naming, registers)
     )
 }
 
@@ -651,7 +897,7 @@ mod tests {
     }
 
     fn rendered(value: &Expr) -> String {
-        expression(value, 0, &HashMap::new(), &naming())
+        expression(value, 0, &HashMap::new(), &naming(), &Registers::default())
     }
 
     /// C's own precedence, so the output does not read like a machine wrote it.
@@ -666,11 +912,7 @@ mod tests {
             Expr::binary(Binary::Multiply, b.clone(), c.clone()),
         );
         assert_eq!(rendered(&product_then_sum), "rax + rbx * rcx");
-        let sum_then_product = Expr::binary(
-            Binary::Multiply,
-            Expr::binary(Binary::Add, a, b),
-            c,
-        );
+        let sum_then_product = Expr::binary(Binary::Multiply, Expr::binary(Binary::Add, a, b), c);
         assert_eq!(rendered(&sum_then_product), "(rax + rbx) * rcx");
     }
 

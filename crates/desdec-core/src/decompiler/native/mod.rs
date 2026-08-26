@@ -36,12 +36,22 @@
 //! looking at rather than trust it evenly.
 //!
 //! It is not a replacement for Ghidra's decompiler, and it does not claim to
-//! be. It does not recover types beyond the width of an access, it does not
-//! model the x87 stack or most of SSE, and it lifts x86-64 only — `AArch64`
-//! functions come out as their own listing inside a C frame, which is what the
-//! pipeline does with anything it cannot read. Where an external engine is
-//! installed and chosen it will do better on all three counts, and the
-//! preference that selects one is still there.
+//! be. It does not recover types beyond the width of an access, and it lifts
+//! x86-64 only — `AArch64` functions come out as their own listing inside a C
+//! frame, which is what the pipeline does with anything it cannot read. Where
+//! an external engine is installed and chosen it will do better on both
+//! counts, and the preference that selects one is still there.
+//!
+//! Of SSE it reads the *moves*, which is most of what is there: sixteen,
+//! thirty-two and sixty-four bytes copied about is what `memcpy`, every string
+//! comparison and every vectorised loop are made of, and on an optimised
+//! binary they were two thirds of everything this used to leave unread. The
+//! packed *arithmetic* — `pand`, `pshufd`, `paddq` — is not lifted, and
+//! neither are the partial moves such as `movss`, which write a quarter of a
+//! register and leave the rest standing: this IR has no way to name the low
+//! quarter of `%xmm0`, and claiming a whole-register assignment would be a
+//! statement about twelve bytes nothing touched. The x87 stack is not modelled
+//! at all.
 //!
 //! What it does have that no external engine does: it is always available, it
 //! answers in microseconds rather than in a process and a deadline, it never
@@ -513,6 +523,73 @@ mod tests {
         assert!(
             !text.contains("condition from flags"),
             "the flags should not reach the output:\n{text}"
+        );
+    }
+
+    /// The output used to name `eax` and declare nothing. Three quarters of
+    /// the functions in an optimised binary referred to a variable that was
+    /// nowhere: C that does not compile, and — worse for a reader — C in which
+    /// `eax` and `rax` look like two things when the machine has one.
+    #[test]
+    fn a_register_that_survives_every_pass_is_declared_rather_than_named_from_nowhere() {
+        let body = function(&[
+            (0x1000, "push %rbp"),
+            (0x1001, "mov %rsp,%rbp"),
+            (0x1004, "mov %edi,-0x4(%rbp)"),
+            (0x1007, "cmpl $0xA,-0x4(%rbp)"),
+            (0x100b, "jle 0x0000000000001016"),
+            (0x100d, "mov $1,%eax"),
+            (0x1012, "jmp 0x000000000000101b"),
+            (0x1016, "mov $0,%eax"),
+            (0x101b, "pop %rbp"),
+            (0x101c, "ret"),
+        ]);
+        let text = decompiled(&body).text();
+        assert!(
+            text.contains("eax"),
+            "the register is what the two arms write:\n{text}"
+        );
+        assert!(
+            text.contains("uint32_t eax;"),
+            "and it must be declared where the frame is:\n{text}"
+        );
+    }
+
+    /// A narrow write is not a narrow assignment. Writing `%al` clears none of
+    /// the other fifty-six bits, and an output that says `al = 1` beside a
+    /// `rax` it also names has quietly claimed otherwise.
+    #[test]
+    fn a_write_to_part_of_a_register_is_the_merge_the_machine_performs() {
+        let body = function(&[
+            (0x1000, "mov (%rdi),%rax"),
+            (0x1003, "mov $1,%al"),
+            (0x1005, "ret"),
+        ]);
+        let text = decompiled(&body).text();
+        assert!(
+            text.contains("uint64_t rax;"),
+            "the widest window used decides the variable:\n{text}"
+        );
+        assert!(
+            text.contains("rax = (rax & 0xffffffffffffff00) | (uint8_t)(1);"),
+            "a byte write keeps the other seven:\n{text}"
+        );
+    }
+
+    /// The other half of the same rule, and the one the architecture makes
+    /// total: a 32-bit write *does* clear the top half, so the assignment
+    /// alone is the whole truth and no mask belongs in front of it.
+    #[test]
+    fn a_thirty_two_bit_write_needs_no_mask_because_it_clears_the_rest() {
+        let body = function(&[
+            (0x1000, "mov (%rdi),%rax"),
+            (0x1003, "mov $1,%eax"),
+            (0x1005, "ret"),
+        ]);
+        let text = decompiled(&body).text();
+        assert!(
+            !text.contains("rax & 0x"),
+            "nothing survives a 32-bit write to be merged with:\n{text}"
         );
     }
 

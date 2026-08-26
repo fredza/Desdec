@@ -303,6 +303,7 @@ fn substitute_within(statements: &mut Vec<Statement>) {
             Stmt::Branch { .. }
             | Stmt::IndirectBranch(_)
             | Stmt::Return(_)
+            | Stmt::Trap
             | Stmt::Nothing => {}
         }
     }
@@ -430,9 +431,12 @@ fn for_each_read_expression(effect: &mut Stmt, act: &mut impl FnMut(&mut Expr)) 
             ..
         } => act(condition),
         Stmt::Return(None)
-        | Stmt::Branch { condition: None, .. }
+        | Stmt::Branch {
+            condition: None, ..
+        }
         | Stmt::Opaque(_)
         | Stmt::SystemCall { .. }
+        | Stmt::Trap
         | Stmt::Nothing => {}
     }
 }
@@ -699,9 +703,12 @@ fn places_read(effect: &Stmt) -> Vec<Place> {
             ..
         } => collect(condition),
         Stmt::Return(None)
-        | Stmt::Branch { condition: None, .. }
+        | Stmt::Branch {
+            condition: None, ..
+        }
         | Stmt::Opaque(_)
         | Stmt::SystemCall { .. }
+        | Stmt::Trap
         | Stmt::Nothing => {}
     }
     found
