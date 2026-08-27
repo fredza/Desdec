@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "desdec-analyzer"
-version = "0.4.53"
+version = "0.4.54"
 dependencies = [
  "desdec-core",
  "serde_json",
@@ -875,7 +875,7 @@ dependencies = [
 
 [[package]]
 name = "desdec-app"
-version = "0.4.53"
+version = "0.4.54"
 dependencies = [
  "desdec-core",
  "eframe",
@@ -889,7 +889,7 @@ dependencies = [
 
 [[package]]
 name = "desdec-core"
-version = "0.4.53"
+version = "0.4.54"
 dependencies = [
  "capstone",
  "iced-x86",
