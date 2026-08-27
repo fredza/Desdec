@@ -1186,9 +1186,9 @@ translations! {
         "Enviar a ASM Studio",
     ],
     SendToAsmStudioHelp => [
-        "Écrit la fonction courante en assembleur NASM, ré-orthographié depuis les octets et non depuis le listing AT&T, puis lance ASM Studio s’il est installé. Le fichier est écrit dans tous les cas et son chemin est copié.",
-        "Writes the current function as NASM assembly, re-spelled from the bytes rather than from the AT&T listing, then launches ASM Studio if it is installed. The file is written either way and its path is copied.",
-        "Escribe la función actual como ensamblador NASM, reescrito desde los bytes y no desde el listado AT&T, y luego lanza ASM Studio si está instalado. El archivo se escribe en todo caso y su ruta se copia.",
+        "Écrit la fonction courante en assembleur NASM, ré-orthographié depuis les octets et non depuis le listing AT&T, et l’ouvre dans ASM Studio. Le fichier est écrit même si ASM Studio n’est pas installé, et son chemin est copié dans tous les cas.",
+        "Writes the current function as NASM assembly, re-spelled from the bytes rather than from the AT&T listing, and opens it in ASM Studio. The file is written even where ASM Studio is not installed, and its path is copied either way.",
+        "Escribe la función actual como ensamblador NASM, reescrito desde los bytes y no desde el listado AT&T, y lo abre en ASM Studio. El archivo se escribe aunque ASM Studio no esté instalado, y su ruta se copia en todo caso.",
     ],
     AsmStudioNoFunction => [
         "Aucune fonction sous le curseur : placez-vous dans une fonction du listing.",
@@ -1198,14 +1198,14 @@ translations! {
     AsmStudioFailed => ["Écriture impossible", "Cannot write", "Escritura imposible"],
     AsmStudioWrote => ["Assembleur écrit :", "Assembly written:", "Ensamblador escrito:"],
     AsmStudioPathCopied => [
-        "Chemin copié",
-        "Path copied",
-        "Ruta copiada",
+        "Chemin copié, au cas où",
+        "Path copied, just in case",
+        "Ruta copiada, por si acaso",
     ],
     AsmStudioOpened => [
-        "ASM Studio lancé (il n’ouvre pas le fichier lui-même : collez le chemin) :",
-        "ASM Studio launched (it does not open the file itself: paste the path):",
-        "ASM Studio lanzado (no abre el archivo por sí mismo: pegue la ruta):",
+        "Ouvert dans ASM Studio :",
+        "Opened in ASM Studio:",
+        "Abierto en ASM Studio:",
     ],
     AsmStudioMissing => [
         "ASM Studio n’est pas installé : le fichier est écrit et son chemin copié.",
@@ -1868,6 +1868,16 @@ translations! {
         "GitHub n’a pas répondu. Rien n’a changé ici.",
         "GitHub did not answer. Nothing changed here.",
         "GitHub no respondió. Aquí no ha cambiado nada.",
+    ],
+    UpdateNotWritten => [
+        "L’archive est arrivée et son empreinte est la bonne, mais elle n’a pas pu être écrite sur le disque.",
+        "The archive arrived and its hash is the published one, but it could not be written to disk.",
+        "El archivo llegó y su huella es la publicada, pero no se pudo escribir en el disco.",
+    ],
+    UpdateTooLarge => [
+        "L’archive publiée dépasse la taille que Desdec accepte de télécharger :",
+        "The published archive is larger than Desdec will download:",
+        "El archivo publicado supera el tamaño que Desdec acepta descargar:",
     ],
     UpdateNoArchiveHere => [
         "Cette release ne publie pas d’archive pour cette machine :",

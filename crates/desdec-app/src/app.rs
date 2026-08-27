@@ -2753,13 +2753,16 @@ impl DesdecApp {
     /// Studio when that is installed.
     ///
     /// **The file is written whether or not ASM Studio is there**, and its
-    /// path is put on the clipboard either way. Two reasons. The export is
-    /// worth having on its own — Desdec had no way at all to get assembly out
-    /// of a listing. And ASM Studio does not read a file named on its command
-    /// line: tried against the build installed on 2026-08-27, it opens on its
-    /// own start screen with the path ignored. The path is passed regardless,
-    /// so that the day it does read one nothing here has to change; until
-    /// then the clipboard is the hand-off, and the journal says so.
+    /// path is put on the clipboard either way. The export is worth having on
+    /// its own — Desdec had no way at all to get assembly out of a listing —
+    /// and a reader without that IDE installed still gets the file.
+    ///
+    /// The hand-off itself is the path on the command line, which is where
+    /// this began: ASM Studio ignored its argument and opened on its start
+    /// screen, so the clipboard was all there was. It reads it since
+    /// 2026-08-27 and the file opens; the clipboard stays as a fallback for a
+    /// build that predates that, which costs nothing and answers the case
+    /// where nothing appears.
     pub fn send_to_asm_studio(&mut self, ctx: &egui::Context) {
         let Some(analysis) = self.analysis.as_ref() else {
             return;
