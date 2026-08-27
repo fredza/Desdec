@@ -457,9 +457,13 @@ pub fn explain(error: &update::Error, language: Language) -> String {
             format!("{}\n\n{expected}\n{found}", say(Text::UpdateRefused))
         }
         update::Error::NoChecksum => say(Text::UpdateNoChecksum),
-        update::Error::Storage(why) => format!("{} ({why})", say(Text::UpdateUnreachable)),
+        // Not `UpdateUnreachable`: by the time either of these can happen
+        // GitHub has answered, the archive has arrived and its hash has been
+        // checked. Telling the reader the network failed sent them looking in
+        // the one place where nothing was wrong.
+        update::Error::Storage(why) => format!("{} ({why})", say(Text::UpdateNotWritten)),
         update::Error::TooLarge { size } => {
-            format!("{} ({})", say(Text::UpdateUnreachable), format_size(*size))
+            format!("{} {}", say(Text::UpdateTooLarge), format_size(*size))
         }
     }
 }

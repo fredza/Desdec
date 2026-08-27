@@ -310,8 +310,10 @@ fn keep_verified_archive(
 ) -> Result<PathBuf, Error> {
     fs::create_dir_all(directory).map_err(|error| Error::Storage(error.to_string()))?;
     let destination = directory.join(name);
-    if destination.exists() {
-        return existing_verified_archive(&destination, expected);
+    if destination.exists()
+        && let Ok(path) = existing_verified_archive(&destination, expected)
+    {
+        return Ok(path);
     }
 
     // create_new makes a stale partial file harmless instead of overwriting
@@ -340,7 +342,12 @@ fn keep_verified_archive(
                 fs::remove_file(&partial).map_err(|error| Error::Storage(error.to_string()))?;
                 Ok(destination)
             }
-            Err(_) if destination.exists() => existing_verified_archive(&destination, expected),
+            Err(_) if destination.exists() => {
+                match existing_verified_archive(&destination, expected) {
+                    Ok(path) => Ok(path),
+                    Err(_) => beside(directory, name, &partial, expected),
+                }
+            }
             Err(error) => Err(Error::Storage(error.to_string())),
         }
     })();
@@ -348,6 +355,50 @@ fn keep_verified_archive(
         let _ = fs::remove_file(&partial);
     }
     result
+}
+
+/// Puts the verified bytes beside a file of the same name that is not them.
+///
+/// A reader's download folder keeps what they downloaded before, and an
+/// archive of a *previous* release carries exactly the name this one does. The
+/// old behaviour refused at that point: the archive had been fetched and its
+/// hash checked, and it was then thrown away with an error — so every update
+/// from that moment on failed, permanently, until someone found and deleted a
+/// file nobody had told them about.
+///
+/// Overwriting is still out of the question; a file the reader has is theirs.
+/// So the new one is kept under the next free name, which is what a browser
+/// does and what the reader will recognise in the folder — the journal names
+/// the path it actually landed at.
+fn beside(directory: &Path, name: &str, partial: &Path, expected: &str) -> Result<PathBuf, Error> {
+    // Before the first dot, so `desdec-linux-x86_64.tar.gz` becomes
+    // `desdec-linux-x86_64 (2).tar.gz` and not `…tar (2).gz`.
+    let (stem, extension) = name.split_once('.').unwrap_or((name, ""));
+    for attempt in 2..64_u32 {
+        let candidate = directory.join(if extension.is_empty() {
+            format!("{stem} ({attempt})")
+        } else {
+            format!("{stem} ({attempt}).{extension}")
+        });
+        // A name already taken may well be this very archive, from a download
+        // the reader asked for twice. Reused rather than copied again: the
+        // folder must not fill with `(2)`, `(3)`, `(4)` of one release.
+        if candidate.exists() {
+            if let Ok(path) = existing_verified_archive(&candidate, expected) {
+                let _ = fs::remove_file(partial);
+                return Ok(path);
+            }
+            continue;
+        }
+        if fs::hard_link(partial, &candidate).is_ok() {
+            fs::remove_file(partial).map_err(|error| Error::Storage(error.to_string()))?;
+            return Ok(candidate);
+        }
+    }
+    Err(Error::Storage(format!(
+        "{} is taken, and so is every name beside it",
+        directory.join(name).display()
+    )))
 }
 
 /// Returns an already-present archive only when it is exactly the one the
@@ -514,6 +565,73 @@ mod tests {
             .expect("the already verified archive is reused");
         assert_eq!(first, again);
         assert_eq!(fs::read(first).expect("archive is readable"), bytes);
+
+        fs::remove_dir_all(directory).expect("test directory is removed");
+    }
+
+    /// The one that made every update fail, for good.
+    ///
+    /// A reader's download folder keeps what they downloaded before, and the
+    /// archive of a previous release carries exactly the name this one does.
+    /// The archive was fetched, its hash checked — and then thrown away with
+    /// an error, so the next attempt failed the same way, and the one after
+    /// that, until someone found and deleted a file nobody had named.
+    ///
+    /// Found on a real folder: `desdec-linux-x86_64-release.tar.gz` of
+    /// 2026-08-21 sitting in front of the release published since.
+    #[test]
+    fn an_older_archive_of_the_same_name_is_kept_and_the_new_one_lands_beside_it() {
+        let directory = std::env::temp_dir().join(format!(
+            "desdec-update-beside-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).expect("a folder to download into");
+
+        // What the reader already has, under the name the new one wants.
+        let theirs = directory.join("desdec-linux-x86_64-release.tar.gz");
+        fs::write(&theirs, b"last month's release").expect("their own file");
+
+        let bytes = b"the release published since";
+        let expected = hash::to_hex(&hash::sha256(bytes));
+        let kept = keep_verified_archive(
+            &directory,
+            "desdec-linux-x86_64-release.tar.gz",
+            bytes,
+            &expected,
+        )
+        .expect("a download that was fetched and verified is not thrown away");
+
+        assert_eq!(
+            fs::read(&theirs).expect("their file is readable"),
+            b"last month's release",
+            "a file the reader has is theirs, and is not overwritten"
+        );
+        assert_eq!(
+            fs::read(&kept).expect("the new archive is readable"),
+            bytes,
+            "and the new one is on disk, whole"
+        );
+        // Before the first dot: `… (2).tar.gz`, not `….tar (2).gz`.
+        assert_eq!(
+            kept.file_name().and_then(|name| name.to_str()),
+            Some("desdec-linux-x86_64-release (2).tar.gz"),
+            "under a name the reader will recognise in the folder"
+        );
+
+        // And the same download again reuses what it just wrote rather than
+        // making a third copy.
+        let again = keep_verified_archive(
+            &directory,
+            "desdec-linux-x86_64-release.tar.gz",
+            bytes,
+            &expected,
+        )
+        .expect("the archive is there already");
+        assert_eq!(again, kept);
 
         fs::remove_dir_all(directory).expect("test directory is removed");
     }
