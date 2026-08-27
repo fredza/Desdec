@@ -54,6 +54,7 @@ const THEME_CHOICES: &[(ThemePreference, Text)] = &[
     (ThemePreference::Dark, Text::DarkTheme),
     (ThemePreference::Light, Text::LightTheme),
     (ThemePreference::Catppuccin, Text::CatppuccinTheme),
+    (ThemePreference::Abyss, Text::AbyssTheme),
 ];
 
 const LANGUAGE_CHOICES: &[(Language, Text)] = &[
@@ -330,6 +331,17 @@ fn library_explanations(app: &mut DesdecApp, ui: &mut egui::Ui) {
     let label = text(language, Text::ExplainLibraries);
     ui.checkbox(&mut app.preferences.explain_libraries, label);
     ui.small(text(language, Text::ExplainLibrariesInfo));
+
+    // The overview's other explanation switch, which the mapping card also
+    // carries. Both are here so a reader who wants the panels quiet can say so
+    // once, in the place settings live, rather than hunting for a checkbox
+    // inside each card.
+    ui.add_space(4.0);
+    ui.checkbox(
+        &mut app.preferences.explain_mapping,
+        text(language, Text::LoadMapping),
+    )
+    .on_hover_text(text(language, Text::MappingWhatItIs));
 
     let Some(path) = crate::libraries::user_catalogue_path() else {
         return;

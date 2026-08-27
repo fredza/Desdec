@@ -761,6 +761,7 @@ mod tests {
             code_truncated: false,
             details: crate::BinaryDetails::default(),
             languages: Vec::new(),
+            protections: Vec::new(),
             sha256: None,
             entropy: None,
             analysed_bytes: 0,

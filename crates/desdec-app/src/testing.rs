@@ -458,7 +458,8 @@ pub fn write_svg(shapes: &[eframe::egui::epaint::ClippedShape], path: &str) {
     }
     let size = window_size();
     let svg = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\"><rect width=\"100%\" height=\"100%\" fill=\"#0d1017\"/>\n{body}</svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\"><rect width=\"100%\" height=\"100%\" fill=\"{backdrop}\"/>\n{body}</svg>",
+        backdrop = frame_sheet::colour(frame_sheet::BACKDROP),
         width = size.x,
         height = size.y
     );
@@ -683,24 +684,49 @@ mod frame_sheet {
             .unwrap_or(egui::Color32::WHITE)
     }
 
+    /// The colour the sheet is painted on, which is what a partly transparent
+    /// mark is laid over.
+    pub const BACKDROP: egui::Color32 = egui::Color32::from_rgb(0x0d, 0x10, 0x17);
+
     /// One colour, as SVG spells it.
     ///
-    /// Fully transparent comes out as `none` rather than as `rgba(…,0)`.
-    /// Inkscape does not render `rgba()` at all, so a sheet is passed through
-    /// `sed` to turn it into `rgb()` before being exported — and that turns a
-    /// transparent fill into opaque black. Every outlined box in the interface
-    /// came out of the exporter filled in: a defect that existed only in the
-    /// picture of the defect.
+    /// Fully transparent comes out as `none` rather than as a colour nothing
+    /// can be seen of.
+    ///
+    /// Everything else comes out as a plain `#rrggbb`, with whatever
+    /// transparency it had composed onto [`BACKDROP`] here. SVG 1.1 has no
+    /// `rgba()`, and this exporter used to write one anyway: Inkscape and
+    /// ImageMagick both dropped every such fill on the floor, and a sheet of
+    /// the whole interface exported as a black rectangle — a picture of
+    /// nothing, produced by the one tool whose job is to show what the
+    /// interface looks like. The instructions above this function used to say
+    /// to run the file through `sed` first, which turned every transparent
+    /// fill into opaque black instead.
+    ///
+    /// Composing here rather than emitting `fill-opacity` beside every mark
+    /// keeps this to one function, and gives the same picture: a translucent
+    /// highlight in this interface is nearly always laid straight over the
+    /// panel, which is the colour composed onto.
     pub fn colour(c: egui::Color32) -> String {
         if c.a() == 0 {
             return "none".to_owned();
         }
+        let over = |ink: u8, under: u8| {
+            let alpha = f32::from(c.a()) / 255.0;
+            let mixed = f32::from(ink).mul_add(alpha, f32::from(under) * (1.0 - alpha));
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a channel composed of two channels stays in 0..=255"
+            )]
+            let mixed = mixed.round() as u8;
+            mixed
+        };
         format!(
-            "rgba({},{},{},{})",
-            c.r(),
-            c.g(),
-            c.b(),
-            f32::from(c.a()) / 255.0
+            "#{:02x}{:02x}{:02x}",
+            over(c.r(), BACKDROP.r()),
+            over(c.g(), BACKDROP.g()),
+            over(c.b(), BACKDROP.b())
         )
     }
 

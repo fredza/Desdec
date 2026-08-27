@@ -200,11 +200,29 @@ fn status_card(ui: &mut egui::Ui, title: &str, detail: &str, colour: egui::Color
     ui.painter()
         .rect_filled(rect, 8.0, colour.gamma_multiply(0.13));
     let inner = rect.shrink2(egui::vec2(16.0, 12.0));
-    ui.painter().circle_filled(
-        inner.left_center() + egui::vec2(5.0, 0.0),
-        5.0,
-        colour.gamma_multiply(0.9),
-    );
+    // A card that failed is marked with the road sign, not with a dot in
+    // another colour. A dot says *a card*; the reader has to read the card to
+    // find out which kind. The sign says *something went wrong* from across
+    // the window, which is the whole point of a mark at the front of a line.
+    if colour == ERROR {
+        const SIGN: f32 = 15.0;
+        crate::icons::draw_with_stroke(
+            ui.painter(),
+            egui::Rect::from_center_size(
+                inner.left_center() + egui::vec2(5.0, 0.0),
+                egui::Vec2::splat(SIGN),
+            ),
+            crate::icons::Icon::Warning,
+            colour,
+            1.5,
+        );
+    } else {
+        ui.painter().circle_filled(
+            inner.left_center() + egui::vec2(5.0, 0.0),
+            5.0,
+            colour.gamma_multiply(0.9),
+        );
+    }
     ui.painter().text(
         inner.left_top() + egui::vec2(18.0, 0.0),
         egui::Align2::LEFT_TOP,

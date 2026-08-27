@@ -652,10 +652,47 @@ pub struct DesdecApp {
     pub string_references: crate::ui::strings::CodeReferences,
     /// Address of the function currently inspected in the Functions view.
     pub selected_function: Option<u64>,
+    /// Section the overview sent the reader to, by name.
+    ///
+    /// The overview states the entry point and the section it lands in; this
+    /// is what that statement leads to when it is pressed. Kept as a name
+    /// rather than an index because the two views hold their own borrows of
+    /// the analysis and never each other's.
+    ///
+    /// It marks the row for as long as the binary is open. Bringing it into
+    /// view is [`Self::pending_section_scroll`]'s business, and only once.
+    pub focused_section: Option<String>,
+    /// Whether the marked section still has to be brought into view.
+    ///
+    /// Its own flag because the two are not the same act. Asking for the
+    /// scroll on every frame the section is marked would pin the table to that
+    /// row and make it impossible to scroll away from — the mark is a state,
+    /// the scroll is a moment.
+    pub pending_section_scroll: bool,
+    /// Whether the names the compiler wrote are left as the file spells them.
+    ///
+    /// Stored as the opposite of what the switch says, like every other
+    /// `hide_*` here: an untouched `false` reads the names back, which is what
+    /// a reader opening a Rust binary for the first time wants. Turning the
+    /// switch off puts the file's own spelling back.
+    ///
+    /// Lives with the session rather than with the preferences: it is a way of
+    /// looking at one file, changed while reading it, not a setting anyone
+    /// goes to a dialog to choose.
+    pub mangled_names: bool,
     /// Instruction selected in the disassembly or local pseudo-code view.
     pub selected_instruction: Option<u64>,
     /// Instruction that must be brought into view after a new selection.
     pub pending_instruction_scroll: Option<u64>,
+    /// A scroll the reader made in the pseudo-code beside the listing, for the
+    /// listing to follow on the next frame.
+    ///
+    /// The two columns of the disassembly view are one listing read two ways,
+    /// so they hold the same rows: the listing decides where the pair stands,
+    /// and the panel is drawn at the offset the listing reached. That leaves
+    /// the wheel over the panel with nowhere to go, which is why what it did
+    /// is kept here and handed back the other way round.
+    pub pseudocode_scroll: Option<f32>,
     /// Temporarily draws attention to an instruction reached from another view.
     pub instruction_attention: Option<(u64, f64)>,
     /// The static walk through the code, and the trail it has left.
@@ -737,7 +774,7 @@ pub struct DesdecApp {
     /// extractor cannot tell from text — are kept out of the Strings view.
     pub strings_hide_prologues: bool,
     /// Which strings the reader is asking to see; see [`crate::ui::strings::Scope`].
-    pub strings_scope: crate::ui::strings::Scope,
+    pub strings_scopes: crate::ui::strings::Scopes,
     /// Free-text filter applied to the declared symbols.
     pub symbols_filter: String,
     /// Hide the imported names in the Symbols view.
@@ -1557,30 +1594,36 @@ impl DesdecApp {
             }
             Command::StringsScopeAll => {
                 self.open_view(command);
-                self.strings_scope = crate::ui::strings::Scope::All;
+                self.strings_scopes = crate::ui::strings::Scopes::EVERYTHING;
             }
+            // Each of these turns its own kind on or off, like the switch it
+            // stands for in the view. They used to select one kind and drop
+            // the rest, which is what the view itself no longer does.
             Command::StringsScopeUsed => {
                 self.open_view(command);
-                self.strings_scope = crate::ui::strings::Scope::Used;
+                self.strings_scopes.toggle(crate::ui::strings::Scope::Used);
             }
             Command::StringsScopeMappedUnreferenced => {
                 self.open_view(command);
-                self.strings_scope = crate::ui::strings::Scope::MappedUnreferenced;
+                self.strings_scopes
+                    .toggle(crate::ui::strings::Scope::MappedUnreferenced);
             }
             Command::StringsScopeUnmapped => {
                 self.open_view(command);
-                self.strings_scope = crate::ui::strings::Scope::Unmapped;
+                self.strings_scopes
+                    .toggle(crate::ui::strings::Scope::Unmapped);
             }
             Command::StringsClearFilter => {
                 self.open_view(command);
                 self.strings_filter.clear();
-                self.strings_scope = crate::ui::strings::Scope::All;
+                self.strings_scopes = crate::ui::strings::Scopes::EVERYTHING;
                 self.strings_hide_prologues = false;
             }
             Command::ThemeSystem => self.set_theme(ctx, ThemePreference::System),
             Command::ThemeDark => self.set_theme(ctx, ThemePreference::Dark),
             Command::ThemeLight => self.set_theme(ctx, ThemePreference::Light),
             Command::ThemeCatppuccin => self.set_theme(ctx, ThemePreference::Catppuccin),
+            Command::ThemeAbyss => self.set_theme(ctx, ThemePreference::Abyss),
             Command::LanguageFrench => self.preferences.language = Language::French,
             Command::LanguageEnglish => self.preferences.language = Language::English,
             Command::LanguageSpanish => self.preferences.language = Language::Spanish,
@@ -3073,11 +3116,14 @@ impl DesdecApp {
         self.symbols_hide_imports = false;
         self.symbols_hide_defined = false;
         self.classes_filter.clear();
-        self.strings_scope = crate::ui::strings::Scope::All;
+        self.strings_scopes = crate::ui::strings::Scopes::EVERYTHING;
         self.strings_hide_prologues = false;
         self.selected_function = None;
+        self.focused_section = None;
+        self.pending_section_scroll = false;
         self.selected_instruction = None;
         self.pending_instruction_scroll = None;
+        self.pseudocode_scroll = None;
         self.instruction_attention = None;
         self.walk.clear();
         // The machine is built over one file's address space. Carrying it over

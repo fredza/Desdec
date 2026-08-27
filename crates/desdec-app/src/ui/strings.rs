@@ -29,7 +29,7 @@ pub fn show(
     analysis: &Analysis,
     references: &CodeReferences,
     filter: &mut String,
-    scope: &mut Scope,
+    scopes: &mut Scopes,
     hide_prologues: &mut bool,
     selected_string: &mut Option<u64>,
     language: Language,
@@ -40,16 +40,23 @@ pub fn show(
         return action;
     }
 
-    let matches = matching(analysis, references, filter, *scope, *hide_prologues);
+    let matches = matching(analysis, references, filter, *scopes, *hide_prologues);
     header(
         ui,
         filter,
-        scope,
+        scopes,
         hide_prologues,
         matches.len(),
         analysis.strings.len(),
         language,
     );
+    // Every switch off shows an empty table, which is a state the reader asked
+    // for and has to be able to recognise: a bare empty list here reads as a
+    // file that holds no strings.
+    if scopes.is_nothing() {
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(text(language, Text::StringsNoScope)).color(MUTED));
+    }
     ui.add_space(8.0);
 
     if let Some(string) = selected_string.and_then(|offset| {
@@ -93,7 +100,7 @@ pub fn show(
 fn header(
     ui: &mut egui::Ui,
     filter: &mut String,
-    scope: &mut Scope,
+    scopes: &mut Scopes,
     hide_prologues: &mut bool,
     shown: usize,
     total: usize,
@@ -106,7 +113,7 @@ fn header(
                 .hint_text(text(language, Text::FilterHint))
                 .desired_width(240.0),
         );
-        criteria(ui, scope, language);
+        criteria(ui, scopes, language);
         // Its own control rather than another `Scope`: the scopes are one
         // question with four answers, and this is a second question asked at
         // the same time. A reader wants the code noise gone *and* the strings
@@ -118,7 +125,7 @@ fn header(
         )
         .on_hover_text(text(language, Text::StringsShowProloguesHelp));
 
-        let filtering = !filter.is_empty() || *scope != Scope::All || *hide_prologues;
+        let filtering = !filter.is_empty() || !scopes.is_everything() || *hide_prologues;
         if ui
             .add_enabled(
                 filtering,
@@ -127,7 +134,7 @@ fn header(
             .clicked()
         {
             filter.clear();
-            *scope = Scope::All;
+            *scopes = Scopes::EVERYTHING;
             *hide_prologues = false;
         }
 
@@ -155,43 +162,39 @@ fn header(
     }
 }
 
-/// The criteria, folded into one drop-down.
+/// The three kinds, each with its own switch.
 ///
 /// They were two toggle buttons — "hide the unmapped", "hide the unreferenced"
-/// — folded into a drop-down. Two things were wrong with that. Both were
-/// **double negatives**, and a reader wanting the strings the program uses had
-/// to work out that it means switching both of them on. And the combination a
-/// reader actually asks for most often could not be expressed at all: *mapped
-/// and unreferenced* — loaded into memory, and yet nothing in the decoded code
-/// points at them — which is where a string reached by arithmetic, through a
-/// table, or built at run time shows up, and is the most interesting question
-/// the string table answers.
+/// — folded into a drop-down. Both were **double negatives**, and a reader
+/// wanting the strings the program uses had to work out that it means
+/// switching both of them on. So they became named kinds, said in the
+/// positive, on the row itself.
 ///
-/// So the criteria are four named scopes, said in the positive, on the row
-/// itself. One click, no combination to work out, and the one that was
-/// impossible is now the third of them.
-fn criteria(ui: &mut egui::Ui, scope: &mut Scope, language: Language) {
+/// They were then four choices of which exactly one could stand: the three
+/// kinds and an "all". That is a narrower question than the table can answer.
+/// The kinds do not overlap, so any two of them together is a perfectly good
+/// thing to ask for — *what the program uses, and what it can never load* — and
+/// exclusive buttons made it unaskable. Each kind is its own switch now.
+fn criteria(ui: &mut egui::Ui, scopes: &mut Scopes, language: Language) {
     ui.small(text(language, Text::StringsScope));
-    for choice in Scope::ALL {
-        let response = ui.selectable_label(*scope == *choice, choice.label(language));
-        let response = match choice.help(language) {
-            Some(help) => response.on_hover_text(help),
-            None => response,
-        };
-        if response.clicked() {
-            *scope = *choice;
+    for kind in Scope::ALL {
+        if ui
+            .selectable_label(scopes.holds(*kind), kind.label(language))
+            .on_hover_text(kind.help(language))
+            .clicked()
+        {
+            scopes.toggle(*kind);
         }
     }
 }
 
-/// Which strings a reader is asking to see.
+/// One kind of string, named for what the strings *are* rather than for what
+/// is being hidden.
 ///
-/// Said in the positive and named for what the strings *are*, not for what is
-/// being hidden.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// The three are disjoint and together they are the whole table: a string is
+/// mapped and pointed at, mapped and pointed at by nothing, or never mapped.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Scope {
-    #[default]
-    All,
     /// Mapped and pointed at by the decoded code: what the program uses.
     Used,
     /// Mapped, and named by nothing in the decoded code. A string reached by
@@ -203,18 +206,12 @@ pub enum Scope {
 }
 
 impl Scope {
-    pub const ALL: &'static [Self] = &[
-        Self::All,
-        Self::Used,
-        Self::MappedUnreferenced,
-        Self::Unmapped,
-    ];
+    pub const ALL: &'static [Self] = &[Self::Used, Self::MappedUnreferenced, Self::Unmapped];
 
     pub fn label(self, language: Language) -> &'static str {
         text(
             language,
             match self {
-                Self::All => Text::StringsScopeAll,
                 Self::Used => Text::StringsScopeUsed,
                 Self::MappedUnreferenced => Text::StringsScopeMappedUnreferenced,
                 Self::Unmapped => Text::StringsScopeUnmapped,
@@ -222,28 +219,97 @@ impl Scope {
         )
     }
 
-    /// What the scope means, for a reader who has not met the distinction
-    /// before. `All` needs none: it is the absence of a question.
-    pub fn help(self, language: Language) -> Option<&'static str> {
-        Some(text(
+    /// What the kind means, for a reader who has not met the distinction
+    /// before.
+    pub fn help(self, language: Language) -> &'static str {
+        text(
             language,
             match self {
-                Self::All => return None,
                 Self::Used => Text::StringsScopeUsedHelp,
                 Self::MappedUnreferenced => Text::StringsScopeMappedUnreferencedHelp,
                 Self::Unmapped => Text::StringsScopeUnmappedHelp,
             },
-        ))
+        )
     }
 
-    /// Whether a string belongs in this scope.
-    const fn keeps(self, unmapped: bool, unreferenced: bool) -> bool {
-        match self {
-            Self::All => true,
-            Self::Used => !unmapped && !unreferenced,
-            Self::MappedUnreferenced => !unmapped && unreferenced,
-            Self::Unmapped => unmapped,
+    /// Which kind a string is.
+    const fn of(unmapped: bool, unreferenced: bool) -> Self {
+        if unmapped {
+            Self::Unmapped
+        } else if unreferenced {
+            Self::MappedUnreferenced
+        } else {
+            Self::Used
         }
+    }
+}
+
+/// The kinds a reader is asking to see, in any combination.
+///
+/// A set rather than a single choice. The three kinds used to be four radio
+/// buttons — the three, and an "all" that stood for the lot — so asking for
+/// two of them was impossible: a reader who wants *what the program uses* and
+/// *what it can never load*, and not the mapped strings nothing points at, had
+/// to look at the whole table and do the excluding by eye. Each kind is its
+/// own switch now, and "all three on" is what the old "all" was.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Scopes {
+    used: bool,
+    mapped_unreferenced: bool,
+    unmapped: bool,
+}
+
+impl Default for Scopes {
+    /// Everything, which is the only honest state to open on: a table that
+    /// starts out narrowed is a table whose reader is not told what is missing.
+    fn default() -> Self {
+        Self::EVERYTHING
+    }
+}
+
+impl Scopes {
+    pub const EVERYTHING: Self = Self {
+        used: true,
+        mapped_unreferenced: true,
+        unmapped: true,
+    };
+
+    /// Whether nothing is being left out, which is what makes the row read as
+    /// unfiltered.
+    #[must_use]
+    pub const fn is_everything(self) -> bool {
+        self.used && self.mapped_unreferenced && self.unmapped
+    }
+
+    /// Whether every kind has been switched off, which shows an empty table
+    /// and has to be said in words rather than left looking like a file with
+    /// no strings in it.
+    #[must_use]
+    pub const fn is_nothing(self) -> bool {
+        !self.used && !self.mapped_unreferenced && !self.unmapped
+    }
+
+    #[must_use]
+    pub const fn holds(self, kind: Scope) -> bool {
+        match kind {
+            Scope::Used => self.used,
+            Scope::MappedUnreferenced => self.mapped_unreferenced,
+            Scope::Unmapped => self.unmapped,
+        }
+    }
+
+    pub const fn toggle(&mut self, kind: Scope) {
+        let held = match kind {
+            Scope::Used => &mut self.used,
+            Scope::MappedUnreferenced => &mut self.mapped_unreferenced,
+            Scope::Unmapped => &mut self.unmapped,
+        };
+        *held = !*held;
+    }
+
+    /// Whether a string belongs to one of the kinds asked for.
+    const fn keeps(self, unmapped: bool, unreferenced: bool) -> bool {
+        self.holds(Scope::of(unmapped, unreferenced))
     }
 }
 
@@ -300,7 +366,7 @@ fn matching<'a>(
     analysis: &'a Analysis,
     references: &CodeReferences,
     filter: &str,
-    scope: Scope,
+    scopes: Scopes,
     hide_prologues: bool,
 ) -> Vec<StringMatch<'a>> {
     let needle = filter.to_lowercase();
@@ -320,7 +386,7 @@ fn matching<'a>(
         })
         // Several criteria narrow together: each one is a condition the string
         // has to meet, not another list added to the first.
-        .filter(|item| scope.keeps(item.unmapped, item.unreferenced))
+        .filter(|item| scopes.keeps(item.unmapped, item.unreferenced))
         .filter(|item| !(hide_prologues && item.prologue))
         .collect()
 }
@@ -731,6 +797,7 @@ mod tests {
             code_truncated: false,
             details: Default::default(),
             languages: Vec::new(),
+            protections: Vec::new(),
             sha256: None,
             entropy: None,
             analysed_bytes: 0,
@@ -781,7 +848,7 @@ mod tests {
         let analysis = analysis_with_code_and_data();
         let references = CodeReferences::of(&analysis);
         let shown = |hide| {
-            matching(&analysis, &references, "", Scope::All, hide)
+            matching(&analysis, &references, "", Scopes::EVERYTHING, hide)
                 .into_iter()
                 .map(|item| item.string.value.clone())
                 .collect::<Vec<_>>()
@@ -806,55 +873,101 @@ mod tests {
         );
     }
 
-    /// Each scope keeps what belongs to it, and the four together account for
-    /// every string exactly once.
+    /// One kind alone keeps what belongs to it, and the three together account
+    /// for every string exactly once.
     ///
     /// The interesting one is `MappedUnreferenced`: loaded into memory, and yet
     /// nothing in the decoded code points at it. That is where a string reached
     /// by arithmetic, through a table, or built at run time shows up — and the
     /// old pair of "hide this, hide that" toggles could not express it at all.
     #[test]
-    fn each_scope_keeps_what_belongs_to_it_and_the_four_account_for_everything() {
+    fn each_kind_keeps_what_belongs_to_it_and_the_three_account_for_everything() {
         let analysis = analysis_for_filters();
         let references = CodeReferences::of(&analysis);
-        let shown = |scope| {
-            matching(&analysis, &references, "", scope, false)
+        let shown = |scopes| {
+            matching(&analysis, &references, "", scopes, false)
                 .into_iter()
                 .map(|item| item.string.value.clone())
                 .collect::<Vec<_>>()
         };
+        let only = |kind| {
+            let mut scopes = Scopes::EVERYTHING;
+            for other in Scope::ALL {
+                if *other != kind {
+                    scopes.toggle(*other);
+                }
+            }
+            scopes
+        };
 
         assert_eq!(
-            shown(Scope::All),
+            shown(Scopes::EVERYTHING),
             ["referenced", "unreferenced", "not mapped"],
             "every string, which is the absence of a question"
         );
         assert_eq!(
-            shown(Scope::Used),
+            shown(only(Scope::Used)),
             ["referenced"],
             "loaded and pointed at: what the program uses"
         );
         assert_eq!(
-            shown(Scope::MappedUnreferenced),
+            shown(only(Scope::MappedUnreferenced)),
             ["unreferenced"],
             "loaded, and named by nothing the decoder read"
         );
         assert_eq!(
-            shown(Scope::Unmapped),
+            shown(only(Scope::Unmapped)),
             ["not mapped"],
             "in the file and never loaded"
         );
 
-        // The three narrow scopes partition the whole, so nothing can fall
-        // between them and nothing is counted twice.
-        let mut parts: Vec<String> = [Scope::Used, Scope::MappedUnreferenced, Scope::Unmapped]
-            .into_iter()
-            .flat_map(shown)
+        // The three kinds partition the whole, so nothing can fall between
+        // them and nothing is counted twice.
+        let mut parts: Vec<String> = Scope::ALL
+            .iter()
+            .flat_map(|kind| shown(only(*kind)))
             .collect();
         parts.sort();
-        let mut whole = shown(Scope::All);
+        let mut whole = shown(Scopes::EVERYTHING);
         whole.sort();
         assert_eq!(parts, whole);
+    }
+
+    /// The kinds combine, which is the whole point of their being switches
+    /// rather than one choice: *what the program uses, and what it can never
+    /// load*, with the mapped strings nothing points at left out, is a
+    /// question the exclusive buttons could not ask.
+    #[test]
+    fn two_kinds_asked_for_together_show_both_and_nothing_else() {
+        let analysis = analysis_for_filters();
+        let references = CodeReferences::of(&analysis);
+        let mut scopes = Scopes::EVERYTHING;
+        scopes.toggle(Scope::MappedUnreferenced);
+
+        let shown: Vec<String> = matching(&analysis, &references, "", scopes, false)
+            .into_iter()
+            .map(|item| item.string.value.clone())
+            .collect();
+
+        assert_eq!(shown, ["referenced", "not mapped"]);
+        assert!(!scopes.is_everything(), "something is being left out");
+        assert!(!scopes.is_nothing());
+    }
+
+    /// Every switch off is a state the reader can reach, and it shows nothing.
+    /// The view says so in words rather than leaving an empty table looking
+    /// like a file with no strings in it.
+    #[test]
+    fn every_kind_switched_off_keeps_nothing() {
+        let analysis = analysis_for_filters();
+        let references = CodeReferences::of(&analysis);
+        let mut scopes = Scopes::EVERYTHING;
+        for kind in Scope::ALL {
+            scopes.toggle(*kind);
+        }
+
+        assert!(scopes.is_nothing());
+        assert!(matching(&analysis, &references, "", scopes, false).is_empty());
     }
 
     /// The text filter and the criteria narrow together too.
@@ -862,10 +975,21 @@ mod tests {
     fn the_text_filter_applies_alongside_the_criteria() {
         let analysis = analysis_for_filters();
         let references = CodeReferences::of(&analysis);
-        let shown: Vec<String> = matching(&analysis, &references, "referenc", Scope::Used, false)
-            .into_iter()
-            .map(|item| item.string.value.clone())
-            .collect();
+        let shown: Vec<String> = matching(
+            &analysis,
+            &references,
+            "referenc",
+            {
+                let mut scopes = Scopes::EVERYTHING;
+                scopes.toggle(Scope::MappedUnreferenced);
+                scopes.toggle(Scope::Unmapped);
+                scopes
+            },
+            false,
+        )
+        .into_iter()
+        .map(|item| item.string.value.clone())
+        .collect();
 
         assert_eq!(
             shown,

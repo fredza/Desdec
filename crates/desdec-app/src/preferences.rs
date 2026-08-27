@@ -13,6 +13,9 @@ pub enum ThemePreference {
     Dark,
     Light,
     Catppuccin,
+    /// The night-blue of Visual Studio and VS Code's own Abyss: near-black
+    /// backgrounds with a blue cast, and a pale blue for what is selected.
+    Abyss,
 }
 
 /// Which decompiler produces the pseudo-code.
@@ -164,6 +167,13 @@ pub struct Preferences {
     pub yara_rules_path: String,
     /// Whether the linked-library list offers an explanation for each name.
     pub explain_libraries: bool,
+    /// Whether the load-mapping card explains what it is showing.
+    ///
+    /// Its own switch rather than a corner of [`Self::explain_libraries`]: one
+    /// is a question about a name the reader may not know, the other is a
+    /// paragraph about how a loader works. A reader who wants the second has
+    /// usually stopped wanting the first.
+    pub explain_mapping: bool,
     /// Whether the reader's own notes are kept between sessions.
     ///
     /// They are written beside the application's data, keyed by the binary's
@@ -227,6 +237,7 @@ impl Default for Preferences {
             yara_path: String::new(),
             yara_rules_path: String::new(),
             explain_libraries: true,
+            explain_mapping: true,
             save_annotations: true,
             navigation_width: crate::ui::navigation::DEFAULT_WIDTH,
             plugins: std::collections::BTreeMap::new(),
@@ -247,6 +258,7 @@ pub fn apply_theme(ctx: &egui::Context, preference: ThemePreference) {
         ThemePreference::Dark => dark_visuals(),
         ThemePreference::Light => light_visuals(),
         ThemePreference::Catppuccin => catppuccin_visuals(),
+        ThemePreference::Abyss => abyss_visuals(),
     };
     dress_windows(&mut visuals);
     ctx.set_visuals(visuals);
@@ -386,9 +398,18 @@ const CATPPUCCIN_PALETTE: Palette = Palette {
     success: egui::Color32::from_rgb(166, 227, 161),
 };
 
+/// Abyss's own blues. The accent is the pale blue it selects with; the green
+/// is the one it writes strings in, which is the only bright colour the theme
+/// allows itself.
+const ABYSS_PALETTE: Palette = Palette {
+    accent: egui::Color32::from_rgb(130, 170, 255),
+    success: egui::Color32::from_rgb(86, 182, 111),
+};
+
 const fn palette(theme: ThemePreference) -> Palette {
     match theme {
         ThemePreference::Catppuccin => CATPPUCCIN_PALETTE,
+        ThemePreference::Abyss => ABYSS_PALETTE,
         ThemePreference::System | ThemePreference::Dark | ThemePreference::Light => {
             STANDARD_PALETTE
         }
@@ -474,6 +495,38 @@ fn catppuccin_visuals() -> egui::Visuals {
     visuals
 }
 
+/// The night-blue theme Visual Studio and VS Code both ship as Abyss.
+///
+/// Its whole idea is that the page is nearly black with a blue cast, and that
+/// every surface above it is a step lighter in the same blue rather than a
+/// step greyer. So the panel is darker here than in any other theme Desdec
+/// carries, and the widgets are lifted rather than outlined: an outline is
+/// what a theme uses when its surfaces do not separate on their own.
+fn abyss_visuals() -> egui::Visuals {
+    let mut visuals = dark_visuals_from(&DarkSurfaces {
+        panel: egui::Color32::from_rgb(0, 12, 24),
+        window: egui::Color32::from_rgb(16, 25, 44),
+        faint: egui::Color32::from_rgb(10, 23, 41),
+        selection: egui::Color32::from_rgb(8, 40, 107),
+        inactive: egui::Color32::from_rgb(15, 28, 48),
+        hovered: egui::Color32::from_rgb(28, 58, 94),
+        active: egui::Color32::from_rgb(8, 40, 107),
+        inactive_outline: egui::Color32::from_rgb(74, 91, 125),
+        hovered_outline: egui::Color32::from_rgb(102, 136, 204),
+        active_outline: ABYSS_PALETTE.accent,
+    });
+    visuals.hyperlink_color = ABYSS_PALETTE.accent;
+    // The rim around a window has to be lighter than the panel it sits on,
+    // and the shared dark rim is lighter than most panels but not than this
+    // one — over a near-black page it disappeared and the dialogs lost their
+    // edges. `dress_windows` runs after this and would overwrite it, so the
+    // theme states its rim there rather than here; what is set here is the
+    // extreme background the gauges are drawn on, which the same near-black
+    // page would otherwise swallow.
+    visuals.extreme_bg_color = egui::Color32::from_rgb(6, 18, 33);
+    visuals
+}
+
 fn light_visuals() -> egui::Visuals {
     let mut visuals = egui::Visuals::light();
     visuals.panel_fill = egui::Color32::from_rgb(247, 249, 253);
@@ -518,6 +571,28 @@ mod tests {
             catppuccin_visuals().hyperlink_color,
             CATPPUCCIN_PALETTE.accent
         );
+    }
+
+    /// Abyss is the darkest of the themes and keeps its own accent: it is the
+    /// night-blue of Visual Studio, not the standard dark theme under another
+    /// name.
+    #[test]
+    fn abyss_is_darker_than_the_standard_dark_theme_and_keeps_its_own_accent() {
+        let abyss = abyss_visuals();
+        let dark = dark_visuals();
+        let brightness = |colour: egui::Color32| {
+            u32::from(colour.r()) + u32::from(colour.g()) + u32::from(colour.b())
+        };
+
+        assert!(
+            brightness(abyss.panel_fill) < brightness(dark.panel_fill),
+            "abyss puts its content on a near-black page"
+        );
+        assert_eq!(accent(ThemePreference::Abyss), ABYSS_PALETTE.accent);
+        assert_eq!(abyss.hyperlink_color, ABYSS_PALETTE.accent);
+        // The gauges are drawn on the extreme background; over a near-black
+        // page it has to stay visible rather than merge into it.
+        assert_ne!(abyss.extreme_bg_color, abyss.panel_fill);
     }
 
     /// Captured from a real `app.ron` written by an earlier build. Renaming a

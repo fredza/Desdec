@@ -1155,6 +1155,11 @@ translations! {
         "No se encontró ninguna cadena legible.",
     ],
     FilterStrings => ["Filtrer les chaînes", "Filter strings", "Filtrar cadenas"],
+    StringsNoScope => [
+        "Aucune catégorie n’est cochée : la table est donc vide. Cochez-en une pour voir des chaînes.",
+        "No kind is ticked, so the table is empty. Tick one to see strings.",
+        "Ninguna categoría está marcada, así que la tabla está vacía. Marque una para ver cadenas.",
+    ],
     StringsScopeAll => ["Toutes", "All", "Todas"],
     StringsScopeUsed => ["Utilisées par le code", "Used by the code", "Usadas por el código"],
     StringsScopeMappedUnreferenced => [
@@ -1282,7 +1287,13 @@ translations! {
         "unavailable: the file was only read in part",
         "no disponible: el archivo se leyó solo en parte",
     ],
-    Hardening => ["Protections", "Hardening", "Protecciones"],
+    // "Durcissement", not "Protections": the overview now also reports whether
+    // the file was packed or protected by a product, and two cards a column
+    // apart both headed "Protections" would be asking the reader to work out
+    // which protection is meant. This one is what the compiler and the linker
+    // did to make the program harder to exploit — the word the README has
+    // always used for it.
+    Hardening => ["Durcissement", "Hardening", "Endurecimiento"],
     LinkedLibraries => ["Bibliothèques liées", "Linked libraries", "Bibliotecas enlazadas"],
     NoLinkedLibraries => [
         "Aucune : le binaire est autonome ou lie tout statiquement.",
@@ -1754,6 +1765,10 @@ translations! {
     ],
     Callers => ["Qui appelle celle-ci", "What calls this one", "Qué llama a esta"],
     Callees => ["Ce qu’elle appelle", "What it calls", "Lo que llama"],
+    // The count above the table, which is a number of calls and not a heading.
+    // It used to reuse `Callees`, and the line read "259311 ce qu'elle
+    // appelle" — a card's title bent into a unit it cannot be.
+    CallsCounted => ["appels", "calls", "llamadas"],
     NothingCallsThis => [
         "Rien dans ce fichier n’appelle cette fonction. Un point d’entrée, une fonction dont l’adresse est seulement passée ailleurs, et du code mort se ressemblent tous vus d’ici.",
         "Nothing in this file calls this function. An entry point, a function whose address is only handed elsewhere, and dead code all look alike from here.",
@@ -2030,6 +2045,96 @@ translations! {
         "These definitions are kept with your notes on this binary, and come back with it.",
         "Estas definiciones se guardan con sus notas sobre este binario y vuelven con él.",
     ],
+    // --- What the file was put through: packing, protection, obfuscation ---
+    ProtectedBinary => ["Binaire protégé", "Protected binary", "Binario protegido"],
+    ProtectionReadTheStub => [
+        "Ce que les vues montrent est l’enveloppe, pas le programme : le code d’origine n’est déplié qu’à l’exécution, et Desdec n’exécute rien.",
+        "What the views show is the wrapper, not the program: the original code is only unfolded at run time, and Desdec runs nothing.",
+        "Lo que muestran las vistas es la envoltura, no el programa: el código original solo se despliega al ejecutarse, y Desdec no ejecuta nada.",
+    ],
+    ProtectionSuspected => [
+        "Indices de protection",
+        "Signs of protection",
+        "Indicios de protección",
+    ],
+    ProtectionSuspectedHint => [
+        "Aucun produit nommé : ce sont des formes qu’un fichier protégé a souvent, et qu’un programme honnête peut avoir aussi.",
+        "No product is named: these are shapes a protected file often has, and an honest program may have too.",
+        "Ningún producto nombrado: son formas que un archivo protegido suele tener, y que un programa honesto también puede tener.",
+    ],
+    ProtectionEvidence => ["Relevé", "Found", "Hallado"],
+    KindPacker => ["compresseur", "packer", "compresor"],
+    KindProtector => ["protecteur", "protector", "protector"],
+    KindVirtualiser => ["virtualiseur", "virtualiser", "virtualizador"],
+    KindObfuscator => ["obscurcisseur", "obfuscator", "ofuscador"],
+    KindBundler => ["empaqueteur", "bundler", "empaquetador"],
+    KindUnidentified => ["forme suspecte", "suspect shape", "forma sospechosa"],
+
+    // --- Jumping from the overview to where a thing lives ---
+    GoToSection => [
+        "Voir cette section dans la table",
+        "Show this section in the table",
+        "Ver esta sección en la tabla",
+    ],
+    GoToEntryPoint => [
+        "Voir cette adresse dans le désassemblage",
+        "Show this address in the disassembly",
+        "Ver esta dirección en el desensamblado",
+    ],
+
+    // --- The load mapping, explained on request ---
+    ExplainThis => ["Expliquer", "Explain", "Explicar"],
+    ExplainThisHint => [
+        "Affiche ou masque les explications de ce panneau.",
+        "Shows or hides this panel's explanations.",
+        "Muestra u oculta las explicaciones de este panel.",
+    ],
+    MappingWhatItIs => [
+        "Le chargeur ne lit pas les sections : il lit cette table, et pose en mémoire les quelques régions qu’elle décrit. Une région couvre en général plusieurs sections, et c’est elle qui porte les droits réels.",
+        "The loader does not read the sections: it reads this table, and lays the few regions it describes into memory. One region usually covers several sections, and it is the region that carries the real rights.",
+        "El cargador no lee las secciones: lee esta tabla y coloca en memoria las pocas regiones que describe. Una región suele abarcar varias secciones, y es ella la que lleva los derechos reales.",
+    ],
+    MappingKindHelp => [
+        "Type — ce que le chargeur doit faire de la région. LOAD est une région posée en mémoire ; les autres le renseignent sans rien charger.",
+        "Type — what the loader is to do with the region. LOAD is a region laid into memory; the others tell it something without loading anything.",
+        "Tipo — qué debe hacer el cargador con la región. LOAD es una región colocada en memoria; las demás le informan sin cargar nada.",
+    ],
+    MappingAddressHelp => [
+        "Adresse — où la région commence une fois le programme chargé. C’est l’adresse que porte le désassemblage, pas une position dans le fichier.",
+        "Address — where the region starts once the program is loaded. This is the address the disassembly carries, not a position in the file.",
+        "Dirección — dónde empieza la región una vez cargado el programa. Es la dirección que lleva el desensamblado, no una posición en el archivo.",
+    ],
+    MappingOffsetHelp => [
+        "Décalage — d’où viennent ses octets dans le fichier. Une région peut être plus grande en mémoire qu’en fichier : le reste est mis à zéro.",
+        "Offset — where its bytes come from in the file. A region can be larger in memory than in the file: the rest is zeroed.",
+        "Desplazamiento — de dónde vienen sus bytes en el archivo. Una región puede ser mayor en memoria que en el archivo: el resto se pone a cero.",
+    ],
+    MappingSizeHelp => [
+        "Taille — combien d’octets la région occupe. Ce qui est mappé sans être stocké — un `.bss` — compte en mémoire et pas dans le fichier.",
+        "Size — how many bytes the region takes. What is mapped without being stored — a `.bss` — counts in memory and not in the file.",
+        "Tamaño — cuántos bytes ocupa la región. Lo que se mapea sin almacenarse —un `.bss`— cuenta en memoria y no en el archivo.",
+    ],
+    MappingRightsHelp => [
+        "Droits — ce que le processeur laissera faire de ces octets : r lire, w écrire, x exécuter. Une région à la fois inscriptible et exécutable est ce qu’un code qui se réécrit demande.",
+        "Rights — what the processor will allow with those bytes: r read, w write, x execute. A region that is both writable and executable is what self-rewriting code asks for.",
+        "Derechos — qué permitirá el procesador con esos bytes: r leer, w escribir, x ejecutar. Una región a la vez escribible y ejecutable es lo que pide un código que se reescribe.",
+    ],
+    MappingCoarserThanSections => [
+        "Plus grossier que les sections : la table des sections découpe le fichier, celle-ci découpe la mémoire.",
+        "Coarser than the sections: the section table cuts up the file, this one cuts up memory.",
+        "Más grueso que las secciones: la tabla de secciones divide el archivo, esta divide la memoria.",
+    ],
+
+    // --- Compiler-written names, read back ---
+    ReadableNames => ["Noms lisibles", "Readable names", "Nombres legibles"],
+    ReadableNamesHint => [
+        "Relit les noms que le compilateur a encodés — Rust surtout — dans l’orthographe du code source. Le nom du fichier reste sous le pointeur, et un nom que Desdec ne sait pas relire entièrement est laissé tel quel.",
+        "Reads back the names the compiler encoded — Rust above all — in the spelling the source used. The file's own name stays under the pointer, and a name Desdec cannot read back whole is left as it stands.",
+        "Relee los nombres que el compilador codificó — sobre todo Rust — con la ortografía del código fuente. El nombre del archivo permanece bajo el puntero, y un nombre que Desdec no sabe releer entero se deja tal cual.",
+    ],
+    MangledName => ["Nom dans le fichier", "Name in the file", "Nombre en el archivo"],
+
+    AbyssTheme => ["Abyss", "Abyss", "Abyss"],
     French => ["Français", "French", "Francés"],
     English => ["Anglais", "English", "Inglés"],
     Spanish => ["Espagnol", "Spanish", "Español"],

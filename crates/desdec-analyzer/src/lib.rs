@@ -145,6 +145,15 @@ pub fn report(path: &Path, analysis: &Analysis, options: ReportOptions) -> Value
             "value": string.value,
             "truncated": string.truncated,
         })).collect::<Vec<_>>(),
+        // What the file was put through before it was shipped. A consumer
+        // reading the listing needs this as much as an interactive reader
+        // does: a packed file's instructions are its stub's.
+        "protection": analysis.protections.iter().map(|found| json!({
+            "product": (!found.name.is_empty()).then(|| found.name.clone()),
+            "kind": found.kind.label(),
+            "confidence": format!("{:?}", found.confidence).to_lowercase(),
+            "evidence": found.evidence,
+        })).collect::<Vec<_>>(),
         "source_languages": analysis.languages.iter().map(|evidence| json!({
             "language": evidence.language.label(),
             "confidence": format!("{:?}", evidence.confidence).to_lowercase(),
@@ -189,5 +198,53 @@ mod tests {
         assert_eq!(report["input"]["path"], "program");
         assert!(report["mapping"]["sections"].is_array());
         assert!(report["instructions"].is_null());
+        // Never `null`: a consumer must be able to tell "nothing points at a
+        // protection" from "this report does not answer that question".
+        assert!(report["protection"].is_array());
+    }
+
+    /// The report says what the file was put through, with the finding that
+    /// says so. A consumer reading the listing needs it as much as an
+    /// interactive reader does: a packed file's instructions are its stub's.
+    #[test]
+    fn the_report_carries_what_the_file_was_put_through() {
+        use desdec_core::{Protection, ProtectionKind};
+
+        let mut analysis =
+            desdec_core::analyse_path(std::env::current_exe().expect("test executable"))
+                .expect("test executable is analysable");
+        analysis.protections = vec![Protection {
+            name: "UPX".to_owned(),
+            kind: ProtectionKind::Packer,
+            confidence: desdec_core::Confidence::Certain,
+            evidence: "section UPX1".to_owned(),
+        }];
+        let report = report(Path::new("program"), &analysis, ReportOptions::default());
+
+        let found = &report["protection"][0];
+        assert_eq!(found["product"], "UPX");
+        assert_eq!(found["kind"], "packer");
+        assert_eq!(found["confidence"], "certain");
+        assert_eq!(found["evidence"], "section UPX1");
+    }
+
+    /// A shape names no product, and the field says so with `null` rather than
+    /// with an empty string a consumer would have to know to read as absence.
+    #[test]
+    fn a_shape_without_a_product_reports_a_null_product() {
+        use desdec_core::{Protection, ProtectionKind};
+
+        let mut analysis =
+            desdec_core::analyse_path(std::env::current_exe().expect("test executable"))
+                .expect("test executable is analysable");
+        analysis.protections = vec![Protection {
+            name: String::new(),
+            kind: ProtectionKind::Unidentified,
+            confidence: desdec_core::Confidence::Possible,
+            evidence: "section .text is both writable and executable".to_owned(),
+        }];
+        let report = report(Path::new("program"), &analysis, ReportOptions::default());
+
+        assert!(report["protection"][0]["product"].is_null());
     }
 }

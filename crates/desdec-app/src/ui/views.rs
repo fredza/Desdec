@@ -1,4 +1,4 @@
-use desdec_core::{Analysis, NetworkUse, entropy};
+use desdec_core::{Analysis, Confidence, NetworkUse, Protection, ProtectionKind, entropy};
 use eframe::egui;
 
 use crate::{
@@ -7,24 +7,75 @@ use crate::{
     preferences::accent,
     ui::{
         ERROR, MUTED, assistant, card, classes, columns, decompile, disassembly, dump, expert,
-        format_size, functions, graph, machine, monospace_value, patches_view, pip, segments,
-        strings, symbols, types, yara,
+        format_size, functions, graph, machine, monospace_value, patches_view, segments, strings,
+        symbols, types, warning_sign, yara,
     },
 };
 
+/// Room between the workspace's edge and what is in it.
+///
+/// The panel used to start its content four points from the window's edge,
+/// which is egui's default and is the measurement of a debug overlay: a
+/// heading touching the frame, a table whose first column runs into the
+/// navigation rail. A desktop window puts its content on a page, and a page
+/// has a margin.
+const WORKSPACE_MARGIN: egui::Margin = egui::Margin {
+    left: 18,
+    right: 18,
+    top: 12,
+    bottom: 8,
+};
+
 pub fn show_central_panel(app: &mut DesdecApp, ctx: &egui::Context) {
-    egui::CentralPanel::default().show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            ui.heading(app.t(app.active_view.text()));
-            ui.separator();
-        });
-        ui.add_space(12.0);
+    let frame = egui::Frame::central_panel(&ctx.style()).inner_margin(WORKSPACE_MARGIN);
+    egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+        view_header(app, ui);
         content(app, ui);
         if let Some(error) = &app.error {
             ui.add_space(16.0);
             ui.colored_label(ERROR, error);
         }
     });
+}
+
+/// The name of the view, the file it is reading, and a rule under both.
+///
+/// What was here before was the heading followed by `ui.separator()` inside a
+/// horizontal row, which in egui draws a *vertical* bar: every view opened
+/// with its name and a short stroke hanging off the end of it, saying nothing
+/// and pointing at nothing. A rule belongs under a heading, across the width
+/// of what it introduces.
+fn view_header(app: &DesdecApp, ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        ui.heading(app.t(app.active_view.text()));
+        // The open file at the other end of the row: every view here is a
+        // reading of one binary, and which one is a question the reader should
+        // never have to leave the view to answer.
+        if let Some(analysis) = &app.analysis {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let path = analysis.summary.path.display().to_string();
+                let name = analysis
+                    .summary
+                    .path
+                    .file_name()
+                    .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned());
+                ui.add(egui::Label::new(egui::RichText::new(name).color(MUTED)).truncate())
+                    .on_hover_text(path);
+            });
+        }
+    });
+    ui.add_space(6.0);
+    // A rule the width of the workspace, drawn a shade under the window's own
+    // rim: loud enough to separate the heading from the content, quiet enough
+    // not to be read as a border around something.
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter().hline(
+        rect.x_range(),
+        rect.center().y,
+        egui::Stroke::new(1.0_f32, ui.visuals().window_stroke.color),
+    );
+    ui.add_space(12.0);
 }
 
 /// The views that act on the whole application rather than read the analysis,
@@ -118,6 +169,12 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
         return;
     }
 
+    // Read before the analysis is borrowed: these belong to the application,
+    // and a view drawn from a borrow of the analysis cannot reach them.
+    let app_focused_section = app.focused_section.clone();
+    let mut bring_section_into_view = app.pending_section_scroll;
+    let theme = app.preferences.theme;
+
     // Borrowing the analysis and the filter separately keeps both available.
     let Some(analysis) = &app.analysis else {
         return;
@@ -130,20 +187,38 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
     match view {
         WorkspaceView::Overview => {
             let explain = app.preferences.explain_libraries;
-            if let Some(question) = overview(ui, analysis, language, explain) {
+            let explain_mapping = app.preferences.explain_mapping;
+            let asked = overview(ui, analysis, language, explain, explain_mapping);
+            if let Some(question) = asked.library {
                 app.explaining_library = Some(question.library);
                 app.explaining_library_at = Some(question.asked_at);
                 app.dialogs.open(Dialog::Library);
             }
+            if let Some(wanted) = asked.explain_mapping {
+                app.preferences.explain_mapping = wanted;
+            }
+            if let Some(name) = asked.section {
+                app.focused_section = Some(name);
+                bring_section_into_view = true;
+                app.active_view = WorkspaceView::Segments;
+            }
+            go_to = asked.address;
         }
-        WorkspaceView::Segments => segments::show(ui, analysis, language),
+        WorkspaceView::Segments => segments::show(
+            ui,
+            analysis,
+            language,
+            app_focused_section.as_deref(),
+            &mut bring_section_into_view,
+            accent(theme),
+        ),
         WorkspaceView::Strings => {
             let action = strings::show(
                 ui,
                 analysis,
                 &app.string_references,
                 &mut app.strings_filter,
-                &mut app.strings_scope,
+                &mut app.strings_scopes,
                 &mut app.strings_hide_prologues,
                 &mut app.selected_string,
                 language,
@@ -160,6 +235,7 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 &app.functions,
                 &app.callgraph,
                 &mut app.selected_function,
+                &mut app.mangled_names,
                 language,
             );
         }
@@ -184,6 +260,7 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
             }
         }
     }
+    app.pending_section_scroll = bring_section_into_view;
     if let Some(address) = go_to {
         app.go_to_address(ui.ctx(), address);
     }
@@ -250,19 +327,37 @@ fn welcome(app: &mut DesdecApp, ui: &mut egui::Ui) {
     });
 }
 
+/// What the reader asked of the overview this frame.
+///
+/// Returned rather than acted on: every card here is drawn from a borrow of
+/// the analysis, and moving the workspace to another view takes the whole
+/// application.
+#[derive(Default)]
+pub struct Asked {
+    /// A library whose explanation was asked for, and where the button sits.
+    pub library: Option<expert::LibraryQuestion>,
+    /// A section to show in the section table, by name.
+    pub section: Option<String>,
+    /// An address to show in the disassembly.
+    pub address: Option<u64>,
+    /// Whether the mapping card's explanations were switched on or off.
+    pub explain_mapping: Option<bool>,
+}
+
 fn overview(
     ui: &mut egui::Ui,
     analysis: &Analysis,
     language: Language,
     explain: bool,
-) -> Option<expert::LibraryQuestion> {
+    explain_mapping: bool,
+) -> Asked {
     // `auto_shrink` off makes the panels span the window instead of hugging
     // their own content.
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             alerts(ui, analysis, language);
-            expert_layout(ui, analysis, language, explain)
+            expert_layout(ui, analysis, language, explain, explain_mapping)
         })
         .inner
 }
@@ -274,8 +369,9 @@ fn expert_layout(
     analysis: &Analysis,
     language: Language,
     explain: bool,
-) -> Option<expert::LibraryQuestion> {
-    let mut asked = None;
+    explain_mapping: bool,
+) -> Asked {
+    let mut asked = Asked::default();
     columns(
         ui,
         |ui| {
@@ -284,11 +380,13 @@ fn expert_layout(
             expert::hardening_card(ui, analysis.details.hardening, language);
         },
         |ui| {
-            findings_card(ui, analysis, language);
+            let found = findings_card(ui, analysis, language);
+            asked.section = found.section;
+            asked.address = found.address;
             ui.add_space(12.0);
-            asked = expert::libraries_card(ui, analysis, language, explain);
+            asked.library = expert::libraries_card(ui, analysis, language, explain);
             ui.add_space(12.0);
-            expert::mapping_card(ui, analysis, language);
+            asked.explain_mapping = expert::mapping_card(ui, analysis, language, explain_mapping);
         },
     );
     asked
@@ -297,13 +395,25 @@ fn expert_layout(
 /// Warnings come first: they change how everything below should be read.
 fn alerts(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
     let mut shown = false;
-    // First of the lot: what a program can do to the outside is the thing a
-    // reader most wants to know before reading anything else about it.
+    // Ahead of everything, the network flag included: a packed file's listing
+    // is its stub, so "this program can send" and "this program has forty
+    // functions" are both statements about the wrapper until this is read.
+    if protection_alert(ui, analysis, language) {
+        shown = true;
+    }
+    // What a program can do to the outside is the next thing a reader wants
+    // to know before reading anything else about it.
     if !analysis.network.is_silent() {
+        if shown {
+            ui.add_space(8.0);
+        }
         network_alert(ui, &analysis.network, language);
         shown = true;
     }
-    if analysis.suggests_packing() {
+    // Only when nothing above already said the file is packed: the dense-code
+    // hint is the weakest form of the same statement, and two warnings about
+    // one fact read as two faults.
+    if analysis.suggests_packing() && analysis.protections.is_empty() {
         card(ui, text(language, Text::DenseCodeWarning), |ui| {
             ui.small(text(language, Text::DenseCodeHint));
         });
@@ -330,6 +440,130 @@ fn alerts(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
     }
 }
 
+/// The loudest thing the overview can say: what you are about to read is not
+/// the program.
+///
+/// A packer replaces the program with a stub that unfolds it at run time, so
+/// every view behind this one — the listing, the functions, the strings — is
+/// describing the wrapper. That has to be said before any of them is read,
+/// and it has to be said with its evidence, so the reader can check it in the
+/// section table rather than take it on trust.
+///
+/// Returns whether anything was drawn.
+fn protection_alert(ui: &mut egui::Ui, analysis: &Analysis, language: Language) -> bool {
+    if analysis.protections.is_empty() {
+        return false;
+    }
+    let named: Vec<&Protection> = analysis
+        .protections
+        .iter()
+        .filter(|found| found.names_a_product())
+        .collect();
+
+    if !analysis.is_protected() {
+        // Shapes alone. Drawn as a note rather than an alarm: a writable code
+        // section is what a packer leaves behind and also what a just-in-time
+        // compiler needs, and a red banner over the second one would be a
+        // false accusation the reader cannot check.
+        suspicion_card(ui, &analysis.protections, language);
+        return true;
+    }
+
+    ui.group(|ui| {
+        ui.set_width(ui.available_width());
+        ui.vertical(|ui| {
+            // `horizontal`, never `horizontal_wrapped`: a wrapped row draws
+            // every one of its parts at the same place in egui 0.31.
+            ui.horizontal(|ui| {
+                warning_sign(ui, ERROR);
+                ui.label(
+                    egui::RichText::new(text(language, Text::ProtectedBinary))
+                        .color(ERROR)
+                        .strong(),
+                );
+                for (position, found) in named.iter().enumerate() {
+                    if position > 0 {
+                        ui.label(egui::RichText::new("·").color(ERROR));
+                    }
+                    ui.label(egui::RichText::new(&found.name).color(ERROR).strong())
+                        .on_hover_text(&found.evidence);
+                    ui.label(
+                        egui::RichText::new(format!("({})", kind_word(found.kind, language)))
+                            .color(ERROR),
+                    );
+                }
+            });
+            ui.add_space(6.0);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(text(language, Text::ProtectionReadTheStub))
+                        .small()
+                        .color(MUTED),
+                )
+                .wrap(),
+            );
+            ui.add_space(6.0);
+            evidence_row(
+                ui,
+                text(language, Text::ProtectionEvidence),
+                &named
+                    .iter()
+                    .map(|found| found.evidence.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+            );
+        });
+    });
+    true
+}
+
+/// The shapes of a protected file, with nothing naming a product.
+fn suspicion_card(ui: &mut egui::Ui, leads: &[Protection], language: Language) {
+    card(ui, text(language, Text::ProtectionSuspected), |ui| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(text(language, Text::ProtectionSuspectedHint))
+                    .small()
+                    .color(MUTED),
+            )
+            .wrap(),
+        );
+        ui.add_space(4.0);
+        for lead in leads {
+            ui.horizontal(|ui| {
+                // A lead that only *might* mean something is drawn quieter
+                // than one that probably does. The distinction is the whole
+                // reason these are not in the red banner above.
+                let colour = if lead.confidence >= Confidence::Likely {
+                    ERROR
+                } else {
+                    MUTED
+                };
+                ui.label(egui::RichText::new("—").color(colour));
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&lead.evidence).small().color(colour))
+                        .wrap(),
+                );
+            });
+        }
+    });
+}
+
+/// What a product does, in the reader's own language.
+const fn kind_word(kind: ProtectionKind, language: Language) -> &'static str {
+    text(
+        language,
+        match kind {
+            ProtectionKind::Packer => Text::KindPacker,
+            ProtectionKind::Protector => Text::KindProtector,
+            ProtectionKind::Virtualiser => Text::KindVirtualiser,
+            ProtectionKind::Obfuscator => Text::KindObfuscator,
+            ProtectionKind::Bundler => Text::KindBundler,
+            ProtectionKind::Unidentified => Text::KindUnidentified,
+        },
+    )
+}
+
 /// The red flag: this file can reach the network.
 ///
 /// Loud on purpose, and honest about what it is: a statement read out of the
@@ -350,7 +584,7 @@ fn network_alert(ui: &mut egui::Ui, network: &NetworkUse, language: Language) {
             // `horizontal`, never `horizontal_wrapped`: a wrapped row draws
             // every one of its parts at the same place in egui 0.31.
             ui.horizontal(|ui| {
-                pip(ui, ERROR);
+                warning_sign(ui, ERROR);
                 ui.label(
                     egui::RichText::new(text(language, Text::NetworkAlert))
                         .color(ERROR)
@@ -451,14 +685,17 @@ fn file_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
 }
 
 /// What the analysis found inside it.
-fn findings_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
+fn findings_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) -> Asked {
+    let mut asked = Asked::default();
     card(ui, text(language, Text::Overview), |ui| {
         egui::Grid::new("analysis_summary")
             .num_columns(2)
             .spacing([24.0, 10.0])
             .show(ui, |ui| {
                 ui.strong(text(language, Text::EntryPoint));
-                entry_point(ui, analysis, language);
+                let pressed = entry_point(ui, analysis, language);
+                asked.section = pressed.section;
+                asked.address = pressed.address;
                 ui.end_row();
 
                 ui.strong(text(language, Text::SectionCount));
@@ -485,6 +722,7 @@ fn findings_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
 
         obfuscation_hint(ui, analysis, language);
     });
+    asked
 }
 
 /// Entropy is an indicator, not proof: a dense executable section can be
@@ -729,6 +967,105 @@ mod tests {
         );
     }
 
+    /// A packed file's listing is its stub's, so the overview says so before
+    /// it says anything else — and names what it read that from.
+    #[test]
+    fn a_packed_file_is_flagged_by_name_and_by_evidence() {
+        use desdec_core::{Confidence, Protection, ProtectionKind};
+
+        let mut analysis = crate::testing::reference_analysis().clone();
+        analysis.protections = vec![Protection {
+            name: "UPX".to_owned(),
+            kind: ProtectionKind::Packer,
+            confidence: Confidence::Certain,
+            evidence: "section UPX1".to_owned(),
+        }];
+
+        let ctx = egui::Context::default();
+        let mut draw = |ctx: &egui::Context| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                super::protection_alert(ui, &analysis, Language::French);
+            });
+        };
+        let _ = ctx.run(window_input(), &mut draw);
+        let output = ctx.run(window_input(), &mut draw);
+        let painted = drawn_in_colour(&output.shapes);
+        let said: String = painted.iter().map(|(text, _)| text.as_str()).collect();
+
+        assert!(
+            said.contains(text(Language::French, Text::ProtectedBinary)),
+            "{said}"
+        );
+        assert!(said.contains("UPX"), "the product is named: {said}");
+        assert!(
+            said.contains("section UPX1"),
+            "the finding is shown so the reader can check it: {said}"
+        );
+        assert!(
+            painted
+                .iter()
+                .filter(|(_, colour)| *colour == ERROR)
+                .count()
+                >= 2,
+            "the mark and the product are both red: {painted:?}"
+        );
+    }
+
+    /// A shape is not a product. Writable code is what a packer leaves behind
+    /// and also what a just-in-time compiler needs, and a red banner over the
+    /// second one is an accusation the reader cannot check.
+    #[test]
+    fn a_shape_without_a_product_is_a_note_rather_than_an_alarm() {
+        use desdec_core::{Confidence, Protection, ProtectionKind};
+
+        let mut analysis = crate::testing::reference_analysis().clone();
+        analysis.protections = vec![Protection {
+            name: String::new(),
+            kind: ProtectionKind::Unidentified,
+            confidence: Confidence::Possible,
+            evidence: "section .text is both writable and executable".to_owned(),
+        }];
+
+        let ctx = egui::Context::default();
+        let mut draw = |ctx: &egui::Context| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                super::protection_alert(ui, &analysis, Language::French);
+            });
+        };
+        let _ = ctx.run(window_input(), &mut draw);
+        let output = ctx.run(window_input(), &mut draw);
+        let said: String = drawn_in_colour(&output.shapes)
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect();
+
+        assert!(
+            said.contains(text(Language::French, Text::ProtectionSuspected)),
+            "{said}"
+        );
+        assert!(
+            !said.contains(text(Language::French, Text::ProtectedBinary)),
+            "a shape must not be reported as a protected binary: {said}"
+        );
+    }
+
+    /// A file nothing points at says nothing at all here — the alert is not
+    /// drawn empty, and nothing is inferred from absence.
+    #[test]
+    fn a_file_with_no_sign_of_protection_draws_no_alert() {
+        let mut analysis = crate::testing::reference_analysis().clone();
+        analysis.protections.clear();
+
+        let ctx = egui::Context::default();
+        let mut drew = true;
+        let _ = ctx.run(window_input(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                drew = super::protection_alert(ui, &analysis, Language::French);
+            });
+        });
+        assert!(!drew);
+    }
+
     #[test]
     fn global_entropy_above_seven_marks_code_as_possibly_obfuscated() {
         assert!(code_may_be_obfuscated(Some(7.01), false));
@@ -742,25 +1079,51 @@ mod tests {
 }
 
 /// The entry point, and the section it lands in when one can be found.
-fn entry_point(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
+///
+/// Both halves lead somewhere, because both are answers to "and where is
+/// that?": the address opens the listing at the first instruction the program
+/// runs, and the section name opens the section table with that row marked.
+/// Stating a place and leaving the reader to go and find it by hand is the
+/// one thing an overview should not do.
+fn entry_point(ui: &mut egui::Ui, analysis: &Analysis, language: Language) -> Asked {
+    let mut asked = Asked::default();
     let Some(address) = analysis.entry_point else {
         ui.label("—");
-        return;
+        return asked;
     };
 
     ui.horizontal(|ui| {
-        ui.monospace(format!("{address:#018x}"));
+        let decoded = analysis.instruction_index(address).is_some();
+        let spelled = format!("{address:#018x}");
+        if decoded {
+            // A link, not a button: it is a value that also happens to lead
+            // somewhere, and a button here would weigh more than the row.
+            if ui
+                .link(egui::RichText::new(&spelled).monospace())
+                .on_hover_text(text(language, Text::GoToEntryPoint))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                asked.address = Some(address);
+            }
+        } else {
+            // Not decoded — a stripped stub, or an address past the analysis
+            // limit — so the offer is withheld rather than made and refused.
+            ui.monospace(&spelled);
+        }
         if let Some(section) = analysis.section_at(address) {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} {}",
-                    text(language, Text::EntryPointIn),
-                    section.name
-                ))
-                .color(MUTED),
-            );
+            ui.label(egui::RichText::new(text(language, Text::EntryPointIn)).color(MUTED));
+            if ui
+                .link(egui::RichText::new(&section.name).monospace())
+                .on_hover_text(text(language, Text::GoToSection))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                asked.section = Some(section.name.clone());
+            }
         }
     });
+    asked
 }
 
 /// A view that is announced but not implemented yet.

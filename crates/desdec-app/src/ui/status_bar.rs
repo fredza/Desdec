@@ -61,7 +61,11 @@ fn state(app: &mut DesdecApp, ui: &mut egui::Ui) {
     }
 
     if app.error.is_some() {
-        lamp(ui, ERROR);
+        // A sign, not a lamp. A red lamp and a green one differ by a colour,
+        // and the reader who cannot tell them apart — or who is looking at the
+        // bar out of the corner of their eye — reads nothing at all. A
+        // triangle differs by its shape, which is why road signs are shaped.
+        crate::ui::warning_sign(ui, ERROR);
         ui.label(egui::RichText::new(app.t(Text::StatusFailed)).color(ERROR));
     } else {
         let colour = success(app.preferences.theme);

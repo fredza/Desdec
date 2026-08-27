@@ -27,6 +27,18 @@ const GRAPH_ROW_HEIGHT: f32 = 68.0;
 /// function sixty times a second, for a table that never changes.
 pub struct Function {
     pub name: String,
+    /// The name as the source spelled it, when the compiler's encoding could
+    /// be read back whole.
+    ///
+    /// Worked out once, when the binary is opened, rather than on every frame:
+    /// a stripped-nothing Rust binary declares tens of thousands of these, and
+    /// the table is virtualised precisely because doing anything per row per
+    /// frame is what makes a listing crawl.
+    ///
+    /// `None` for a name that is not encoded — `main`, `_start` — and for one
+    /// whose encoding Desdec does not fully understand. Both cases show the
+    /// file's own spelling, which is the honest answer.
+    pub readable: Option<String>,
     pub start: u64,
     pub end: u64,
     /// Position of the decoded body inside [`Analysis::instructions`].
@@ -42,6 +54,16 @@ pub struct Function {
 }
 
 impl Function {
+    /// What to put on the row: the source spelling when it was recovered and
+    /// the reader has not asked for the file's own, and the file's otherwise.
+    #[must_use]
+    pub fn shown_name(&self, mangled: bool) -> &str {
+        match &self.readable {
+            Some(readable) if !mangled => readable,
+            _ => &self.name,
+        }
+    }
+
     fn size(&self) -> u64 {
         self.end.saturating_sub(self.start)
     }
@@ -67,6 +89,7 @@ pub fn show(
     functions: &[Function],
     graph: &crate::callgraph::Graph,
     selected_function: &mut Option<u64>,
+    mangled: &mut bool,
     language: Language,
 ) -> Option<u64> {
     if functions.is_empty() {
@@ -78,6 +101,20 @@ pub fn show(
         *selected_function = Some(functions[0].start);
     }
     function_guide(ui, language);
+    // The switch sits above the table rather than in the preferences: it is a
+    // way of looking at this file, moved while reading it, and a reader who
+    // wants to check a name against the file's own spelling wants it back for
+    // one glance, not for good.
+    //
+    // Offered only when there is something to read back. A C binary's names
+    // are already the ones the source used, and a switch that changes nothing
+    // is a switch the reader presses to find out what it does.
+    if functions.iter().any(|function| function.readable.is_some()) {
+        ui.horizontal(|ui| {
+            crate::ui::shown_toggle(ui, mangled, text(language, Text::ReadableNames))
+                .on_hover_text(text(language, Text::ReadableNamesHint));
+        });
+    }
     ui.add_space(8.0);
     // Said once, above the table, when the file named none of them: the
     // column on each row says where that row came from, and this says why
@@ -93,7 +130,7 @@ pub fn show(
                     graph.len(),
                     text(language, Text::Functions).to_lowercase(),
                     graph.calls(),
-                    text(language, Text::Callees).to_lowercase(),
+                    text(language, Text::CallsCounted),
                 ))
                 .small()
                 .color(MUTED),
@@ -116,6 +153,7 @@ pub fn show(
             analysis,
             functions,
             selected_function,
+            *mangled,
             language,
         );
         let selected = selected_function
@@ -126,6 +164,7 @@ pub fn show(
             functions,
             graph,
             selected,
+            *mangled,
             language,
         );
         go_to = go_to.or(details.go_to);
@@ -172,6 +211,7 @@ fn function_list(
     analysis: &Analysis,
     functions: &[Function],
     selected_function: &mut Option<u64>,
+    mangled: bool,
     language: Language,
 ) -> Option<u64> {
     let mut go_to = None;
@@ -219,9 +259,21 @@ fn function_list(
                                 *selected_function = Some(function.start);
                                 go_to = entry;
                             }
+                            // The file's own spelling stays one hover away
+                            // whichever way the switch is set: a reading is
+                            // only checkable against what it was read from.
+                            let hover = match &function.readable {
+                                Some(_) if !mangled => format!(
+                                    "{:#018x}\n{} {}",
+                                    function.start,
+                                    text(language, Text::MangledName),
+                                    function.name
+                                ),
+                                _ => format!("{:#018x}", function.start),
+                            };
                             let name = ui
-                                .selectable_label(selected, &function.name)
-                                .on_hover_text(format!("{:#018x}", function.start))
+                                .selectable_label(selected, function.shown_name(mangled))
+                                .on_hover_text(hover)
                                 .on_hover_cursor(egui::CursorIcon::PointingHand);
                             if name.clicked() {
                                 *selected_function = Some(function.start);
@@ -311,6 +363,7 @@ fn function_details(
     functions: &[Function],
     graph: &crate::callgraph::Graph,
     selected: Option<&Function>,
+    mangled: bool,
     language: Language,
 ) -> Details {
     let Some(function) = selected else {
@@ -325,8 +378,10 @@ fn function_details(
     // A compiler-produced name can be wider than the whole detail panel. The
     // list owns a horizontal scrollbar, but this heading does not: keep the
     // panel within its column and leave the complete name one hover away.
-    ui.add(egui::Label::new(egui::RichText::new(&function.name).heading()).truncate())
-        .on_hover_text(&function.name);
+    ui.add(
+        egui::Label::new(egui::RichText::new(function.shown_name(mangled)).heading()).truncate(),
+    )
+    .on_hover_text(&function.name);
     ui.horizontal(|ui| {
         ui.monospace(format!("{:#018x}", function.start));
         // Beside the address, because that is what the reader is about to go
@@ -358,11 +413,11 @@ fn function_details(
     // Who calls this one, and what it calls, before the graph of its own
     // blocks: a reader arriving at a function asks how anything gets to it
     // before they ask what it does inside.
-    let walked = call_graph(ui, functions, graph, function, language);
+    let walked = call_graph(ui, functions, graph, function, mangled, language);
     ui.add_space(8.0);
     let hovered_block = control_flow_graph(ui, analysis, function, language);
     ui.add_space(12.0);
-    pseudocode(ui, analysis, function, hovered_block, language);
+    pseudocode(ui, analysis, function, hovered_block, mangled, language);
     // What the reader clicked in the call graph is handled by the caller,
     // which owns the selection; the jump button's answer is kept for when
     // nothing in the graph was clicked.
@@ -386,6 +441,7 @@ fn call_graph(
     functions: &[Function],
     graph: &crate::callgraph::Graph,
     function: &Function,
+    mangled: bool,
     language: Language,
 ) -> Option<u64> {
     let edges = graph.edges(function.start)?;
@@ -393,7 +449,10 @@ fn call_graph(
         functions
             .iter()
             .find(|other| other.start == address)
-            .map_or_else(|| format!("{address:#x}"), |other| other.name.clone())
+            .map_or_else(
+                || format!("{address:#x}"),
+                |other| other.shown_name(mangled).to_owned(),
+            )
     };
     let mut chosen = None;
     card(ui, text(language, Text::Callers), |ui| {
@@ -701,6 +760,7 @@ fn pseudocode(
     analysis: &Analysis,
     function: &Function,
     hovered_block: Option<u64>,
+    mangled: bool,
     language: Language,
 ) {
     let body = function.body(analysis);
@@ -727,7 +787,7 @@ fn pseudocode(
             .id_salt(("function_pseudocode", function.start))
             .max_height(available_height)
             .show(ui, |ui| {
-                let signature = format!("void {}(void) {{", function.name);
+                let signature = format!("void {}(void) {{", function.shown_name(mangled));
                 ui.label(syntax::pseudo_code(
                     ui,
                     &signature,
@@ -871,10 +931,12 @@ pub fn all(analysis: &Analysis) -> Vec<Function> {
                 )
                 .max(start);
             let instructions = analysis.instruction_span(start..end);
+            let name = name
+                .clone()
+                .unwrap_or_else(|| discover::placeholder_name(start));
             Function {
-                name: name
-                    .clone()
-                    .unwrap_or_else(|| discover::placeholder_name(start)),
+                readable: desdec_core::demangle::readable(&name),
+                name,
                 start,
                 end,
                 found_by: *found_by,
@@ -1017,6 +1079,7 @@ mod tests {
                     &app.functions,
                     &app.callgraph,
                     &mut app.selected_function,
+                    &mut false,
                     Language::English,
                 );
             });
@@ -1175,6 +1238,49 @@ mod tests {
         }
     }
 
+    /// The switch is what the reader asked for: the source spelling by
+    /// default, the file's own on request. Both are always available, because
+    /// a reading has to be checkable against what it was read from.
+    #[test]
+    fn a_mangled_name_is_read_back_and_the_original_is_kept() {
+        let function = Function {
+            name: "_ZN4core3fmt5write17h0e4b3a1c9f2d8a76E".to_owned(),
+            readable: desdec_core::demangle::readable("_ZN4core3fmt5write17h0e4b3a1c9f2d8a76E"),
+            start: 0x1000,
+            end: 0x1010,
+            instructions: 0..0,
+            found_by: None,
+            blocks: Vec::new(),
+        };
+
+        assert_eq!(function.shown_name(false), "core::fmt::write");
+        assert_eq!(
+            function.shown_name(true),
+            "_ZN4core3fmt5write17h0e4b3a1c9f2d8a76E"
+        );
+    }
+
+    /// A name that is not encoded, and one whose encoding is not fully
+    /// understood, both keep the file's own spelling whichever way the switch
+    /// is set. A half-decoded name that looked decoded would be worse than the
+    /// original, because nothing would tell the reader which half was guessed.
+    #[test]
+    fn a_name_that_cannot_be_read_back_is_shown_as_the_file_spells_it() {
+        for name in ["main", "_start", "sub_401000"] {
+            let function = Function {
+                name: name.to_owned(),
+                readable: desdec_core::demangle::readable(name),
+                start: 0x1000,
+                end: 0x1010,
+                instructions: 0..0,
+                found_by: None,
+                blocks: Vec::new(),
+            };
+            assert_eq!(function.shown_name(false), name);
+            assert_eq!(function.shown_name(true), name);
+        }
+    }
+
     /// A symbol whose body was never decoded is not offered: the button is
     /// drawn disabled rather than drawn and refused.
     #[test]
@@ -1182,6 +1288,7 @@ mod tests {
         let analysis = crate::testing::reference_analysis();
         let empty = Function {
             name: "jamais_decodee".to_owned(),
+            readable: None,
             start: 0xdead_beef,
             end: 0xdead_bef0,
             instructions: 0..0,

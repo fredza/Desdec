@@ -116,6 +116,7 @@ commands! {
     ThemeDark => [Theme, DarkTheme], None,
     ThemeLight => [Theme, LightTheme], None,
     ThemeCatppuccin => [Theme, CatppuccinTheme], None,
+    ThemeAbyss => [Theme, AbyssTheme], None,
     LanguageFrench => [Language, French], None,
     LanguageEnglish => [Language, English], None,
     LanguageSpanish => [Language, Spanish], None,

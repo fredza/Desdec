@@ -96,9 +96,8 @@ fn native(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 );
             }
         });
-        let help = ui.small(
-            egui::RichText::new(text(language, Text::NativeDecompilerHelp)).color(MUTED),
-        );
+        let help =
+            ui.small(egui::RichText::new(text(language, Text::NativeDecompilerHelp)).color(MUTED));
         help.context_menu(|ui| {
             chosen = pseudocode_menu(ui, language, actions);
         });
@@ -174,14 +173,18 @@ fn line_by_line(app: &mut DesdecApp, ui: &mut egui::Ui) {
         }
         let scroll_target = app.pending_instruction_scroll;
         let attention = active_attention(ui.ctx(), &mut app.instruction_attention);
-        if let Some(address) = panel(
+        let panel = panel(
             ui,
             analysis,
             &mut app.selected_instruction,
             scroll_target,
             &mut app.pending_instruction_scroll,
             attention,
-        ) {
+            // On its own here: every line carries its address, one row per
+            // instruction, and the panel owns its scrolling.
+            &PanelLayout::alone(),
+        );
+        if let Some(address) = panel.clicked {
             app.pseudocode_assembly = Some(PseudocodeAssembly::Instruction(address));
             app.dialogs.open(Dialog::Assembly);
         }
@@ -504,6 +507,87 @@ pub fn ensure_selected_instruction(analysis: &Analysis, selected_instruction: &m
     }
 }
 
+/// How a pseudo-code panel is laid out.
+///
+/// The panel has two lives. On its own, in the decompilation view, it is the
+/// whole of what the reader is looking at: it carries the address of every
+/// line and owns its scrolling. Beside the disassembly, it is the second
+/// reading of one listing, and has to stand row for row against it — which is
+/// what everything here is for.
+pub struct PanelLayout<'a> {
+    /// Instruction indices where a section begins, from
+    /// [`crate::app::DesdecApp::section_starts`].
+    ///
+    /// The listing draws a heading above each of them, so the panel draws a
+    /// line there too. Empty when the panel stands on its own, which makes the
+    /// row map one row per instruction again.
+    pub sections: &'a [usize],
+    /// Whether each line carries the address it stands for.
+    ///
+    /// It does when the panel stands alone, where the address is the only
+    /// thing tying a line to the file. It does not beside the disassembly,
+    /// where the listing carries the same address on the same row: there the
+    /// column said everything twice and took a fifth of the window to do it.
+    pub with_addresses: bool,
+    /// The offset to hold, when the panel follows a listing beside it.
+    ///
+    /// `None` when it scrolls on its own.
+    pub follow: Option<f32>,
+    /// What row zero says.
+    ///
+    /// `None` frames the translation as a function: the signature on row zero
+    /// and the closing brace on the last row, which is what the panel shows
+    /// when it is the whole of the view.
+    ///
+    /// `Some` puts a column title there instead, on the very row the listing
+    /// beside it puts its own column headings — and that is what keeps the two
+    /// aligned. A title drawn *above* the panel sits outside its scroll area
+    /// and pushes every row of it down by its own height: twenty-six pixels,
+    /// which is a row and a half, on every line of the file.
+    pub title: Option<PanelTitle<'a>>,
+}
+
+/// A column title, and the sentence that explains it.
+pub struct PanelTitle<'a> {
+    pub label: &'a str,
+    pub help: &'a str,
+}
+
+impl PanelLayout<'_> {
+    /// The panel on its own: one row per instruction, addresses shown, its own
+    /// scrolling.
+    #[must_use]
+    pub const fn alone() -> Self {
+        Self {
+            sections: &[],
+            with_addresses: true,
+            follow: None,
+            title: None,
+        }
+    }
+}
+
+/// What the panel did with the frame it was given.
+pub struct PanelOutput {
+    /// An instruction the reader clicked, if they clicked one.
+    pub clicked: Option<u64>,
+    /// Where the panel ended up scrolled to.
+    ///
+    /// The caller compares it with the offset it asked for: a difference is
+    /// the reader having scrolled *this* panel, and is what the listing beside
+    /// it then follows.
+    pub offset: f32,
+}
+
+/// The line-by-line translation, virtualised.
+///
+/// Every row of it stands on the row the disassembly gives the same
+/// instruction, headings included — see [`PanelLayout`]. The two used to be
+/// counted differently, one row per instruction here against one per
+/// instruction *plus one per section* there, so the two columns of the
+/// disassembly view drifted a row further apart at every section boundary, and
+/// a file with a dozen sections had its pseudo-code twelve lines out by the
+/// end.
 pub fn panel(
     ui: &mut egui::Ui,
     analysis: &Analysis,
@@ -511,70 +595,159 @@ pub fn panel(
     scroll_target: Option<u64>,
     pending_scroll: &mut Option<u64>,
     attention: Option<u64>,
-) -> Option<u64> {
+    layout: &PanelLayout<'_>,
+) -> PanelOutput {
+    use crate::ui::disassembly::{LEADING, ListingRow, window};
+
     let mut clicked_instruction = None;
     ensure_selected_instruction(analysis, selected_instruction);
     // Virtualised like the disassembly beside it, and for the same reason: one
     // widget per decoded instruction is seconds of layout per frame.
-    let area = listing_area(
-        egui::ScrollArea::both().id_salt("pseudo_code"),
-        ui,
-        analysis,
-        scroll_target,
-        1,
-    );
-    let total_rows = analysis.instructions.len() + 2;
-    area
+    let area = egui::ScrollArea::both().id_salt("pseudo_code");
+    // Following a listing means taking its offset whole: it has already
+    // answered the jump to an address, the reader's wheel and the drag of its
+    // own scrollbar, and working any of them out a second time here is a
+    // second chance to work them out differently.
+    let area = match layout.follow {
+        Some(offset) => area.vertical_scroll_offset(offset),
+        None => listing_area(area, ui, analysis, scroll_target, LEADING),
+    };
+    // The closing brace is the one row the listing has no counterpart for. It
+    // sits after everything, where nothing can drift behind it — and a panel
+    // that is standing beside a listing has no brace at all, because it has no
+    // signature to close.
+    let closing = usize::from(layout.title.is_none());
+    let total_rows = LEADING + analysis.instructions.len() + layout.sections.len() + closing;
+    let scrolled = area
         // Fill the space the panel was given instead of hugging the longest
         // line, so both listings of the disassembly view stay side by side.
         .auto_shrink([false, false])
         .show_rows(ui, ROW_HEIGHT, total_rows, |ui, rows| {
             let transparent = egui::Color32::TRANSPARENT;
             if rows.start == 0 {
-                ui.label(syntax::pseudo_code(
-                    ui,
-                    "void decompiled_entry(void) {",
-                    transparent,
-                ));
-            }
-            for instruction in rows_of(&analysis.instructions, &rows, 1) {
                 ui.horizontal(|ui| {
                     ui.set_min_height(ROW_HEIGHT);
-                    let selected_fill =
-                        instruction_fill(ui, instruction.address, *selected_instruction, attention);
-                    let address = ui
-                        .add(
-                            egui::Label::new(syntax::dim(
+                    match &layout.title {
+                        Some(title) => {
+                            ui.strong(title.label).on_hover_text(title.help);
+                        }
+                        None => {
+                            ui.label(syntax::pseudo_code(
                                 ui,
-                                &format!("{:#018x}", instruction.address),
-                                selected_fill,
-                            ))
-                            .sense(egui::Sense::click()),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    let code = ui
-                        .add(
-                            egui::Label::new(syntax::pseudo_code(
-                                ui,
-                                &format!("    {}", pseudo_c(&instruction.text)),
-                                selected_fill,
-                            ))
-                            .sense(egui::Sense::click()),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    if address.clicked() || code.clicked() {
-                        *selected_instruction = Some(instruction.address);
-                        *pending_scroll = Some(instruction.address);
-                        clicked_instruction = Some(instruction.address);
-                        ui.ctx().request_repaint();
+                                "void decompiled_entry(void) {",
+                                transparent,
+                            ));
+                        }
                     }
                 });
             }
-            if rows.end == total_rows {
+            for row in window(&analysis.instructions, layout.sections, &rows, LEADING) {
+                match row {
+                    // Opposite the listing's section heading, and saying the
+                    // same thing in this column's own language: a C comment.
+                    // A blank row would hold the alignment just as well and
+                    // would read as a gap in the translation.
+                    ListingRow::Section { first, .. } => {
+                        let name = &*first.section;
+                        ui.horizontal(|ui| {
+                            ui.set_min_height(ROW_HEIGHT);
+                            ui.label(syntax::pseudo_code(
+                                ui,
+                                &format!("/* {name} */"),
+                                transparent,
+                            ));
+                        });
+                    }
+                    ListingRow::Instruction(instruction) => {
+                        instruction_line(
+                            ui,
+                            instruction,
+                            selected_instruction,
+                            pending_scroll,
+                            attention,
+                            layout.with_addresses,
+                            &mut clicked_instruction,
+                        );
+                    }
+                }
+            }
+            if closing > 0 && rows.end == total_rows {
                 ui.label(syntax::pseudo_code(ui, "}", transparent));
             }
         });
-    clicked_instruction
+    PanelOutput {
+        clicked: clicked_instruction,
+        offset: scrolled.state.offset.y,
+    }
+}
+
+/// One instruction's line of the translation.
+fn instruction_line(
+    ui: &mut egui::Ui,
+    instruction: &desdec_core::Instruction,
+    selected_instruction: &mut Option<u64>,
+    pending_scroll: &mut Option<u64>,
+    attention: Option<u64>,
+    with_addresses: bool,
+    clicked: &mut Option<u64>,
+) {
+    ui.horizontal(|ui| {
+        ui.set_min_height(ROW_HEIGHT);
+        // Room kept in the paint list for the band behind a selected line,
+        // taken before the line is drawn so the text lands on top of it; the
+        // listing beside this one does the same. Painted only behind the
+        // glyphs, a selection was a patch of colour the width of whatever the
+        // instruction happened to translate to, and the two columns of the
+        // disassembly view lit up to different widths on one and the same row.
+        let band = ui.painter().add(egui::Shape::Noop);
+        let selected_fill =
+            instruction_fill(ui, instruction.address, *selected_instruction, attention);
+        let mut address = None;
+        if with_addresses {
+            address = Some(
+                ui.add(
+                    egui::Label::new(syntax::dim(
+                        ui,
+                        &format!("{:#018x}", instruction.address),
+                        selected_fill,
+                    ))
+                    .sense(egui::Sense::click()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand),
+            );
+        }
+        let code = ui
+            .add(
+                egui::Label::new(syntax::pseudo_code(
+                    ui,
+                    &format!("    {}", pseudo_c(&instruction.text)),
+                    selected_fill,
+                ))
+                .sense(egui::Sense::click()),
+            )
+            .on_hover_text(format!("{:#018x}", instruction.address))
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if code.clicked() || address.is_some_and(|address| address.clicked()) {
+            *selected_instruction = Some(instruction.address);
+            *pending_scroll = Some(instruction.address);
+            *clicked = Some(instruction.address);
+            ui.ctx().request_repaint();
+        }
+        if selected_fill != egui::Color32::TRANSPARENT {
+            let row = ui.max_rect();
+            ui.painter().set(
+                band,
+                egui::Shape::rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(row.left(), code.rect.top()),
+                        egui::pos2(row.right().max(code.rect.right()), code.rect.bottom()),
+                    ),
+                    2.0,
+                    selected_fill,
+                ),
+            );
+        }
+    });
 }
 
 /// Prepares a virtualised listing of the decoded instructions.
@@ -623,18 +796,6 @@ pub fn listing_area_at_row(
     // one being shown are part of the answer.
     let offset = (offset - ui.available_height() / 2.0).max(0.0);
     area.vertical_scroll_offset(offset)
-}
-
-/// The instructions covered by a virtualiser's row range, given `leading` rows
-/// drawn before the first of them.
-pub fn rows_of<'a>(
-    instructions: &'a [desdec_core::Instruction],
-    rows: &std::ops::Range<usize>,
-    leading: usize,
-) -> &'a [desdec_core::Instruction] {
-    let start = rows.start.saturating_sub(leading).min(instructions.len());
-    let end = rows.end.saturating_sub(leading).min(instructions.len());
-    &instructions[start..end.max(start)]
 }
 
 /// A click opens a small, persistent assembly window rather than claiming that
@@ -947,10 +1108,7 @@ mod tests {
             return;
         };
         assert!(
-            decompiled
-                .lines
-                .iter()
-                .any(|line| line.address.is_some()),
+            decompiled.lines.iter().any(|line| line.address.is_some()),
             "no line of {} maps back to an instruction",
             decompiled.name
         );

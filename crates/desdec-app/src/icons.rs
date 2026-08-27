@@ -55,6 +55,9 @@ pub enum Icon {
     Run,
     Restart,
     Breakpoint,
+    /// The road sign: a warning that changes how everything under it should
+    /// be read.
+    Warning,
 }
 
 impl Icon {
@@ -97,10 +100,18 @@ impl Icon {
         Self::Run,
         Self::Restart,
         Self::Breakpoint,
+        Self::Warning,
     ];
 }
 
-const BUTTON_SIZE: egui::Vec2 = egui::vec2(34.0, 30.0);
+/// The size of a toolbar button.
+///
+/// Public because a row holding both buttons and text has to be given this
+/// height before anything is put in it. egui centres each widget against the
+/// height the row has reached so far, not the height it ends up with, so a
+/// label written before the first button is centred against the label's own
+/// height and then left sitting above the buttons that follow it.
+pub const BUTTON_SIZE: egui::Vec2 = egui::vec2(34.0, 30.0);
 /// Fraction of the button taken by the glyph; the rest is breathing room.
 ///
 /// Public so a caller that wants the glyph at a size of its own — the
@@ -230,6 +241,7 @@ pub fn draw_with_stroke(
         Icon::Run => run(&pen),
         Icon::Restart => restart(&pen),
         Icon::Breakpoint => breakpoint(&pen),
+        Icon::Warning => warning(&pen),
     }
 }
 
@@ -587,76 +599,109 @@ fn close(pen: &Pen) {
     pen.line((0.92, 0.08), (0.08, 0.92));
 }
 
-/// The first instruction of the static walk: an address in the code, not the
-/// beginning of a recording.
+/// Back to the first instruction: an arrow driven up against the wall the
+/// program starts at.
+///
+/// It used to be a rifle sight — a ringed cross with a pip in it — which is
+/// the mark every tool uses for "aim here" and says nothing about a beginning.
+/// A bar with an arrow into it is the one every transport has used for "back
+/// to the start" since tape decks had buttons.
 fn walk_to_entry(pen: &Pen) {
-    pen.circle((0.5, 0.5), 0.34);
-    pen.line((0.5, 0.04), (0.5, 0.24));
-    pen.line((0.5, 0.76), (0.5, 0.96));
-    pen.line((0.04, 0.5), (0.24, 0.5));
-    pen.line((0.76, 0.5), (0.96, 0.5));
-    pen.dot((0.5, 0.5));
+    pen.line((0.1, 0.14), (0.1, 0.86));
+    pen.line((0.24, 0.5), (0.94, 0.5));
+    pen.path(&[(0.5, 0.2), (0.22, 0.5), (0.5, 0.8)]);
 }
 
-/// Reverse along the path already read. The bent arrow says "go back through
-/// code", instead of borrowing the rewind glyph from a media player.
+/// Undo the last step: the arrow that turns back on itself.
+///
+/// The same mark every editor draws for undo, which is exactly what taking a
+/// step back is. What was drawn before — a rectangular loop with a head on it
+/// — read as a flow chart at button size.
 fn walk_back(pen: &Pen) {
-    pen.path(&[
-        (0.86, 0.22),
-        (0.36, 0.22),
-        (0.2, 0.38),
-        (0.2, 0.74),
-        (0.82, 0.74),
-    ]);
-    pen.path(&[(0.5, 0.56), (0.2, 0.74), (0.5, 0.92)]);
+    let arc: Vec<(f32, f32)> = (0..=20_u8)
+        .map(|step| {
+            // From the left, over the top, round to the right: an open circle
+            // with its gap where the head goes.
+            let angle = std::f32::consts::TAU * (0.5 + 0.62 * f32::from(step) / 20.0);
+            (0.5 + 0.36 * angle.cos(), 0.56 + 0.36 * angle.sin())
+        })
+        .collect();
+    pen.path(&arc);
+    pen.path(&[(0.0, 0.32), (0.14, 0.56), (0.3, 0.36)]);
 }
 
-/// Follow the line into the called code, marked by a downward arrow landing
-/// on its first instruction.
+/// Into the call: an arrow coming down onto the instruction it lands on.
+///
+/// The instruction is a filled disc, not a line: what a step lands on is one
+/// place, and the disc is what a debugger has drawn there for thirty years.
 fn walk_into(pen: &Pen) {
-    pen.line((0.08, 0.82), (0.92, 0.82));
-    pen.line((0.5, 0.1), (0.5, 0.62));
-    pen.path(&[(0.25, 0.4), (0.5, 0.66), (0.75, 0.4)]);
+    pen.line((0.5, 0.04), (0.5, 0.46));
+    pen.path(&[(0.28, 0.28), (0.5, 0.5), (0.72, 0.28)]);
+    pen.disc((0.5, 0.8), 0.15);
 }
 
-/// An arc jumping over the call on the line: the call that is passed rather
-/// than entered.
-///
-/// The pip that marked the call under the arc is gone. Three marks — arc, pip
-/// and head — at eighteen pixels were three marks, not one picture, and the
-/// arc alone already says what is hopped over.
+/// Over the call: an arc that leaves the line and comes back down to it,
+/// clearing the instruction under it.
 fn walk_over(pen: &Pen) {
-    pen.path(&[
-        (0.0, 0.76),
-        (0.16, 0.76),
-        (0.34, 0.2),
-        (0.66, 0.2),
-        (0.84, 0.76),
-        (1.0, 0.76),
-    ]);
-    pen.path(&[(0.74, 0.56), (1.0, 0.76), (0.74, 0.96)]);
+    let arc: Vec<(f32, f32)> = (0..=20_u8)
+        .map(|step| {
+            let angle = std::f32::consts::PI * (1.0 + f32::from(step) / 20.0);
+            (0.5 + 0.42 * angle.cos(), 0.56 + 0.4 * angle.sin())
+        })
+        .collect();
+    pen.path(&arc);
+    pen.path(&[(0.72, 0.32), (0.92, 0.56), (0.7, 0.66)]);
+    pen.disc((0.5, 0.86), 0.13);
 }
 
-/// An arrow leaving the line it stands on: back out of the call.
-fn walk_out(pen: &Pen) {
-    pen.line((0.06, 0.9), (0.94, 0.9));
-    pen.line((0.5, 0.86), (0.5, 0.12));
-    pen.path(&[(0.24, 0.38), (0.5, 0.1), (0.76, 0.38)]);
-}
-
-/// Forget the path: the route, with the mark that drops it set beside it.
+/// Out of the call: an arrow leaving the instruction it stands on, upwards.
 ///
-/// Struck through corner to corner, the route vanished at button size under
-/// its own diagonal and what was left was the window's close button. The
-/// cross now sits in one corner, small, the way a badge does, and the route
-/// stays legible under it.
+/// The instruction stays where it is in the step-in glyph — at the bottom,
+/// under the arrow — and only the arrow turns round. The pair then reads as
+/// one idea seen twice, which is what they are.
+fn walk_out(pen: &Pen) {
+    pen.line((0.5, 0.54), (0.5, 0.06));
+    pen.path(&[(0.28, 0.28), (0.5, 0.06), (0.72, 0.28)]);
+    pen.disc((0.5, 0.8), 0.15);
+}
+
+/// Forget the path: the bin.
+///
+/// The one glyph in the set that is a household object rather than a shape,
+/// and deliberately: every application on the reader's machine draws this for
+/// "throw away", and a route with a small cross beside it — what was here
+/// before — had to be read twice.
 fn walk_clear(pen: &Pen) {
-    pen.path(&[(0.02, 0.62), (0.26, 0.3), (0.5, 0.5)]);
-    for point in [(0.02, 0.62), (0.26, 0.3), (0.5, 0.5)] {
-        pen.dot(point);
+    pen.line((0.06, 0.24), (0.94, 0.24));
+    pen.path(&[(0.36, 0.24), (0.36, 0.1), (0.64, 0.1), (0.64, 0.24)]);
+    pen.path(&[(0.16, 0.24), (0.24, 0.96), (0.76, 0.96), (0.84, 0.24)]);
+    for x in [0.4_f32, 0.6] {
+        pen.line((x, 0.38), (x, 0.84));
     }
-    pen.line((0.6, 0.6), (0.98, 0.98));
-    pen.line((0.98, 0.6), (0.6, 0.98));
+}
+
+/// The road sign: a triangle standing on its base, with the mark inside it.
+///
+/// Drawn as the sign a driver knows rather than as a coloured pip, because it
+/// is asked to do the same job — say *read what follows differently* before
+/// anything under it has been read. A filled dot said "here is a thing"; a
+/// triangle says "careful".
+fn warning(pen: &Pen) {
+    /// How far the corners are cut, as a fraction of the glyph. A triangle
+    /// drawn to its points has three hairline spikes at button size; cutting
+    /// them leaves the shape and loses the spikes.
+    const CUT: f32 = 0.14;
+    pen.path(&[
+        (0.5 - CUT / 2.0, 0.06),
+        (0.5 + CUT / 2.0, 0.06),
+        (0.98, 0.88),
+        (0.98 - CUT, 0.94),
+        (0.02 + CUT, 0.94),
+        (0.02, 0.88),
+        (0.5 - CUT / 2.0, 0.06),
+    ]);
+    pen.line((0.5, 0.36), (0.5, 0.64));
+    pen.dot((0.5, 0.79));
 }
 
 /// A processor: a square die with legs on all four sides. Deliberately not a

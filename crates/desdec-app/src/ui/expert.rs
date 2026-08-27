@@ -465,14 +465,65 @@ fn is_the_native_api(library: &str) -> bool {
     library.eq_ignore_ascii_case("ntdll.dll") || library.eq_ignore_ascii_case("ntdll")
 }
 
-pub fn mapping_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) {
+/// How the loader lays the file into memory, and — when asked — what that
+/// means.
+///
+/// The explanations are a switch rather than a permanent paragraph. This
+/// table answers a question most readers ask once: *why does this not match
+/// the section table?* Once it has been answered, four sentences above five
+/// rows is four sentences in the way. Once it has not, a bare grid of
+/// addresses and `r-x` says nothing at all.
+///
+/// Returns the new state of that switch when the reader moved it, so the
+/// application writes the preference rather than this drawing code reaching
+/// into it.
+pub fn mapping_card(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    language: Language,
+    explain: bool,
+) -> Option<bool> {
+    let mut switched = None;
     card(ui, text(language, Text::LoadMapping), |ui| {
-        // Wrapped rather than laid out on one line: half a window is narrower
-        // than this sentence, and the end of it was being cut off.
-        ui.add(
-            egui::Label::new(egui::RichText::new(text(language, Text::LoadMappingHelp)).small())
-                .wrap(),
-        );
+        ui.horizontal(|ui| {
+            // Wrapped rather than laid out on one line: half a window is
+            // narrower than this sentence, and the end of it was being cut
+            // off. The switch keeps its room at the end of the row, the way
+            // the `?` beside a library name does.
+            let room = explain_room(ui, language);
+            let width = (ui.available_width() - room).max(0.0);
+            ui.scope(|ui| {
+                ui.set_max_width(width);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(text(language, Text::LoadMappingHelp)).small(),
+                    )
+                    .wrap(),
+                );
+            });
+            let mut wanted = explain;
+            if ui
+                .checkbox(&mut wanted, text(language, Text::ExplainThis))
+                .on_hover_text(text(language, Text::ExplainThisHint))
+                .changed()
+            {
+                switched = Some(wanted);
+            }
+        });
+        if explain {
+            ui.add_space(6.0);
+            for sentence in [Text::MappingWhatItIs, Text::MappingCoarserThanSections] {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(text(language, sentence))
+                            .small()
+                            .color(MUTED),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(4.0);
+            }
+        }
         ui.add_space(8.0);
 
         if analysis.details.segments.is_empty() {
@@ -493,14 +544,19 @@ pub fn mapping_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) 
                     .striped(true)
                     .spacing([18.0, 6.0])
                     .show(ui, |ui| {
-                        for header in [
-                            Text::Type,
-                            Text::Address,
-                            Text::Offset,
-                            Text::Size,
-                            Text::Rights,
+                        // Each column carries what it means under the
+                        // pointer, and — when the explanations are on — under
+                        // the header itself. A column headed `Droits` over
+                        // `r-x` is a column the reader has to already know.
+                        for (header, meaning) in [
+                            (Text::Type, Text::MappingKindHelp),
+                            (Text::Address, Text::MappingAddressHelp),
+                            (Text::Offset, Text::MappingOffsetHelp),
+                            (Text::Size, Text::MappingSizeHelp),
+                            (Text::Rights, Text::MappingRightsHelp),
                         ] {
-                            ui.strong(text(language, header));
+                            ui.strong(text(language, header))
+                                .on_hover_text(text(language, meaning));
                         }
                         ui.end_row();
 
@@ -509,12 +565,59 @@ pub fn mapping_card(ui: &mut egui::Ui, analysis: &Analysis, language: Language) 
                             ui.monospace(format!("{:#018x}", segment.virtual_address));
                             ui.monospace(format!("{:#x}", segment.file_offset));
                             ui.label(format_size(segment.file_size));
-                            ui.monospace(segment.permissions.label());
+                            let rights = ui.monospace(segment.permissions.label());
+                            // The one combination worth pointing at: a region
+                            // the processor will let the program both write
+                            // into and run is what code that rewrites itself
+                            // needs, and almost nothing else does.
+                            if segment.permissions.write && segment.permissions.execute {
+                                rights.on_hover_text(text(language, Text::MappingRightsHelp));
+                            }
                             ui.end_row();
                         }
                     });
             });
+        if explain {
+            ui.add_space(6.0);
+            for sentence in [
+                Text::MappingKindHelp,
+                Text::MappingAddressHelp,
+                Text::MappingOffsetHelp,
+                Text::MappingSizeHelp,
+                Text::MappingRightsHelp,
+            ] {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(text(language, sentence))
+                            .small()
+                            .color(MUTED),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(3.0);
+            }
+        }
     });
+    switched
+}
+
+/// The width the explanations checkbox will take, and the gap before it.
+///
+/// Measured the way egui measures a checkbox — the box, the gap, the label —
+/// rather than guessed at, for the reason [`question_room`] gives: a card
+/// whose two halves both believe they have the whole width grows past the
+/// column it lives in.
+fn explain_room(ui: &egui::Ui, language: Language) -> f32 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let label = text(language, Text::ExplainThis);
+    let width = ui.fonts(|fonts| {
+        label
+            .chars()
+            .map(|character| fonts.glyph_width(&font, character))
+            .sum::<f32>()
+    });
+    let box_side = ui.spacing().icon_width;
+    (width + box_side + ui.spacing().icon_spacing + ui.spacing().item_spacing.x * 2.0).ceil()
 }
 
 #[cfg(test)]

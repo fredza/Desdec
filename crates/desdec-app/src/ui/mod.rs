@@ -110,10 +110,36 @@ pub fn under_cursor(ctx: &egui::Context, size: egui::Vec2) -> egui::Pos2 {
 /// it, so the listings are given this one rather than measuring their own.
 pub const ROW_HEIGHT: f32 = 18.0;
 
+/// Room inside a card, between its rim and what it holds.
+///
+/// egui's own group frame gives its content six points on every side, which
+/// is the measurement of a debug panel: a title against the rim above it, a
+/// table whose first column touches the left edge. A panel in a desktop
+/// application is a surface with its content set in from the edge, and this is
+/// what makes the difference between the two.
+const CARD_MARGIN: egui::Margin = egui::Margin {
+    left: 12,
+    right: 12,
+    top: 10,
+    bottom: 12,
+};
+
 /// A titled frame that fills the width it is given, so panels line up instead
 /// of each shrinking to its own content.
+///
+/// Filled a shade off the panel behind it rather than merely outlined. A card
+/// that is only a thin rectangle around text reads as a border someone drew;
+/// one that is a surface reads as a panel, which is what it is — and on a
+/// window holding six of them, the surfaces are what let the eye count them
+/// without reading a word.
 pub fn card(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
-    ui.group(|ui| {
+    let visuals = ui.visuals();
+    let frame = egui::Frame::group(ui.style())
+        .inner_margin(CARD_MARGIN)
+        .fill(visuals.faint_bg_color)
+        .stroke(visuals.window_stroke)
+        .corner_radius(egui::CornerRadius::same(6));
+    frame.show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.vertical(|ui| {
             ui.strong(title);
@@ -123,13 +149,6 @@ pub fn card(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)
     });
 }
 
-/// A filled round pip, the size of the surrounding text.
-///
-/// Drawn rather than written. The obvious spelling is a black-circle
-/// character, and none of the fonts egui ships carries one in the
-/// proportional family: `⬤` came out as `◻`, the replacement glyph, which
-/// turned the loudest mark on the overview into a sign that something was
-/// broken. A circle is two lines of painting and needs no font at all.
 /// A checkbox that reads as *show these*, over a flag that stores the
 /// opposite.
 ///
@@ -146,12 +165,32 @@ pub fn shown_toggle(ui: &mut egui::Ui, hidden: &mut bool, label: &str) -> egui::
     response
 }
 
-pub fn pip(ui: &mut egui::Ui, colour: egui::Color32) -> egui::Response {
-    let diameter = ui.text_style_height(&egui::TextStyle::Body) * 0.52;
-    let (rect, response) =
-        ui.allocate_exact_size(egui::Vec2::splat(diameter), egui::Sense::hover());
-    ui.painter()
-        .circle_filled(rect.center(), diameter / 2.0, colour);
+/// The road sign that opens a warning, at the size of the surrounding text.
+///
+/// It replaces the filled pip this used to draw. A dot beside a red sentence
+/// says *here is a thing*; the reader has to read the sentence to find out
+/// that the thing is a warning. A triangle with a mark in it says *careful*
+/// before a word of it has been read, which is the whole job of the mark that
+/// opens an alert.
+///
+/// Drawn rather than written, like the pip before it. The obvious spelling is
+/// `⚠`, and none of the fonts egui ships carries it in the proportional
+/// family: it came out as the replacement glyph, which turned the loudest mark
+/// on the overview into a sign that something was broken. A drawn glyph needs
+/// no font at all.
+pub fn warning_sign(ui: &mut egui::Ui, colour: egui::Color32) -> egui::Response {
+    // Slightly taller than the text it stands beside: a triangle of exactly
+    // the cap height reads as smaller than a disc of the same height, because
+    // half of its box is empty.
+    let side = ui.text_style_height(&egui::TextStyle::Body) * 0.95;
+    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(side), egui::Sense::hover());
+    crate::icons::draw_with_stroke(
+        ui.painter(),
+        rect,
+        crate::icons::Icon::Warning,
+        colour,
+        (side * 0.1).max(1.2),
+    );
     response
 }
 

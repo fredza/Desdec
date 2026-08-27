@@ -95,7 +95,20 @@ const LANE_SPACING: f32 = 5.0;
 const MAX_LANES: usize = 4;
 
 /// Rows drawn before the first instruction: the column titles.
-const LEADING: usize = 1;
+/// Rows the listing draws before its first instruction: the column headings.
+///
+/// Public to the interface because the pseudo-code beside the listing has to
+/// stand on exactly the same rows; see [`ListingRow`].
+pub(super) const LEADING: usize = 1;
+
+/// How far the two columns of the view may stand apart before one is taken to
+/// have been scrolled on its own.
+///
+/// Not zero: a scroll area reports its offset in pixels it has itself rounded,
+/// and two areas told to stand at the same place can answer a fraction apart.
+/// Treating that fraction as a scroll would have each column chasing the other
+/// for ever, a pixel at a time.
+const LINKED_SLACK: f32 = 0.5;
 
 fn hex(bytes: &[u8]) -> String {
     bytes
@@ -145,11 +158,13 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
     // row they land on has to be brought into view on this frame — the scroll
     // offset is decided as the listing is prepared, further down.
     step_with_arrow_keys(app, ui.ctx());
-    // The transport first, because it is what moves the selection everything
-    // below is drawn around.
-    transport(app, ui);
 
     let language = app.preferences.language;
+    let mut action = Action::default();
+    if !toolbar(app, ui, &mut action) {
+        return action;
+    }
+
     let listing = Listing {
         patches: &app.patches,
         stack: &app.stack,
@@ -166,26 +181,16 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
         language,
     };
     let Some(analysis) = &app.analysis else {
-        return Action::default();
+        return action;
     };
-    if analysis.instructions.is_empty() {
-        ui.label(egui::RichText::new(text(language, Text::NoDisassembly)).color(MUTED));
-        return Action::default();
-    }
-    let mut action = Action::default();
     let selected = app.selected_instruction;
-    toolbar(ui, analysis, selected, language, &mut action);
 
     // A listing that stopped at the decoder's limit looks exactly like a
     // program that ends there, so it says which one this is.
     if analysis.code_truncated {
         ui.colored_label(ERROR, text(language, Text::TruncatedDisassembly));
     }
-    stack_summary(ui, analysis, listing.stack, selected, language);
-    // What the keys and the arrows in the gutter do, where they are used:
-    // neither announces itself, and a reader who never presses a key would
-    // otherwise scroll a hundred thousand rows by hand.
-    ui.small(egui::RichText::new(text(language, Text::DisassemblyHelp)).color(MUTED));
+    status_line(ui, analysis, listing.stack, selected, language);
     ui.add_space(8.0);
     let scroll_target = app.pending_instruction_scroll;
     let attention = decompile::active_attention(ui.ctx(), &mut app.instruction_attention);
@@ -200,52 +205,27 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
     {
         let selected_instruction = &mut app.selected_instruction;
         let pending_scroll = &mut app.pending_instruction_scroll;
+        let scrolled_from_pseudocode = &mut app.pseudocode_scroll;
         let mut visible_rows = 0..0;
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
                 egui::vec2(overview_width, overview_height),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    // These are two distinct readings of the code, not
-                    // adjacent fields of one table. A clear gutter makes it
-                    // possible to follow a long instruction line without the
-                    // pseudo-C beside it joining it visually.
-                    const PSEUDOCODE_GUTTER: f32 = 36.0;
-                    let ordinary_spacing = ui.spacing().item_spacing;
-                    ui.spacing_mut().item_spacing.x = PSEUDOCODE_GUTTER;
-                    ui.columns(2, |columns| {
-                        // `columns` inherits the spacing used for its gutter.
-                        // Restore the usual compact spacing inside each
-                        // column itself.
-                        columns[0].spacing_mut().item_spacing = ordinary_spacing;
-                        columns[1].spacing_mut().item_spacing = ordinary_spacing;
-                        columns[1].strong(text(language, Text::PseudoCode));
-                        columns[1].small(text(language, Text::PseudoCodeHelp));
-                        // Clicking a pseudo-code line here only moves the
-                        // selection: the assembly it stands for is already in
-                        // the left column, so the address it reports has no
-                        // window to open.
-                        let _selected_by_click = decompile::panel(
-                            &mut columns[1],
-                            analysis,
+                    let result = two_readings(
+                        ui,
+                        analysis,
+                        &listing,
+                        &mut Linked {
                             selected_instruction,
-                            scroll_target,
                             pending_scroll,
-                            attention,
-                        );
-                        let result = instructions(
-                            &mut columns[0],
-                            analysis,
-                            selected_instruction,
-                            scroll_target,
-                            pending_scroll,
-                            attention,
-                            &listing,
-                        );
-                        asked = result.asked;
-                        visible_rows = result.visible_rows;
-                    });
-                    ui.spacing_mut().item_spacing = ordinary_spacing;
+                            scrolled_from_pseudocode,
+                        },
+                        scroll_target,
+                        attention,
+                    );
+                    asked = result.asked;
+                    visible_rows = result.visible_rows;
                 },
             );
             overview_jump = overview(
@@ -358,49 +338,87 @@ pub struct Action {
     pub send_to_asm_studio: bool,
 }
 
-/// The row of buttons above the listing: what a reader does with the
-/// instruction they have selected.
+/// The one row above the listing: the walk's transport, and what is done with
+/// the instruction it stopped on.
+///
+/// Answers whether there is a listing to draw under it. A file whose code was
+/// never decoded still gets the transport — a reader looking at an empty view
+/// should not also be wondering where the buttons went — and nothing else.
+fn toolbar(app: &mut DesdecApp, ui: &mut egui::Ui, action: &mut Action) -> bool {
+    let language = app.preferences.language;
+    if app.analysis.is_none() {
+        return false;
+    }
+    // Drawn while the analysis is lifted out of the application: the row holds
+    // both the walk's buttons, which need `&mut DesdecApp` to run a command,
+    // and the two that act on the selected instruction, which need the section
+    // table to know whether that instruction's bytes are in the file at all.
+    // Lifting it out and putting it back is what lets one row hold both.
+    let lifted = app.analysis.take();
+    let empty = lifted
+        .as_ref()
+        .is_none_or(|analysis| analysis.instructions.is_empty());
+    if let Some(analysis) = &lifted {
+        transport(
+            app,
+            ui,
+            // No instruction to act on when none was decoded, so the two
+            // buttons are left off rather than drawn permanently greyed.
+            (!empty).then_some(analysis),
+            action,
+        );
+    }
+    app.analysis = lifted;
+    if empty {
+        ui.label(egui::RichText::new(text(language, Text::NoDisassembly)).color(MUTED));
+    }
+    !empty
+}
+
+/// What a reader does with the instruction they have selected.
+///
+/// Drawn into the transport's own row rather than on a line of its own. The
+/// two used to be stacked, which put five lines of heading above the first
+/// instruction of the listing — a transport, a row of buttons, a stack
+/// summary, a sentence about the next step and a sentence about the keys —
+/// and the listing itself started a third of the way down the window.
 ///
 /// Both buttons are the same move — leaving Desdec's reading for somewhere the
 /// code can be written — which is why they sit together, and why neither is
 /// offered when nothing is selected.
-fn toolbar(
+fn selection_actions(
     ui: &mut egui::Ui,
     analysis: &Analysis,
     selected: Option<u64>,
     language: Language,
     action: &mut Action,
 ) {
-    ui.horizontal(|ui| {
-        let patchable = selected
-            .is_some_and(|address| crate::patches::file_offset_of(analysis, address).is_some());
-        let button = ui.add_enabled(
-            selected.is_some() && patchable,
-            egui::Button::new(text(language, Text::EditInstruction)),
-        );
-        if button.clicked() {
-            action.edit = selected;
-        }
-        // Handing the function to an assembler IDE. Beside the byte editor
-        // because both are the same move — leaving Desdec's reading for a
-        // place the code can be written — and the reader looks for them
-        // together.
-        let send = ui.add_enabled(
-            selected.is_some(),
-            egui::Button::new(text(language, Text::SendToAsmStudio)),
-        );
-        if send
-            .on_hover_text(text(language, Text::SendToAsmStudioHelp))
-            .clicked()
-        {
-            action.send_to_asm_studio = true;
-        }
-        if selected.is_some() && !patchable {
-            ui.label(egui::RichText::new(text(language, Text::NotPatchable)).color(MUTED));
-        } else {
-            ui.small(text(language, Text::LocalDecoders));
-        }
-    });
+    let patchable =
+        selected.is_some_and(|address| crate::patches::file_offset_of(analysis, address).is_some());
+    let button = ui.add_enabled(
+        selected.is_some() && patchable,
+        egui::Button::new(text(language, Text::EditInstruction)),
+    );
+    if button.clicked() {
+        action.edit = selected;
+    }
+    // Handing the function to an assembler IDE. Beside the byte editor
+    // because both are the same move — leaving Desdec's reading for a
+    // place the code can be written — and the reader looks for them
+    // together.
+    let send = ui.add_enabled(
+        selected.is_some(),
+        egui::Button::new(text(language, Text::SendToAsmStudio)),
+    );
+    if send
+        .on_hover_text(text(language, Text::SendToAsmStudioHelp))
+        .clicked()
+    {
+        action.send_to_asm_studio = true;
+    }
+    if selected.is_some() && !patchable {
+        ui.label(egui::RichText::new(text(language, Text::NotPatchable)).color(MUTED));
+    }
 }
 
 /// The controls of the static walk: a compact map of the code path.
@@ -410,7 +428,12 @@ fn toolbar(
 /// the bytes already say. Where a running program would consult a register or
 /// a flag, the walk stops and reports that, and the two step buttons are what
 /// let the reader choose the path a condition would otherwise decide.
-fn transport(app: &mut DesdecApp, ui: &mut egui::Ui) {
+fn transport(
+    app: &mut DesdecApp,
+    ui: &mut egui::Ui,
+    analysis: Option<&Analysis>,
+    action: &mut Action,
+) {
     /// In the order a reader follows the code path, left to right.
     const BUTTONS: &[(Icon, Command)] = &[
         (Icon::WalkToEntry, Command::WalkToEntry),
@@ -422,10 +445,22 @@ fn transport(app: &mut DesdecApp, ui: &mut egui::Ui) {
     ];
     let language = app.preferences.language;
     let theme = accent(app.preferences.theme);
+    let selected = app.selected_instruction;
     let mut pressed = None;
 
     ui.horizontal(|ui| {
-        let title = ui.strong(text(language, Text::StaticWalk));
+        // The row is given the buttons' height before anything is put in it.
+        // egui centres each widget against the height the row has reached so
+        // far, so the title written first was centred against its own height
+        // and left sitting a few points above the buttons that came after it —
+        // which is exactly what a toolbar must not look like.
+        ui.set_min_height(icons::BUTTON_SIZE.y);
+        // Small, muted and upright, like every other section heading in the
+        // interface: it names the group of buttons beside it, and a heading
+        // drawn at the weight of the content competes with it.
+        let title = ui.label(crate::ui::section_title(
+            &text(language, Text::StaticWalk).to_uppercase(),
+        ));
         app.tooltip(title, text(language, Text::WalkHelp));
         for (icon, command) in BUTTONS {
             // A button that cannot move is drawn but not offered: a press it
@@ -441,24 +476,25 @@ fn transport(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 pressed = Some(*command);
             }
         }
-        if app.walk.steps() > 0 {
+        // What is done with the selected instruction, on the same row: it is
+        // the same subject — the instruction the transport stopped on — and a
+        // second row of its own said so less clearly and cost a line.
+        if let Some(analysis) = analysis {
             ui.separator();
-            ui.small(format!(
-                "{} {}",
-                text(language, Text::WalkSteps),
-                app.walk.steps()
-            ));
+            selection_actions(ui, analysis, selected, language, action);
         }
-        if app.walk.depth() > 0 {
+        let steps = app.walk.steps();
+        let depth = app.walk.depth();
+        if steps > 0 || depth > 0 {
             ui.separator();
-            ui.small(format!(
-                "{} {}",
-                text(language, Text::WalkDepth),
-                app.walk.depth()
-            ));
+        }
+        if steps > 0 {
+            ui.small(format!("{} {steps}", text(language, Text::WalkSteps)));
+        }
+        if depth > 0 {
+            ui.small(format!("{} {depth}", text(language, Text::WalkDepth)));
         }
     });
-    next_step(app, ui);
     if let Some(command) = pressed {
         app.run_command(ui.ctx(), command);
     }
@@ -469,16 +505,9 @@ fn transport(app: &mut DesdecApp, ui: &mut egui::Ui) {
 /// The reader is following a flow, and the two places a static walk parts
 /// company with a running program — a condition it cannot evaluate, a target
 /// it cannot resolve — are exactly the places they need warning of.
-fn next_step(app: &DesdecApp, ui: &mut egui::Ui) {
-    let language = app.preferences.language;
-    let Some(analysis) = &app.analysis else {
-        return;
-    };
-    let Some(address) = app.selected_instruction else {
-        return;
-    };
+fn next_step_sentence(analysis: &Analysis, address: u64, language: Language) -> String {
     let lead = text(language, Text::NextStep);
-    let sentence = match walk::next_move(analysis, address, false) {
+    match walk::next_move(analysis, address, false) {
         walk::Move::Call { target, .. } => {
             format!(
                 "{lead} : {} {target:#x}",
@@ -495,8 +524,7 @@ fn next_step(app: &DesdecApp, ui: &mut egui::Ui) {
         walk::Move::Return => format!("{lead} : {}", text(language, Text::NextStepReturn)),
         walk::Move::Unresolved => text(language, Text::NextStepUnresolved).to_owned(),
         walk::Move::End => text(language, Text::NextStepEnd).to_owned(),
-    };
-    ui.small(egui::RichText::new(sentence).color(MUTED));
+    }
 }
 
 /// Moves the selection one instruction at a time, with the arrow keys.
@@ -544,6 +572,104 @@ fn step_with_arrow_keys(app: &mut DesdecApp, ctx: &egui::Context) {
 struct InstructionListing {
     asked: Asked,
     visible_rows: std::ops::Range<usize>,
+    /// Where the listing ended up scrolled to, which is what the pseudo-code
+    /// beside it is then held at. Read back from the scroll area rather than
+    /// computed: the reader's wheel, a drag of the scrollbar and a jump to an
+    /// address all land here, and only the scroll area knows the sum of them.
+    offset: f32,
+}
+
+/// What the two locked columns are drawn from and write back to.
+///
+/// Gathered rather than passed one by one: all three belong to the application
+/// and all three are written as the columns are drawn, which is what keeps
+/// them out of [`Listing`] — that one is read and never written.
+struct Linked<'a> {
+    selected_instruction: &'a mut Option<u64>,
+    pending_scroll: &'a mut Option<u64>,
+    /// See [`crate::app::DesdecApp::pseudocode_scroll`].
+    scrolled_from_pseudocode: &'a mut Option<f32>,
+}
+
+/// The two readings of the code, side by side and held on the same rows.
+fn two_readings(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    listing: &Listing,
+    state: &mut Linked,
+    scroll_target: Option<u64>,
+    attention: Option<u64>,
+) -> InstructionListing {
+    /// These are two distinct readings of the code, not adjacent fields of one
+    /// table. A clear gutter makes it possible to follow a long instruction
+    /// line without the pseudo-C beside it joining it visually.
+    const PSEUDOCODE_GUTTER: f32 = 36.0;
+
+    let language = listing.language;
+    let mut drawn = InstructionListing {
+        asked: Asked::default(),
+        visible_rows: 0..0,
+        offset: 0.0,
+    };
+    let ordinary_spacing = ui.spacing().item_spacing;
+    ui.spacing_mut().item_spacing.x = PSEUDOCODE_GUTTER;
+    ui.columns(2, |columns| {
+        // `columns` inherits the spacing used for its gutter. Restore the
+        // usual compact spacing inside each column itself.
+        columns[0].spacing_mut().item_spacing = ordinary_spacing;
+        columns[1].spacing_mut().item_spacing = ordinary_spacing;
+        // The listing goes first, and the pseudo-code follows the offset it
+        // ends up at. It is the one that answers a jump to an address and the
+        // one the overview ruler reports, so it decides where the pair stands;
+        // drawing it second would leave the panel beside it holding last
+        // frame's position.
+        drawn = instructions(
+            &mut columns[0],
+            analysis,
+            state.selected_instruction,
+            scroll_target,
+            state.pending_scroll,
+            attention,
+            listing,
+            *state.scrolled_from_pseudocode,
+        );
+
+        // Clicking a pseudo-code line here only moves the selection: the
+        // assembly it stands for is already in the left column, so the address
+        // it reports has no window to open.
+        let panel = decompile::panel(
+            &mut columns[1],
+            analysis,
+            state.selected_instruction,
+            scroll_target,
+            state.pending_scroll,
+            attention,
+            &decompile::PanelLayout {
+                // The same rows the listing draws, headings included, so the
+                // two columns say the same thing on the same line all the way
+                // down.
+                sections: listing.sections,
+                // No address column: the listing beside it carries the same
+                // address on the same row.
+                with_addresses: false,
+                follow: Some(drawn.offset),
+                // Inside the panel, on row zero, opposite the listing's own
+                // column headings — never above it; see `PanelLayout::title`.
+                title: Some(decompile::PanelTitle {
+                    label: text(language, Text::PseudoCode),
+                    help: text(language, Text::PseudoCodeHelp),
+                }),
+            },
+        );
+        // The wheel over this panel scrolled it away from the listing. Held
+        // for the next frame rather than acted on now — the listing has
+        // already been drawn — which is one frame of the pair standing apart,
+        // and the price of letting the reader scroll from either side.
+        *state.scrolled_from_pseudocode =
+            ((panel.offset - drawn.offset).abs() > LINKED_SLACK).then_some(panel.offset);
+    });
+    ui.spacing_mut().item_spacing = ordinary_spacing;
+    drawn
 }
 
 fn instructions(
@@ -554,6 +680,7 @@ fn instructions(
     pending_scroll: &mut Option<u64>,
     attention: Option<u64>,
     listing: &Listing,
+    follow: Option<f32>,
 ) -> InstructionListing {
     let language = listing.language;
     let mut asked = Asked::default();
@@ -575,66 +702,76 @@ fn instructions(
         ui,
         target_row,
     );
+    // A scroll the reader made in the pseudo-code panel, carried here. Only
+    // when nothing is being jumped to: a reader who asked for an address is
+    // asking for it more loudly than the panel beside them is asking to stay
+    // where it was.
+    let area = match follow.filter(|_| target_row.is_none()) {
+        Some(offset) => area.vertical_scroll_offset(offset),
+        None => area,
+    };
     let total_rows = LEADING + analysis.instructions.len() + listing.sections.len();
-    area.auto_shrink([false, false])
-        .show_rows(ui, ROW_HEIGHT, total_rows, |ui, rows| {
-            visible_rows = rows.clone();
-            let body = window(&analysis.instructions, listing.sections, &rows, LEADING);
-            // Where each row's gutter cell ended up, so the arrows can be
-            // drawn over the whole listing once it is laid out. Positions
-            // rather than row numbers: the listing is virtualised, and what
-            // is on screen is whatever the scroll offset left there.
-            let mut gutters: Vec<egui::Rect> = Vec::with_capacity(body.len());
-            let mut instructions: Vec<&Instruction> = Vec::with_capacity(body.len());
-            egui::Grid::new("disassembly")
-                .num_columns(6)
-                .striped(true)
-                .min_row_height(ROW_HEIGHT)
-                .show(ui, |ui| {
-                    if rows.start == 0 {
-                        // The gutter carries no title: the arrows drawn in it
-                        // are their own legend, and a word here would be read
-                        // as a column of data.
-                        gutter_cell(ui);
-                        let [address, bytes, section, stack] = listing.columns;
-                        for (title, width) in [
-                            (Text::Address, address),
-                            (Text::Bytes, bytes),
-                            (Text::Section, section),
-                            (Text::Stack, stack),
-                            (Text::Instruction, 0.0),
-                        ] {
-                            sized_cell(ui, width, |ui| ui.strong(text(language, title)));
-                        }
-                        ui.end_row();
-                    }
-                    for row in &body {
-                        match row {
-                            ListingRow::Section { first, last, count } => {
-                                section_heading(ui, first, last, *count, listing);
+    let scrolled =
+        area.auto_shrink([false, false])
+            .show_rows(ui, ROW_HEIGHT, total_rows, |ui, rows| {
+                visible_rows = rows.clone();
+                let body = window(&analysis.instructions, listing.sections, &rows, LEADING);
+                // Where each row's gutter cell ended up, so the arrows can be
+                // drawn over the whole listing once it is laid out. Positions
+                // rather than row numbers: the listing is virtualised, and what
+                // is on screen is whatever the scroll offset left there.
+                let mut gutters: Vec<egui::Rect> = Vec::with_capacity(body.len());
+                let mut instructions: Vec<&Instruction> = Vec::with_capacity(body.len());
+                egui::Grid::new("disassembly")
+                    .num_columns(6)
+                    .striped(true)
+                    .min_row_height(ROW_HEIGHT)
+                    .show(ui, |ui| {
+                        if rows.start == 0 {
+                            // The gutter carries no title: the arrows drawn in it
+                            // are their own legend, and a word here would be read
+                            // as a column of data.
+                            gutter_cell(ui);
+                            let [address, bytes, section, stack] = listing.columns;
+                            for (title, width) in [
+                                (Text::Address, address),
+                                (Text::Bytes, bytes),
+                                (Text::Section, section),
+                                (Text::Stack, stack),
+                                (Text::Instruction, 0.0),
+                            ] {
+                                sized_cell(ui, width, |ui| ui.strong(text(language, title)));
                             }
-                            ListingRow::Instruction(instruction) => {
-                                let (gutter, row) = instruction_row(
-                                    ui,
-                                    analysis,
-                                    instruction,
-                                    selected_instruction,
-                                    pending_scroll,
-                                    attention,
-                                    listing,
-                                );
-                                gutters.push(gutter);
-                                instructions.push(instruction);
-                                asked.merge(&row);
+                            ui.end_row();
+                        }
+                        for row in &body {
+                            match row {
+                                ListingRow::Section { first, last, count } => {
+                                    section_heading(ui, first, last, *count, listing);
+                                }
+                                ListingRow::Instruction(instruction) => {
+                                    let (gutter, row) = instruction_row(
+                                        ui,
+                                        analysis,
+                                        instruction,
+                                        selected_instruction,
+                                        pending_scroll,
+                                        attention,
+                                        listing,
+                                    );
+                                    gutters.push(gutter);
+                                    instructions.push(instruction);
+                                    asked.merge(&row);
+                                }
                             }
                         }
-                    }
-                });
-            draw_jumps(ui, &instructions, &gutters, *selected_instruction);
-        });
+                    });
+                draw_jumps(ui, &instructions, &gutters, *selected_instruction);
+            });
     InstructionListing {
         asked,
         visible_rows,
+        offset: scrolled.state.offset.y,
     }
 }
 
@@ -1145,12 +1282,17 @@ pub fn monospace_width(ui: &egui::Ui, characters: usize) -> f32 {
 }
 
 /// The row an instruction is drawn on, counting the headings above it.
-fn row_of(sections: &[usize], leading: usize, index: usize) -> usize {
+pub(super) fn row_of(sections: &[usize], leading: usize, index: usize) -> usize {
     leading + index + sections.partition_point(|start| *start <= index)
 }
 
 /// What one row of the listing carries.
-enum ListingRow<'a> {
+///
+/// The pseudo-code panel beside the listing reads this too, so that both draw
+/// a row in the same places: a heading the listing draws and the pseudo-code
+/// does not is a row of drift, and every section adds another. Two walks that
+/// have to agree exactly are one walk.
+pub(super) enum ListingRow<'a> {
     /// The head of a section: where it starts, where it ends, what it holds.
     Section {
         first: &'a Instruction,
@@ -1167,7 +1309,7 @@ enum ListingRow<'a> {
 /// for each would cost more than the instructions themselves. A row number is
 /// an index plus the headings above it, which the section starts give in a
 /// binary search.
-fn window<'a>(
+pub(super) fn window<'a>(
     instructions: &'a [Instruction],
     sections: &[usize],
     rows: &std::ops::Range<usize>,
@@ -1264,6 +1406,11 @@ fn instruction_row(
 ) -> (egui::Rect, Asked) {
     let language = listing.language;
     let mut asked = Asked::default();
+    // Room kept in the paint list for the band behind the selected row, taken
+    // before anything of the row is drawn so that what follows lands on top of
+    // it. Painted afterwards would put a solid rectangle over the very text it
+    // is meant to pick out.
+    let band = ui.painter().add(egui::Shape::Noop);
     let gutter = gutter_cell(ui);
     // Marks in the margin, where a reader's eye runs down the listing looking
     // for the rows they worked on. The note itself rides at the end of the
@@ -1362,8 +1509,47 @@ fn instruction_row(
         *pending_scroll = Some(instruction.address);
         ui.ctx().request_repaint();
     }
+    // The whole row, and not only the text on it. The fill used to reach no
+    // further than the glyphs of each cell, so a selected line was four short
+    // patches of blue with the gaps between the columns showing through — at a
+    // glance, less visible than the table's own striping. A band across the
+    // row is what a debugger draws, and it is legible from across the screen.
+    if selected_fill != egui::Color32::TRANSPARENT {
+        ui.painter().set(
+            band,
+            selection_band(gutter, assembly.rect, ui.max_rect(), selected_fill, listing),
+        );
+    }
     ui.end_row();
     (gutter, asked)
+}
+
+/// The band behind a selected row: a fill, and the accent drawn round it.
+///
+/// The outline is what makes the selection read as *this row* rather than as a
+/// patch of colour. It matters most where the fill has least to work with — a
+/// light theme, or a row whose cells are nearly empty — and it costs one
+/// stroke.
+fn selection_band(
+    gutter: egui::Rect,
+    last_cell: egui::Rect,
+    available: egui::Rect,
+    fill: egui::Color32,
+    listing: &Listing,
+) -> egui::Shape {
+    let band = egui::Rect::from_min_max(
+        egui::pos2(gutter.left(), gutter.top()),
+        egui::pos2(available.right().max(last_cell.right()), gutter.bottom()),
+    );
+    egui::Shape::Vec(vec![
+        egui::Shape::rect_filled(band, 2.0, fill),
+        egui::Shape::rect_stroke(
+            band,
+            2.0,
+            egui::Stroke::new(1.0_f32, listing.accent),
+            egui::StrokeKind::Inside,
+        ),
+    ])
 }
 
 /// Everything the right button offers on one row.
@@ -1735,6 +1921,46 @@ fn head(painter: &egui::Painter, tip: egui::Pos2, facing: Facing, stroke: egui::
 /// Under the toolbar rather than beside the row: the listing shows the depth
 /// at every instruction, and this says what those bytes are — which is the
 /// question the number provokes.
+/// One line under the toolbar, saying where the walk stands and what the
+/// selected instruction has done to the stack.
+///
+/// It replaces three lines that used to be stacked here — the next step, the
+/// stack, and a sentence about the keys — because a listing whose heading
+/// takes a third of the window is a listing you have to scroll to reach. What
+/// was a sentence about the keys is now under the `?` at the end of the row,
+/// where an explanation of the view belongs and where it costs no room at all.
+///
+/// A plain row, never a wrapped one: a wrapped row draws every one of its
+/// parts at the same place in egui 0.31.
+fn status_line(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    stack: &Trace,
+    selected: Option<u64>,
+    language: Language,
+) {
+    ui.horizontal(|ui| {
+        if let Some(address) = selected {
+            ui.label(
+                egui::RichText::new(next_step_sentence(analysis, address, language))
+                    .small()
+                    .color(MUTED),
+            );
+            ui.separator();
+        }
+        stack_summary(ui, analysis, stack, selected, language);
+        // The explanations of the view itself, gathered under one mark at the
+        // end of the row: what the keys and the gutter arrows do, and which
+        // decoders produced the listing.
+        ui.separator();
+        ui.small("?").on_hover_text(format!(
+            "{}\n\n{}",
+            text(language, Text::DisassemblyHelp),
+            text(language, Text::LocalDecoders)
+        ));
+    });
+}
+
 fn stack_summary(
     ui: &mut egui::Ui,
     analysis: &Analysis,
@@ -2608,6 +2834,13 @@ mod tests {
     /// laid out until it is scrolled to. Reaching one far down the listing has
     /// to actually put it on screen, or every cross-reference in the interface
     /// leads nowhere.
+    ///
+    /// Both listings, not one: the pseudo-code beside the disassembly is a
+    /// second virtualised list of the same instructions, and it has to follow
+    /// the same address. It is checked by its own text rather than by the
+    /// address, which it no longer draws — the listing next to it carries the
+    /// same address on the same row, and a second column of them was a fifth
+    /// of the window spent saying everything twice.
     #[test]
     fn scrolling_to_a_distant_instruction_brings_it_into_view() {
         let analysis = reference_analysis();
@@ -2615,6 +2848,7 @@ mod tests {
             return; // Nothing decoded on this host: nothing to scroll to.
         };
         let address = target.address;
+        let pseudo_code = crate::ui::decompile::pseudo_c(&target.text);
         let mut app = opened_app(WorkspaceView::Disassembly);
         app.selected_instruction = Some(address);
         app.pending_instruction_scroll = Some(address);
@@ -2630,13 +2864,79 @@ mod tests {
             views::show_central_panel(&mut app, ctx);
         });
 
-        // Twice: the disassembly and the pseudo-code beside it are two
-        // virtualised listings, and both have to follow the same address.
         let drawn = drawn_text(&output.shapes);
         assert_eq!(
             drawn.matches(&format!("{address:#018x}")).count(),
-            2,
-            "both listings must scroll to the instruction"
+            1,
+            "the listing must scroll to the instruction, and say its address once"
+        );
+        assert!(
+            drawn.contains(&pseudo_code),
+            "the pseudo-code beside it must scroll to the same instruction: \
+             {pseudo_code} is not in what was drawn"
+        );
+    }
+
+    /// The two columns of the view are one listing read two ways, so the C for
+    /// an instruction has to sit on the row the assembly for it sits on.
+    ///
+    /// They used to be counted differently: the listing draws a heading where
+    /// each section begins and the pseudo-code drew none, so the two drifted a
+    /// row further apart at every section boundary. On top of that the panel's
+    /// title sat *outside* its scroll area and pushed every one of its rows
+    /// twenty-six pixels down. Reading the positions is the only way to see
+    /// either — every line is drawn whatever happens, just not beside the one
+    /// it belongs to.
+    ///
+    /// Only lines drawn once are checked. A `.plt` is a hundred entries that
+    /// translate to the same two statements, and pairing an address with the
+    /// first line that merely *reads* like its own answers nothing: the first
+    /// version of this test failed on exactly that, and against code that was
+    /// by then already aligned.
+    #[test]
+    fn each_pseudo_code_line_sits_on_the_row_of_its_instruction() {
+        let analysis = reference_analysis();
+        if analysis.instructions.is_empty() {
+            return; // Nothing decoded on this host.
+        }
+        let mut app = opened_app(WorkspaceView::Disassembly);
+        let ctx = egui::Context::default();
+        let mut draw = |ctx: &egui::Context| {
+            views::show_central_panel(&mut app, ctx);
+        };
+        let _ = ctx.run(listing_window_input(), &mut draw);
+        let output = ctx.run(listing_window_input(), &mut draw);
+
+        let drawn = drawn(&output.shapes);
+        let once = |wanted: &str| {
+            let mut found = drawn.iter().filter(|(said, _)| said == wanted);
+            match (found.next(), found.next()) {
+                (Some((_, at)), None) => Some(*at),
+                _ => None,
+            }
+        };
+
+        let mut checked = 0;
+        for instruction in &analysis.instructions {
+            let Some(at) = once(&format!("{:#018x}", instruction.address)) else {
+                continue; // Scrolled away from, or not the only one of its kind.
+            };
+            let code = crate::ui::decompile::pseudo_c(&instruction.text);
+            let Some(beside) = once(&format!("    {code}")) else {
+                continue; // A translation this file draws more than once.
+            };
+            assert!(
+                (beside.y - at.y).abs() < crate::ui::ROW_HEIGHT / 2.0,
+                "{:#018x} is drawn at y={} and its pseudo-code at y={}",
+                instruction.address,
+                at.y,
+                beside.y
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 5,
+            "too few rows could be paired to say anything: {checked}"
         );
     }
 

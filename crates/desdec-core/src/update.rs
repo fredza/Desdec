@@ -694,6 +694,92 @@ mod tests {
         assert!(matches!(error, Error::Unreadable(_)));
     }
 
+    /// A live check against the release GitHub is actually publishing, run by
+    /// hand before a tag is pushed. It answers the one question the unit tests
+    /// cannot: whether the names the workflow attaches are still the names the
+    /// updater looks for.
+    ///
+    /// Off unless asked for, since a test suite must not need the network.
+    #[test]
+    fn live_check_against_the_published_release() {
+        if std::env::var_os("DESDEC_LIVE_UPDATE_CHECK").is_none() {
+            return;
+        }
+        let release = latest().expect("GitHub answers with a release");
+        let running = Version::running().expect("this build has a version");
+
+        println!("published : {} ({})", release.tag, release.published);
+        println!("running   : {running}");
+        println!(
+            "archive   : {} ({} bytes)",
+            release.archive.name, release.archive.size
+        );
+        println!(
+            "checksum  : {}",
+            release
+                .checksum
+                .as_ref()
+                .map_or("MANQUANT", |asset| asset.name.as_str())
+        );
+        println!("offered   : {}", release.is_newer_than(running));
+
+        assert!(
+            release.checksum.is_some(),
+            "no .sha256 beside the archive: a download would be refused"
+        );
+        assert!(
+            release.archive.size > 0 && release.archive.size < MAXIMUM_ARCHIVE,
+            "the archive is {} bytes",
+            release.archive.size
+        );
+    }
+
+    /// The other half of the live check: the download really arrives and its
+    /// hash really matches what the release publishes. This is the step that
+    /// refuses a corrupted or substituted archive, and a release whose
+    /// `.sha256` does not describe its archive would only be found here.
+    ///
+    /// Fetches about ten megabytes, so it is off unless asked for.
+    #[test]
+    fn live_download_of_the_published_release_is_verified() {
+        if std::env::var_os("DESDEC_LIVE_UPDATE_DOWNLOAD").is_none() {
+            return;
+        }
+        let release = latest().expect("GitHub answers with a release");
+        let directory = std::env::temp_dir().join("desdec-live-update-check");
+        let _ = fs::remove_dir_all(&directory);
+
+        let mut last = 0_u64;
+        let kept = download(&release, &directory, |progress| last = progress.received)
+            .expect("the published archive matches the checksum published beside it");
+
+        println!("kept      : {}", kept.display());
+        println!("received  : {last} bytes");
+        assert!(kept.ends_with(&release.archive.name));
+        assert_eq!(
+            fs::metadata(&kept).expect("the archive is on disk").len(),
+            release.archive.size
+        );
+
+        // And the refusal, on the same bytes: one flipped byte has to be
+        // caught and the file left off the disk. This is the promise the whole
+        // download exists to keep.
+        let published = read_checksum(
+            &fetch_text(&release.checksum.as_ref().expect("a checksum").url).expect("readable"),
+            &release.archive.name,
+        )
+        .expect("the checksum names the archive");
+        let mut tampered = fs::read(&kept).expect("readable");
+        tampered[0] ^= 0xff;
+        let found = hash::to_hex(&hash::sha256(&tampered));
+        assert_ne!(
+            found, published,
+            "a flipped byte must not hash to the published value"
+        );
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
     #[test]
     fn the_running_release_is_not_newer_than_itself() {
         let Some(archive) = platform_archive() else {

@@ -32,6 +32,12 @@ pub enum SourceLanguage {
     Fortran,
     Haskell,
     Pascal,
+    Nim,
+    OCaml,
+    Ada,
+    /// A Python program with an interpreter bundled around it, which is what
+    /// a "compiled" Python file always is.
+    Python,
 }
 
 impl SourceLanguage {
@@ -50,6 +56,10 @@ impl SourceLanguage {
             Self::Fortran => "Fortran",
             Self::Haskell => "Haskell",
             Self::Pascal => "Pascal/Delphi",
+            Self::Nim => "Nim",
+            Self::OCaml => "OCaml",
+            Self::Ada => "Ada",
+            Self::Python => "Python",
         }
     }
 }
@@ -103,7 +113,9 @@ pub fn detect(
     from_sections(file, sections, &mut found);
     from_producer_strings(file, &mut found);
     from_symbols(symbols, &mut found);
+    from_runtime_names(symbols, &mut found);
     from_libraries(details, &mut found);
+    from_imported_functions(details, &mut found);
 
     // The strongest statement about each language is the one worth showing.
     found.sort_by(|a, b| {
@@ -122,7 +134,14 @@ fn from_sections(file: &[u8], sections: &[Section], found: &mut Vec<LanguageEvid
             ".gopclntab" | ".go.buildinfo" | ".note.go.buildid" | "__gopclntab" => {
                 SourceLanguage::Go
             }
-            "__swift5_types" | "__swift5_proto" | ".sw5tymd" => SourceLanguage::Swift,
+            ".gosymtab" | ".gostring" => SourceLanguage::Go,
+            "__swift5_types" | "__swift5_proto" | "__swift5_fieldmd" | ".sw5tymd" => {
+                SourceLanguage::Swift
+            }
+            // `rustc` writes its crate metadata under its own name. Only a
+            // Rust compilation carries it, and it survives a strip that takes
+            // the symbol table with it.
+            ".rustc" | "__rustc" => SourceLanguage::Rust,
             "__objc_classlist" | "__objc_imageinfo" | ".objc_classlist" => {
                 SourceLanguage::ObjectiveC
             }
@@ -293,6 +312,275 @@ fn from_symbols(symbols: &[Symbol], found: &mut Vec<LanguageEvidence>) {
                 language,
                 confidence: Confidence::Certain,
                 evidence: format!("{count} symbols with {description}"),
+                toolchain: None,
+            });
+        }
+    }
+}
+
+/// A name the runtime declares, the language it belongs to, and how firmly
+/// it points there.
+///
+/// Exact names are matched whole; prefixes match a family of names — every
+/// OCaml symbol starts `caml`, and listing them is not possible.
+struct Runtime {
+    name: &'static str,
+    prefix: bool,
+    language: SourceLanguage,
+    confidence: Confidence,
+}
+
+const RUNTIMES: &[Runtime] = &[
+    // Go names its runtime in the symbol table even when nothing else
+    // survives, and no other language writes these.
+    Runtime {
+        name: "runtime.goexit",
+        prefix: false,
+        language: SourceLanguage::Go,
+        confidence: Confidence::Certain,
+    },
+    Runtime {
+        name: "runtime.morestack",
+        prefix: false,
+        language: SourceLanguage::Go,
+        confidence: Confidence::Certain,
+    },
+    Runtime {
+        name: "go:buildid",
+        prefix: false,
+        language: SourceLanguage::Go,
+        confidence: Confidence::Certain,
+    },
+    // Rust's own runtime hooks, which the compiler emits and no source
+    // file writes by hand.
+    Runtime {
+        name: "rust_eh_personality",
+        prefix: false,
+        language: SourceLanguage::Rust,
+        confidence: Confidence::Certain,
+    },
+    Runtime {
+        name: "__rust_alloc",
+        prefix: true,
+        language: SourceLanguage::Rust,
+        confidence: Confidence::Certain,
+    },
+    Runtime {
+        name: "rust_begin_unwind",
+        prefix: false,
+        language: SourceLanguage::Rust,
+        confidence: Confidence::Certain,
+    },
+    // The C++ personality routine: the unwinder the Itanium ABI installs.
+    Runtime {
+        name: "__gxx_personality_v0",
+        prefix: false,
+        language: SourceLanguage::Cpp,
+        confidence: Confidence::Likely,
+    },
+    Runtime {
+        name: "_ZSt9terminatev",
+        prefix: false,
+        language: SourceLanguage::Cpp,
+        confidence: Confidence::Likely,
+    },
+    // Zig's stack probe and panic handler.
+    Runtime {
+        name: "__zig_probe_stack",
+        prefix: false,
+        language: SourceLanguage::Zig,
+        confidence: Confidence::Certain,
+    },
+    Runtime {
+        name: "zig_panic",
+        prefix: false,
+        language: SourceLanguage::Zig,
+        confidence: Confidence::Likely,
+    },
+    // Swift's runtime, called by every Swift program and by nothing else.
+    Runtime {
+        name: "swift_allocObject",
+        prefix: false,
+        language: SourceLanguage::Swift,
+        confidence: Confidence::Certain,
+    },
+    Runtime {
+        name: "swift_retain",
+        prefix: false,
+        language: SourceLanguage::Swift,
+        confidence: Confidence::Certain,
+    },
+    // Objective-C's message send: the whole language goes through it.
+    Runtime {
+        name: "objc_msgSend",
+        prefix: false,
+        language: SourceLanguage::ObjectiveC,
+        confidence: Confidence::Certain,
+    },
+    // Nim generates these around the program it compiles.
+    Runtime {
+        name: "NimMain",
+        prefix: false,
+        language: SourceLanguage::Nim,
+        confidence: Confidence::Certain,
+    },
+    Runtime {
+        name: "nimFrame",
+        prefix: false,
+        language: SourceLanguage::Nim,
+        confidence: Confidence::Certain,
+    },
+    Runtime {
+        name: "nimGCvisit",
+        prefix: false,
+        language: SourceLanguage::Nim,
+        confidence: Confidence::Certain,
+    },
+    // Every OCaml symbol carries the runtime's prefix.
+    Runtime {
+        name: "caml_main",
+        prefix: false,
+        language: SourceLanguage::OCaml,
+        confidence: Confidence::Certain,
+    },
+    Runtime {
+        name: "caml_garbage_collection",
+        prefix: false,
+        language: SourceLanguage::OCaml,
+        confidence: Confidence::Certain,
+    },
+    // GNAT's runtime, which every Ada binary it builds carries.
+    Runtime {
+        name: "__gnat_",
+        prefix: true,
+        language: SourceLanguage::Ada,
+        confidence: Confidence::Certain,
+    },
+    Runtime {
+        name: "ada__",
+        prefix: true,
+        language: SourceLanguage::Ada,
+        confidence: Confidence::Likely,
+    },
+    // GHC's runtime system.
+    Runtime {
+        name: "hs_init",
+        prefix: false,
+        language: SourceLanguage::Haskell,
+        confidence: Confidence::Likely,
+    },
+    Runtime {
+        name: "stg_returnToStackTop",
+        prefix: false,
+        language: SourceLanguage::Haskell,
+        confidence: Confidence::Certain,
+    },
+    // Fortran's runtime library.
+    Runtime {
+        name: "_gfortran_",
+        prefix: true,
+        language: SourceLanguage::Fortran,
+        confidence: Confidence::Certain,
+    },
+    // Free Pascal's runtime, which spells its unit initialisers this way.
+    Runtime {
+        name: "SYSTEM_$$_",
+        prefix: true,
+        language: SourceLanguage::Pascal,
+        confidence: Confidence::Certain,
+    },
+    Runtime {
+        name: "fpc_initializeunits",
+        prefix: false,
+        language: SourceLanguage::Pascal,
+        confidence: Confidence::Certain,
+    },
+    // A bundled CPython. The program is Python; the file is its interpreter.
+    Runtime {
+        name: "Py_Initialize",
+        prefix: false,
+        language: SourceLanguage::Python,
+        confidence: Confidence::Likely,
+    },
+    Runtime {
+        name: "PyRun_SimpleString",
+        prefix: false,
+        language: SourceLanguage::Python,
+        confidence: Confidence::Likely,
+    },
+    // glibc's entry into `main`. It names the C runtime and settles
+    // nothing — every language above links it — but a file that has this
+    // and no other marker is a C program more often than not.
+    Runtime {
+        name: "__libc_start_main",
+        prefix: false,
+        language: SourceLanguage::C,
+        confidence: Confidence::Possible,
+    },
+    Runtime {
+        name: "__isoc99_",
+        prefix: true,
+        language: SourceLanguage::C,
+        confidence: Confidence::Possible,
+    },
+];
+
+/// Runtime entry points a language's own runtime declares.
+///
+/// Mangling says which compiler wrote a name; this says which runtime the
+/// program carries. It is the reading that still works when the mangling is
+/// gone — a Go binary mangles nothing, a Nim one emits plain C names — and the
+/// one that reaches languages whose compilers leave no producer banner.
+///
+/// Every name here belongs to one runtime and is written by its compiler, not
+/// by the programmer: `__libc_start_main` is glibc's own entry into `main`,
+/// `NimMain` is what the Nim compiler generates around a program's body.
+fn from_runtime_names(symbols: &[Symbol], found: &mut Vec<LanguageEvidence>) {
+    for runtime in RUNTIMES {
+        let Some(symbol) = symbols.iter().find(|symbol| {
+            if runtime.prefix {
+                symbol.name.starts_with(runtime.name)
+            } else {
+                symbol.name == runtime.name
+            }
+        }) else {
+            continue;
+        };
+        found.push(LanguageEvidence {
+            language: runtime.language,
+            confidence: runtime.confidence,
+            evidence: format!("runtime symbol {}", symbol.name),
+            toolchain: None,
+        });
+    }
+}
+
+/// What a Windows binary asks other libraries for, function by function.
+///
+/// PE records the names, not just the libraries, which is the difference
+/// between "links a C runtime" and "calls `_Py_Initialize`". Nothing here is
+/// read from ELF or Mach-O, whose import tables name libraries alone —
+/// [`from_libraries`] is what covers those.
+fn from_imported_functions(details: &BinaryDetails, found: &mut Vec<LanguageEvidence>) {
+    for library in &details.imports {
+        for function in &library.functions {
+            let (language, confidence) = if function.starts_with("Py_")
+                || function.starts_with("PyEval_")
+            {
+                (SourceLanguage::Python, Confidence::Certain)
+            } else if function.starts_with("_CorExeMain") || function.starts_with("_CorDllMain") {
+                (SourceLanguage::DotNet, Confidence::Certain)
+            } else if function.starts_with("swift_") {
+                (SourceLanguage::Swift, Confidence::Certain)
+            } else if function.starts_with("objc_") {
+                (SourceLanguage::ObjectiveC, Confidence::Certain)
+            } else {
+                continue;
+            };
+            found.push(LanguageEvidence {
+                language,
+                confidence,
+                evidence: format!("imports {} from {}", function, library.library),
                 toolchain: None,
             });
         }
@@ -524,6 +812,84 @@ mod tests {
         assert_eq!(rust.confidence, Confidence::Certain);
         // Strongest evidence leads, so Rust is what the reader sees first.
         assert_eq!(analysis.languages[0].language, SourceLanguage::Rust);
+    }
+
+    /// A runtime's own entry points name the language when the mangling is
+    /// gone: Go mangles nothing at all, and a stripped Nim binary carries
+    /// plain C names.
+    #[test]
+    fn a_runtime_entry_point_names_the_language() {
+        for (name, language) in [
+            ("runtime.goexit", SourceLanguage::Go),
+            ("NimMain", SourceLanguage::Nim),
+            ("caml_main", SourceLanguage::OCaml),
+            ("swift_allocObject", SourceLanguage::Swift),
+            ("__zig_probe_stack", SourceLanguage::Zig),
+            ("rust_eh_personality", SourceLanguage::Rust),
+        ] {
+            let found = detect_symbols(&[name]);
+            assert_eq!(
+                found.first().map(|evidence| evidence.language),
+                Some(language),
+                "{name}"
+            );
+            assert_eq!(found[0].confidence, Confidence::Certain, "{name}");
+        }
+    }
+
+    /// A prefix stands for the family of names a runtime writes: every GNAT
+    /// symbol starts `__gnat_`, and listing them is not possible.
+    #[test]
+    fn a_runtime_prefix_matches_the_whole_family() {
+        let found = detect_symbols(&["__gnat_rcheck_CE_Overflow_Check"]);
+
+        assert_eq!(found[0].language, SourceLanguage::Ada);
+        assert!(found[0].evidence.contains("__gnat_rcheck"), "{found:?}");
+    }
+
+    /// The C runtime's entry into `main` is in every language's binary, so it
+    /// points at C without settling anything.
+    #[test]
+    fn the_c_runtime_entry_point_does_not_settle_the_language() {
+        let found = detect_symbols(&["__libc_start_main"]);
+
+        assert_eq!(found[0].language, SourceLanguage::C);
+        assert_eq!(found[0].confidence, Confidence::Possible);
+    }
+
+    /// PE names the functions it imports, which says far more than the library
+    /// they came from: `Py_Initialize` is a bundled interpreter, and
+    /// `python311.dll` alone could have been anything.
+    #[test]
+    fn an_imported_function_names_the_language() {
+        let details = BinaryDetails {
+            imports: vec![crate::analysis::ImportedLibrary {
+                library: "python311.dll".to_owned(),
+                functions: vec!["Py_Initialize".to_owned()],
+                truncated: false,
+            }],
+            ..BinaryDetails::default()
+        };
+        let found = detect(&[], &[], &[], &details);
+
+        assert_eq!(found[0].language, SourceLanguage::Python);
+        assert_eq!(found[0].confidence, Confidence::Certain);
+        assert!(found[0].evidence.contains("python311.dll"), "{found:?}");
+    }
+
+    /// `.rustc` is the crate metadata `rustc` writes under its own name, and
+    /// it outlives the strip that takes the symbol table away.
+    #[test]
+    fn the_rust_metadata_section_survives_a_strip() {
+        let found = detect(
+            &[],
+            &[named_section(".rustc")],
+            &[],
+            &BinaryDetails::default(),
+        );
+
+        assert_eq!(found[0].language, SourceLanguage::Rust);
+        assert_eq!(found[0].confidence, Confidence::Certain);
     }
 
     #[test]

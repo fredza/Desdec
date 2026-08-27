@@ -21,8 +21,9 @@ use std::{
 };
 
 pub mod blocks;
-pub mod details;
 pub mod classes;
+pub mod demangle;
+pub mod details;
 pub mod disassembly;
 pub mod discover;
 pub mod entropy;
@@ -33,6 +34,7 @@ pub mod imports;
 pub mod language;
 pub mod network;
 pub mod operand;
+pub mod protection;
 pub mod sections;
 pub mod stack;
 pub mod strings;
@@ -45,6 +47,7 @@ pub use imports::ImportSlot;
 pub use language::{Confidence, LanguageEvidence, SourceLanguage};
 pub use network::{NetworkName, NetworkUse, Reach};
 pub use operand::{LastWrite, Target};
+pub use protection::{Protection, ProtectionKind};
 pub use sections::{Permissions, Section};
 pub use stack::{StackSlot, StackState, Trace};
 pub use strings::{ExtractedString, StringEncoding};
@@ -107,6 +110,12 @@ pub struct Analysis {
     /// What the file says about the language it was built from, strongest
     /// evidence first. Empty when it says nothing.
     pub languages: Vec<LanguageEvidence>,
+    /// What the file says about having been packed, protected or obfuscated,
+    /// strongest evidence first. Empty when nothing points that way.
+    ///
+    /// It changes how everything else here should be read: the listing of a
+    /// packed file is its stub, not its program.
+    pub protections: Vec<Protection>,
     /// SHA-256 of the file, and `None` when only part of it was read — a
     /// digest of a prefix would be mistaken for the file's identity.
     pub sha256: Option<[u8; 32]>,
@@ -156,6 +165,18 @@ impl Analysis {
     pub fn suggests_packing(&self) -> bool {
         self.executable_sections()
             .any(|section| section.entropy.is_some_and(entropy::suggests_packing))
+    }
+
+    /// Whether a named product was found, rather than only the shape of one.
+    ///
+    /// A shape — writable code, a tiny import table — is a lead worth showing
+    /// and a poor reason to tell the reader their listing is a stub. A named
+    /// product is not.
+    #[must_use]
+    pub fn is_protected(&self) -> bool {
+        self.protections
+            .iter()
+            .any(|found| found.names_a_product() && found.confidence >= Confidence::Likely)
     }
 
     /// The decoded instruction at exactly this address, if there is one.
@@ -374,10 +395,12 @@ fn sequentially(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
     details::note_stack_canary(&mut details, &strings);
     let languages = language::detect(bytes, &sections, &symbols, &details);
     let network = network::extract(&symbols, &details);
+    let entry_point = sections::entry_point(bytes, format);
+    let protections = protection::detect(bytes, &sections, &symbols, &details, entry_point);
 
     Analysis {
         summary: summary(path, size, bytes),
-        entry_point: sections::entry_point(bytes, format),
+        entry_point,
         sections,
         strings,
         symbols,
@@ -388,6 +411,7 @@ fn sequentially(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
         network,
         details,
         languages,
+        protections,
         sha256: (!truncated).then(|| hash::sha256(bytes)),
         entropy: entropy::shannon(bytes),
         analysed_bytes: bytes.len() as u64,
@@ -431,9 +455,11 @@ fn concurrently(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
         // running as a seventh thread.
         let languages = language::detect(bytes, &sections, &symbols, &details);
         let network = network::extract(&symbols, &details);
+        let entry_point = join(entry_point);
+        let protections = protection::detect(bytes, &sections, &symbols, &details, entry_point);
         Analysis {
             summary: summary(path, size, bytes),
-            entry_point: join(entry_point),
+            entry_point,
             sections,
             strings,
             symbols,
@@ -444,6 +470,7 @@ fn concurrently(path: &Path, size: u64, bytes: &[u8]) -> Analysis {
             network,
             details,
             languages,
+            protections,
             sha256: join(digest),
             entropy: join(entropy),
             analysed_bytes: bytes.len() as u64,
