@@ -41,6 +41,42 @@ const OVERVIEW_WIDTH: f32 = 16.0;
 /// Machine's green/red state.
 const SEARCH_MARK: egui::Color32 = egui::Color32::from_rgb(241, 169, 75);
 
+/// Where a section begins, on the overview ruler. Grey and thin on purpose:
+/// this is the shape of the file, drawn under everything the reader put there
+/// themselves, and a ruler whose landmarks shout is one where a bookmark is
+/// lost among them.
+const SECTION_MARK: egui::Color32 = egui::Color32::from_rgb(122, 132, 148);
+
+/// Shortest the viewport rectangle is drawn, however little of the listing is
+/// on screen.
+///
+/// Twenty-four rows out of a hundred and thirty thousand is a fifth of a pixel
+/// — a mark the eye reads as a speck of dirt rather than as *where you are*.
+/// The rectangle stops being to scale below this, and says so by still being a
+/// rectangle: an exact answer nobody can see is worth less than a legible one.
+const VIEWPORT_MINIMUM_HEIGHT: f32 = 10.0;
+
+/// How many graduations the ruler is divided into.
+///
+/// It is called a ruler and had none: an empty tube with one rectangle in it,
+/// which says *where you are* only if you already know how tall the tube is.
+/// Ten steps make position readable at a glance — half way, a fifth of the way
+/// — which is what a reader asks of it while scrolling.
+///
+/// Sections are drawn too, and are not enough on their own: in a real binary
+/// `.init` and `.plt` are the first percent and `.text` is all the rest, so
+/// every section mark lands in the top two pixels.
+const RULER_STEPS: usize = 10;
+
+/// How near a section mark a click has to land to be taken as a click *on* it.
+///
+/// The ruler maps a hundred and thirty thousand rows onto some six hundred
+/// pixels, so one pixel is two hundred instructions and the start of a section
+/// cannot be hit by aiming. Within this many pixels the click means the
+/// landmark it is next to, which is the only reading that makes the marks
+/// worth drawing.
+const SECTION_SNAP: f32 = 4.0;
+
 /// Where the note dot sits in the gutter, from its left edge, and how big it
 /// is. Outside the arrows' lanes on purpose: a mark that a jump can be drawn
 /// through is one the reader has to look twice at.
@@ -138,22 +174,8 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
     }
     let mut action = Action::default();
     let selected = app.selected_instruction;
-    ui.horizontal(|ui| {
-        let patchable = selected
-            .is_some_and(|address| crate::patches::file_offset_of(analysis, address).is_some());
-        let button = ui.add_enabled(
-            selected.is_some() && patchable,
-            egui::Button::new(text(language, Text::EditInstruction)),
-        );
-        if button.clicked() {
-            action.edit = selected;
-        }
-        if selected.is_some() && !patchable {
-            ui.label(egui::RichText::new(text(language, Text::NotPatchable)).color(MUTED));
-        } else {
-            ui.small(text(language, Text::LocalDecoders));
-        }
-    });
+    toolbar(ui, analysis, selected, language, &mut action);
+
     // A listing that stopped at the decoder's limit looks exactly like a
     // program that ends there, so it says which one this is.
     if analysis.code_truncated {
@@ -329,6 +351,56 @@ pub struct Action {
     pub edit: Option<u64>,
     /// An instruction whose operand is to be explained.
     pub inspect: Option<u64>,
+    /// Whether the reader asked for the current function to be handed to an
+    /// assembler IDE. Returned rather than done here for the same reason
+    /// everything else is: this view holds borrows of the application it would
+    /// have to take by value.
+    pub send_to_asm_studio: bool,
+}
+
+/// The row of buttons above the listing: what a reader does with the
+/// instruction they have selected.
+///
+/// Both buttons are the same move — leaving Desdec's reading for somewhere the
+/// code can be written — which is why they sit together, and why neither is
+/// offered when nothing is selected.
+fn toolbar(
+    ui: &mut egui::Ui,
+    analysis: &Analysis,
+    selected: Option<u64>,
+    language: Language,
+    action: &mut Action,
+) {
+    ui.horizontal(|ui| {
+        let patchable = selected
+            .is_some_and(|address| crate::patches::file_offset_of(analysis, address).is_some());
+        let button = ui.add_enabled(
+            selected.is_some() && patchable,
+            egui::Button::new(text(language, Text::EditInstruction)),
+        );
+        if button.clicked() {
+            action.edit = selected;
+        }
+        // Handing the function to an assembler IDE. Beside the byte editor
+        // because both are the same move — leaving Desdec's reading for a
+        // place the code can be written — and the reader looks for them
+        // together.
+        let send = ui.add_enabled(
+            selected.is_some(),
+            egui::Button::new(text(language, Text::SendToAsmStudio)),
+        );
+        if send
+            .on_hover_text(text(language, Text::SendToAsmStudioHelp))
+            .clicked()
+        {
+            action.send_to_asm_studio = true;
+        }
+        if selected.is_some() && !patchable {
+            ui.label(egui::RichText::new(text(language, Text::NotPatchable)).color(MUTED));
+        } else {
+            ui.small(text(language, Text::LocalDecoders));
+        }
+    });
 }
 
 /// The controls of the static walk: a compact map of the code path.
@@ -588,7 +660,6 @@ fn overview(
         egui::vec2(OVERVIEW_WIDTH, height),
         egui::Sense::click_and_drag(),
     );
-    let response = response.on_hover_text(tooltip);
     let painter = ui.painter();
     painter.rect_filled(rect, 3.0, ui.visuals().faint_bg_color);
     painter.rect_stroke(
@@ -604,15 +675,32 @@ fn overview(
             .map(|index| row_of(listing.sections, LEADING, index))
     };
 
+    // The shape of the file, underneath everything: the scale, and where each
+    // section begins. Drawn before the viewport so the reader's own marks, and
+    // the viewport itself, sit over them.
+    let section_ys = structure(painter, rect, analysis, listing, total_rows);
+
     // The rectangle is the reader's viewport; it is deliberately translucent
     // so marks within it remain visible.
     if !visible_rows.is_empty() {
         let start = overview_y(rect, visible_rows.start, total_rows);
         let end = overview_y(rect, visible_rows.end.saturating_sub(1), total_rows);
-        let viewport = egui::Rect::from_x_y_ranges(
-            (rect.left() + 1.0)..=(rect.right() - 1.0),
-            (start - 1.0)..=(end + 1.0).max(start + 3.0),
-        );
+        // Grown to a legible height when the listing is long, and grown
+        // *upwards* once it would otherwise run past the bottom — a viewport
+        // pinned to the last rows has to stay inside the ruler, or the reader
+        // at the end of a file sees it hang off the edge.
+        // `top` is settled — pushed up off the bottom edge, then held at the
+        // top one — *before* `bottom` is measured from it. Clamping it
+        // afterwards silently ate a pixel of the height at row zero, which is
+        // exactly where a reader looks first.
+        let top = (start - 1.0)
+            .min(rect.bottom() - VIEWPORT_MINIMUM_HEIGHT)
+            .max(rect.top());
+        let bottom = (end + 1.0)
+            .max(top + VIEWPORT_MINIMUM_HEIGHT)
+            .min(rect.bottom());
+        let viewport =
+            egui::Rect::from_x_y_ranges((rect.left() + 1.0)..=(rect.right() - 1.0), top..=bottom);
         painter.rect_filled(
             viewport,
             1.0,
@@ -626,6 +714,67 @@ fn overview(
         );
     }
 
+    reader_marks(
+        painter,
+        rect,
+        listing,
+        total_rows,
+        &row_of_address,
+        search_addresses,
+        selected,
+        attention,
+        ui.visuals().selection.bg_fill,
+    );
+
+    let response = response.on_hover_text(hover_text(
+        ui,
+        rect,
+        analysis,
+        listing,
+        total_rows,
+        &section_ys,
+        tooltip,
+    ));
+
+    response
+        .interact_pointer_pos()
+        .filter(|_| response.clicked() || response.dragged())
+        .and_then(|pointer| {
+            // A click that lands on a section mark means that section, not the
+            // two-hundredth instruction inside it. Only for a click: dragging
+            // is a reader sweeping the file, and a drag that kept catching on
+            // landmarks would stutter.
+            let row = if response.dragged() {
+                overview_row(rect, pointer.y, total_rows)
+            } else {
+                snapped_row(rect, pointer.y, total_rows, &section_ys)
+            };
+            instruction_at_overview_row(analysis, listing.sections, row)
+                .map(|instruction| instruction.address)
+        })
+}
+
+/// Draws everything the reader put on the listing themselves: their notes and
+/// bookmarks, the hits of their search, the breakpoints and where a run
+/// stands, and the row they have selected.
+///
+/// Over the ruler's own structure, and thicker than it: the file's shape is
+/// background, and what the reader is looking for is not.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument per family of mark, and each is drawn from a different place"
+)]
+fn reader_marks(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    listing: &Listing<'_>,
+    total_rows: usize,
+    row_of_address: &impl Fn(u64) -> Option<usize>,
+    search_addresses: &[u64],
+    selected: Option<u64>,
+    attention: Option<u64>,
+    selection: egui::Color32,
+) {
     // A note and a bookmark share one row; the bookmark is the stronger mark.
     for (address, annotation) in listing.notes.iter() {
         if let Some(row) = row_of_address(address) {
@@ -670,24 +819,134 @@ fn overview(
         overview_mark(painter, rect, row, total_rows, SEARCH_MARK, 3.0);
     }
     if let Some(row) = selected.and_then(row_of_address) {
-        overview_mark(
-            painter,
-            rect,
-            row,
-            total_rows,
-            ui.visuals().selection.bg_fill,
-            3.0,
+        overview_mark(painter, rect, row, total_rows, selection, 3.0);
+    }
+
+    // Hovering says which section is under the pointer, because a grey tick
+    // that names nothing is a decoration. The ruler's own explanation comes
+    // first; the landmark is what changes as the pointer moves.
+}
+
+/// What hovering the ruler says: its own explanation, then the address the
+/// pointer is over, then the section when the pointer is on one of its marks.
+///
+/// A ruler measures position, so the address is the answer to *where is this*;
+/// and a grey tick that names nothing is a decoration.
+fn hover_text(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    analysis: &Analysis,
+    listing: &Listing<'_>,
+    total_rows: usize,
+    section_ys: &[(f32, &str)],
+    tooltip: &str,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut hint = tooltip.to_owned();
+    let Some(pointer) = ui
+        .input(|input| input.pointer.hover_pos())
+        .filter(|pointer| rect.contains(*pointer))
+    else {
+        return hint;
+    };
+    let row = overview_row(rect, pointer.y, total_rows);
+    if let Some(instruction) = instruction_at_overview_row(analysis, listing.sections, row) {
+        let _ = write!(hint, "\n{:#018x}", instruction.address);
+    }
+    if let Some(section) = section_near(section_ys, pointer.y) {
+        let _ = write!(hint, "\n{section}");
+    }
+    hint
+}
+
+/// Draws the ruler's scale and its section marks, and answers where the
+/// section marks landed.
+///
+/// Two families, told apart by their width: a graduation is a short tick from
+/// the left edge, and a section crosses the whole ruler. Neither may be
+/// mistaken for one of the reader's own marks, which also cross it but are
+/// thicker and coloured.
+///
+/// Both are needed. Sections alone leave the ruler blank: in a real binary
+/// `.init` and `.plt` are the first percent and `.text` is all the rest, so
+/// every section mark lands in the top two pixels. Graduations alone say how
+/// far down you are and nothing about what you are in the middle of.
+fn structure<'a>(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    analysis: &'a Analysis,
+    listing: &Listing<'_>,
+    total_rows: usize,
+) -> Vec<(f32, &'a str)> {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "ten steps over a ruler's height, in pixels"
+    )]
+    for step in 1..RULER_STEPS {
+        let y = rect.top() + rect.height() * (step as f32 / RULER_STEPS as f32);
+        painter.line_segment(
+            [
+                egui::pos2(rect.left() + 2.0, y),
+                egui::pos2(rect.left() + 6.0, y),
+            ],
+            egui::Stroke::new(1.0_f32, SECTION_MARK.gamma_multiply(0.55)),
         );
     }
 
-    response
-        .interact_pointer_pos()
-        .filter(|_| response.clicked() || response.dragged())
-        .and_then(|pointer| {
-            let row = overview_row(rect, pointer.y, total_rows);
-            instruction_at_overview_row(analysis, listing.sections, row)
-                .map(|instruction| instruction.address)
+    let section_ys: Vec<(f32, &str)> = listing
+        .sections
+        .iter()
+        .filter_map(|index| {
+            let instruction = analysis.instructions.get(*index)?;
+            let row = row_of(listing.sections, LEADING, *index);
+            Some((
+                overview_y(rect, row, total_rows),
+                instruction.section.as_ref(),
+            ))
         })
+        .collect();
+    for (y, _) in &section_ys {
+        painter.line_segment(
+            [
+                egui::pos2(rect.left() + 2.0, *y),
+                egui::pos2(rect.right() - 2.0, *y),
+            ],
+            egui::Stroke::new(1.0_f32, SECTION_MARK),
+        );
+    }
+    section_ys
+}
+
+/// The section whose mark is nearest the pointer, when one is near enough to
+/// be what the pointer is on.
+fn section_near<'a>(sections: &[(f32, &'a str)], y: f32) -> Option<&'a str> {
+    sections
+        .iter()
+        .filter(|(mark, _)| (mark - y).abs() <= SECTION_SNAP)
+        .min_by(|(a, _), (b, _)| {
+            (a - y)
+                .abs()
+                .partial_cmp(&(b - y).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(_, name)| *name)
+}
+
+/// The row a click means: the one under the pointer, unless a section mark is
+/// close enough that the click was aimed at it.
+fn snapped_row(rect: egui::Rect, y: f32, total_rows: usize, sections: &[(f32, &str)]) -> usize {
+    let nearest = sections
+        .iter()
+        .map(|(mark, _)| *mark)
+        .filter(|mark| (mark - y).abs() <= SECTION_SNAP)
+        .min_by(|a, b| {
+            (a - y)
+                .abs()
+                .partial_cmp(&(b - y).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    overview_row(rect, nearest.unwrap_or(y), total_rows)
 }
 
 /// The first instruction at or below an overview row. It is found through the
@@ -1564,8 +1823,9 @@ mod tests {
     use eframe::egui;
 
     use super::{
-        JUMP, LEADING, instruction_at_overview_row, is_jump, jump_target, lanes, overview_row,
-        row_of, run_marks, section_starts,
+        JUMP, LEADING, SECTION_SNAP, VIEWPORT_MINIMUM_HEIGHT, instruction_at_overview_row, is_jump,
+        jump_target, lanes, overview_row, overview_y, row_of, run_marks, section_near,
+        section_starts, snapped_row,
     };
     use crate::{
         app::{Dialog, WorkspaceView},
@@ -1597,6 +1857,70 @@ mod tests {
                 overview_row(rect, rect.bottom(), total),
             )
             .is_some()
+        );
+    }
+
+    /// Twenty-four rows out of a hundred and thirty thousand is a fifth of a
+    /// pixel, and the reader is left looking for a speck to know where they
+    /// are. The rectangle stops being to scale below a readable height — and
+    /// still has to stay inside the ruler when the listing is at its end,
+    /// which growing it downwards would not.
+    #[test]
+    fn the_viewport_is_legible_however_long_the_listing_and_never_leaves_the_ruler() {
+        let rect = egui::Rect::from_min_size(egui::pos2(20.0, 100.0), egui::vec2(16.0, 300.0));
+        let total = 139_000;
+
+        for first in [0_usize, 60_000, total - 25] {
+            let start = overview_y(rect, first, total);
+            let end = overview_y(rect, first + 24, total);
+            let top = (start - 1.0)
+                .min(rect.bottom() - VIEWPORT_MINIMUM_HEIGHT)
+                .max(rect.top());
+            let bottom = (end + 1.0)
+                .max(top + VIEWPORT_MINIMUM_HEIGHT)
+                .min(rect.bottom());
+
+            assert!(
+                bottom - top >= VIEWPORT_MINIMUM_HEIGHT - 0.01,
+                "at row {first} the viewport is {} pixels tall",
+                bottom - top
+            );
+            assert!(
+                top >= rect.top() && bottom <= rect.bottom(),
+                "at row {first} the viewport runs outside the ruler"
+            );
+        }
+    }
+
+    /// The ruler maps a hundred and thirty thousand rows onto six hundred
+    /// pixels, so a section start cannot be hit by aiming: one pixel is two
+    /// hundred instructions. A click near a mark means the mark.
+    #[test]
+    fn a_click_beside_a_section_mark_means_the_section_and_not_the_pixel() {
+        let rect = egui::Rect::from_min_size(egui::pos2(20.0, 100.0), egui::vec2(16.0, 300.0));
+        let total = 139_000;
+        let mark = rect.top() + 120.0;
+        let sections = [(mark, ".text")];
+
+        assert_eq!(
+            snapped_row(rect, mark + SECTION_SNAP - 1.0, total, &sections),
+            overview_row(rect, mark, total),
+            "a click within reach of the mark lands on it"
+        );
+        assert_ne!(
+            snapped_row(rect, mark + SECTION_SNAP + 6.0, total, &sections),
+            overview_row(rect, mark, total),
+            "and a click clearly elsewhere is left where it was"
+        );
+        assert_eq!(
+            section_near(&sections, mark + 1.0),
+            Some(".text"),
+            "hovering the mark names what it is"
+        );
+        assert_eq!(
+            section_near(&sections, mark + 40.0),
+            None,
+            "and hovering away from it names nothing"
         );
     }
 
