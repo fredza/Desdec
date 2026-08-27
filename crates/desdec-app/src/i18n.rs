@@ -1180,6 +1180,34 @@ translations! {
     ],
     StringsScope => ["Portée", "Scope", "Alcance"],
     StringsShowPrologues => ["Prologues", "Prologues", "Prólogos"],
+    SendToAsmStudio => [
+        "Envoyer vers ASM Studio",
+        "Send to ASM Studio",
+        "Enviar a ASM Studio",
+    ],
+    SendToAsmStudioHelp => [
+        "Écrit la fonction courante en assembleur NASM, ré-orthographié depuis les octets et non depuis le listing AT&T, puis lance ASM Studio s’il est installé. Le fichier est écrit dans tous les cas et son chemin est copié.",
+        "Writes the current function as NASM assembly, re-spelled from the bytes rather than from the AT&T listing, then launches ASM Studio if it is installed. The file is written either way and its path is copied.",
+        "Escribe la función actual como ensamblador NASM, reescrito desde los bytes y no desde el listado AT&T, y luego lanza ASM Studio si está instalado. El archivo se escribe en todo caso y su ruta se copia.",
+    ],
+    AsmStudioNoFunction => [
+        "Aucune fonction sous le curseur : placez-vous dans une fonction du listing.",
+        "No function under the cursor: put the cursor inside one in the listing.",
+        "Ninguna función bajo el cursor: sitúese dentro de una en el listado.",
+    ],
+    AsmStudioFailed => ["Écriture impossible", "Cannot write", "Escritura imposible"],
+    AsmStudioWrote => ["Assembleur écrit :", "Assembly written:", "Ensamblador escrito:"],
+    AsmStudioPathCopied => [
+        "Chemin copié",
+        "Path copied",
+        "Ruta copiada",
+    ],
+    AsmStudioOpened => ["ASM Studio lancé :", "ASM Studio launched:", "ASM Studio lanzado:"],
+    AsmStudioMissing => [
+        "ASM Studio n’est pas installé : le fichier est écrit et son chemin copié.",
+        "ASM Studio is not installed: the file is written and its path copied.",
+        "ASM Studio no está instalado: el archivo se escribe y su ruta se copia.",
+    ],
     StringsShowProloguesHelp => [
         "Les suites de « push » qui ouvrent une fonction : leurs octets sont de l’ASCII imprimable, donc l’extraction les rapporte comme des chaînes. Décochez pour les écarter. Seules celles situées dans une section exécutable le sont, car « USER » et « STATUS » se lisent aussi comme des push.",
         "The runs of pushes that open a function: their bytes are printable ASCII, so extraction reports them as strings. Untick to leave them out. Only those inside an executable section are, because “USER” and “STATUS” read as pushes too.",

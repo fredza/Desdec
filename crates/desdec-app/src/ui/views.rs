@@ -79,6 +79,9 @@ fn whole_application_view(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
                 app.inspecting_operand = Some(address);
                 app.dialogs.open(Dialog::Operand);
             }
+            if action.send_to_asm_studio {
+                app.run_command(ui.ctx(), crate::commands::Command::SendToAsmStudio);
+            }
             if let Some(address) = action.edit {
                 // Editing happens where the patches live, so the pending list
                 // and the export are in front of the user straight away.

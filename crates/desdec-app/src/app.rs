@@ -1470,6 +1470,10 @@ impl DesdecApp {
                 self.export_patched_copy(ctx);
             }
             Command::DiscardPatches => self.discard_patches(),
+            Command::SendToAsmStudio => {
+                self.open_view(command);
+                self.send_to_asm_studio(ctx);
+            }
             Command::DecompilerBuiltin => self.set_decompiler(DecompilerPreference::Builtin),
             Command::DecompilerRzGhidra => self.set_decompiler(DecompilerPreference::RzGhidra),
             Command::DecompilerRetDec => self.set_decompiler(DecompilerPreference::RetDec),
@@ -2745,6 +2749,109 @@ impl DesdecApp {
         };
     }
 
+    /// Writes the selected function out as NASM source, and hands it to ASM
+    /// Studio when that is installed.
+    ///
+    /// **The file is written whether or not ASM Studio is there**, and its
+    /// path is put on the clipboard either way. Two reasons. The export is
+    /// worth having on its own — Desdec had no way at all to get assembly out
+    /// of a listing. And ASM Studio, as installed here, gives no sign of
+    /// reading a file named on its command line: its desktop entry declares no
+    /// `%f`, and it reaches its event loop before answering for an argument.
+    /// The path is passed anyway, which costs nothing if it is ignored; if it
+    /// is, the reader has the path in hand and opens it themselves.
+    pub fn send_to_asm_studio(&mut self, ctx: &egui::Context) {
+        let Some(analysis) = self.analysis.as_ref() else {
+            return;
+        };
+        // The function the reader is in, not the one they last clicked in
+        // another view: this is asked for from the listing.
+        let address = self
+            .selected_instruction
+            .or(self.selected_function)
+            .unwrap_or_default();
+        let Some(function) = self
+            .functions
+            .iter()
+            .find(|function| (function.start..function.end).contains(&address))
+            .or_else(|| {
+                self.functions
+                    .iter()
+                    .find(|function| function.start == address)
+            })
+        else {
+            self.note(
+                crate::journal::Level::Failure,
+                self.t(Text::AsmStudioNoFunction).to_owned(),
+            );
+            return;
+        };
+
+        let binary = analysis
+            .summary
+            .path
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        let name = sanitised_label(&function.name);
+        let source = match desdec_core::export::nasm(
+            function.body(analysis),
+            &desdec_core::export::Source {
+                binary: &binary,
+                name: &name,
+                architecture: analysis.summary.architecture,
+            },
+        ) {
+            Ok(source) => source,
+            Err(error) => {
+                self.note(
+                    crate::journal::Level::Failure,
+                    format!("{} : {error}", self.t(Text::AsmStudioFailed)),
+                );
+                return;
+            }
+        };
+
+        let path = std::env::temp_dir().join(format!("{name}.asm"));
+        if let Err(error) = std::fs::write(&path, source) {
+            self.note(
+                crate::journal::Level::Failure,
+                format!(
+                    "{} {} : {error}",
+                    self.t(Text::AsmStudioFailed),
+                    path.display()
+                ),
+            );
+            return;
+        }
+        self.note(
+            crate::journal::Level::Note,
+            format!("{} {}", self.t(Text::AsmStudioWrote), path.display()),
+        );
+        self.copy_to_clipboard(ctx, &path.to_string_lossy(), Text::AsmStudioPathCopied);
+
+        match asm_studio_program() {
+            Some(program) => {
+                // Detached on purpose: an IDE is opened, not run for its
+                // output, and waiting on it would freeze the listing behind it
+                // for as long as the reader keeps it open.
+                match ProcessCommand::new(&program).arg(&path).spawn() {
+                    Ok(_) => self.note(
+                        crate::journal::Level::Note,
+                        format!("{} {}", self.t(Text::AsmStudioOpened), program.display()),
+                    ),
+                    Err(error) => self.note(
+                        crate::journal::Level::Failure,
+                        format!("{}: {error}", program.display()),
+                    ),
+                }
+            }
+            None => self.note(
+                crate::journal::Level::Note,
+                self.t(Text::AsmStudioMissing).to_owned(),
+            ),
+        }
+    }
+
     /// Lends the open binary to a script, and carries out what it asked for.
     ///
     /// The analysis, the file's bytes and the reference index are moved out
@@ -3105,6 +3212,75 @@ pub fn decompilation_cache_dir() -> Option<PathBuf> {
     Some(base.join("desdec").join("decompiled"))
 }
 
+/// Where ASM Studio is, when it is installed.
+///
+/// The `PATH` first, because that is where its own installer puts it, then the
+/// place a user-local install lands. Nothing is downloaded and nothing is
+/// installed: a program that is not there is reported as not there.
+fn asm_studio_program() -> Option<std::path::PathBuf> {
+    asm_studio_in(
+        std::env::var_os("PATH").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+}
+
+/// The same, over an environment handed in.
+///
+/// Split out so a test can ask it about a directory it built rather than about
+/// the machine the test happens to run on: this workspace forbids `unsafe`,
+/// and setting an environment variable is `unsafe` since the 2024 edition.
+fn asm_studio_in(
+    paths: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    const NAMES: &[&str] = &["asm-studio", "asmstudio"];
+    if let Some(paths) = paths {
+        for directory in std::env::split_paths(paths) {
+            for name in NAMES {
+                let candidate = directory.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    let home = home?;
+    NAMES
+        .iter()
+        .map(|name| Path::new(home).join(".local/bin").join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// A function's name, cut down to something an assembler will take as a label
+/// and a filesystem as a name.
+///
+/// A C++ method arrives here as `Parser::read(char const*)`, which is neither.
+/// Everything outside the label alphabet becomes an underscore, and a name
+/// that starts with a digit is given one in front: NASM reads a leading digit
+/// as the start of a number.
+fn sanitised_label(name: &str) -> String {
+    let mut label: String = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    while label.ends_with('_') {
+        label.pop();
+    }
+    if label.is_empty() {
+        return "routine".to_owned();
+    }
+    if label.starts_with(|character: char| character.is_ascii_digit()) {
+        label.insert(0, '_');
+    }
+    label
+}
+
 /// Default name of the exported copy: the original with `.patched` before its
 /// extension, so the two never collide in a file listing.
 fn suggested_export_name(source: &Path) -> String {
@@ -3263,6 +3439,64 @@ impl DesdecApp {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// A symbol's name is not a label. `Parser::read(char const*)` is what the
+    /// symbol table holds, and NASM would refuse every character of it after
+    /// the first six — as would a filesystem, for the file it names.
+    #[test]
+    fn a_symbol_name_is_cut_down_to_something_an_assembler_will_take() {
+        assert_eq!(sanitised_label("check_password"), "check_password");
+        assert_eq!(
+            sanitised_label("Parser::read(char const*)"),
+            "Parser__read_char_const"
+        );
+        // NASM reads a leading digit as the start of a number.
+        assert_eq!(sanitised_label("3way"), "_3way");
+        // A name that is entirely punctuation still has to name the file.
+        assert_eq!(sanitised_label("***"), "routine");
+        assert_eq!(sanitised_label(""), "routine");
+    }
+
+    /// Whether ASM Studio is installed is a question about the filesystem, and
+    /// it must answer *no* rather than guess when the program is absent — the
+    /// export is written either way, and a launch that silently fails would
+    /// leave the reader waiting for a window that is never coming.
+    #[test]
+    fn asm_studio_is_looked_for_and_not_assumed() {
+        let root = std::env::temp_dir().join(format!(
+            "desdec-asm-studio-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).expect("a directory to look in");
+
+        assert_eq!(
+            asm_studio_in(Some(bin.as_os_str()), Some(root.as_os_str())),
+            None,
+            "the directory is empty, so the answer is no"
+        );
+
+        let program = bin.join("asm-studio");
+        std::fs::write(&program, b"#!/bin/sh\n").expect("something to find");
+        assert_eq!(
+            asm_studio_in(Some(bin.as_os_str()), None),
+            Some(program.clone()),
+            "and it is found on the PATH where its installer puts it"
+        );
+
+        // The other place a user-local install lands, when the PATH says
+        // nothing.
+        let local = root.join(".local/bin");
+        std::fs::create_dir_all(&local).expect("a home to look in");
+        std::fs::write(local.join("asm-studio"), b"#!/bin/sh\n").expect("something to find");
+        assert_eq!(
+            asm_studio_in(None, Some(root.as_os_str())),
+            Some(local.join("asm-studio"))
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// Minimal in-memory stand-in for the native RON file storage.
     #[derive(Default)]

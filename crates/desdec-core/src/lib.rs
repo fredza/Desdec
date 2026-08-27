@@ -12,6 +12,9 @@ pub mod decompiler;
 /// Running a binary on a processor Desdec builds; see the module's own
 /// documentation.
 pub mod emulate;
+/// Writing a decoded listing back out as assembler source; see the module's
+/// own documentation.
+pub mod export;
 /// Synthetic binaries for tests; see the module's own documentation.
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;

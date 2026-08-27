@@ -17,6 +17,6 @@ workspace = true
 capstone = { version = "0.14", default-features = false, features = ["std", "full", "arch_arm64"] }
 # `code_asm` is the assembler behind the patch editor: the same library that
 # decodes the listing is the one that encodes what a reader types into it.
-iced-x86 = { version = "1.21", features = ["decoder", "encoder", "code_asm", "gas"] }
+iced-x86 = { version = "1.21", features = ["decoder", "encoder", "code_asm", "gas", "nasm"] }
 serde_json = "1.0.151"
 ureq = { version = "3.4.0", default-features = false, features = ["json", "rustls", "gzip"] }

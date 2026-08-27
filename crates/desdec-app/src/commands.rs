@@ -159,6 +159,10 @@ commands! {
     // Looking for a newer release. Never on a shortcut by default: it reaches
     // the network, and a key that does that should be one the reader chose.
     CheckForUpdates => [Updates, CheckForUpdates], None,
+    // Handing a function to an assembler IDE. No default key: it writes a file
+    // and starts another program, and a reader should have chosen the key that
+    // does that.
+    SendToAsmStudio => [Disassembly, SendToAsmStudio], None,
     Yara => [Yara], None,
     RunYara => [Yara, RunYara], None,
     ToggleYaraModule => [Yara, ToggleYaraModule], None,
