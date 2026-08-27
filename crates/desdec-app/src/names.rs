@@ -131,6 +131,7 @@ mod tests {
             address: Some(address),
             size: 0,
             imported: false,
+            ..Symbol::default()
         }
     }
 
@@ -197,6 +198,7 @@ mod tests {
             address: None,
             size: 0,
             imported: true,
+            ..Symbol::default()
         }]);
         assert_eq!(table.address_of("puts"), None);
     }

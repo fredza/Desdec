@@ -3,7 +3,7 @@
 use std::{collections::HashMap, ops::Range};
 
 use desdec_core::{
-    Analysis, Instruction, Symbol,
+    Analysis, Instruction, Symbol, SymbolKind,
     blocks::{self, BasicBlock},
     discover,
 };
@@ -764,6 +764,40 @@ fn pseudocode(
     });
 }
 
+/// Whether a name in the symbol table is the beginning of a function, as
+/// opposed to a name for some other address.
+///
+/// Every name is worth having — `stored` is what makes a comparison readable —
+/// but only some of them begin a function, and the difference matters more
+/// than it sounds: a name taken for a function start ends the one above it, so
+/// a label in the middle of a routine cuts that routine into pieces, and the
+/// decompiler and the assembler export are then working on a fragment.
+///
+/// Two conditions, both read off the file rather than guessed from the name.
+///
+/// **It has to be code.** A symbol at an address no instruction was decoded at
+/// is data — `stored` in `.rodata`, `__bss_start` past the end of it — and a
+/// function with an empty body is not a function.
+///
+/// **An untyped name has to be one the object file offers to others.** A
+/// compiler says `STT_FUNC` and there is nothing to work out; an assembler
+/// says nothing at all, and then the binding is the only thing separating
+/// `_start`, which is global, from `_start.cmp_loop`, which is local and lives
+/// inside it.
+fn starts_a_function(analysis: &Analysis, symbol: &Symbol) -> bool {
+    let Some(address) = symbol.address else {
+        return false;
+    };
+    if analysis.instruction_index(address).is_none() {
+        return false;
+    }
+    match symbol.kind {
+        SymbolKind::Function => true,
+        SymbolKind::Untyped => !symbol.local,
+        SymbolKind::Data => false,
+    }
+}
+
 /// Every named function defined in this binary, in address order.
 ///
 /// Built once when a binary is opened — see [`Function`] — and read from the
@@ -775,6 +809,7 @@ pub fn all(analysis: &Analysis) -> Vec<Function> {
         .iter()
         .filter(|symbol| !symbol.imported)
         .filter(|symbol| symbol.address.is_some())
+        .filter(|symbol| starts_a_function(analysis, symbol))
         .collect();
     symbols.sort_by_key(|symbol| symbol.address);
     symbols.dedup_by_key(|symbol| symbol.address);
@@ -853,6 +888,64 @@ pub fn all(analysis: &Analysis) -> Vec<Function> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A name is not a function start, and taking one for the other cuts the
+    /// routine above it into pieces — which the decompiler and the assembler
+    /// export then work on.
+    ///
+    /// The crackme this came from: `_start` is a global untyped name at the
+    /// first instruction, `_start.cmp_loop` is a local one in the middle of
+    /// it, and `stored` is a local one in `.rodata`. One of the three begins a
+    /// function.
+    #[test]
+    fn only_the_names_that_begin_a_function_end_the_one_above_them() {
+        // A real analysis rather than one written here: what counts as "an
+        // instruction was decoded at this address" is its own answer, and a
+        // hand-built listing would be this test agreeing with itself.
+        let analysis = crate::testing::reference_analysis();
+        let code = analysis.instructions[0].address;
+        let elsewhere = 1;
+        assert!(
+            analysis.instruction_index(elsewhere).is_none(),
+            "address 1 holds no instruction in any real binary"
+        );
+        let named = |name: &str, address: u64, kind, local| Symbol {
+            name: name.to_owned(),
+            address: Some(address),
+            kind,
+            local,
+            ..Symbol::default()
+        };
+
+        assert!(
+            starts_a_function(analysis, &named("_start", code, SymbolKind::Untyped, false)),
+            "a global untyped name at an instruction is what an assembler \
+             writes for the entry point"
+        );
+        assert!(
+            !starts_a_function(
+                analysis,
+                &named("_start.cmp_loop", code, SymbolKind::Untyped, true)
+            ),
+            "a local one is a label inside a routine, not a routine"
+        );
+        assert!(
+            !starts_a_function(
+                analysis,
+                &named("stored", elsewhere, SymbolKind::Untyped, true)
+            ),
+            "and nothing was decoded there: it is data"
+        );
+        assert!(
+            starts_a_function(analysis, &named("main", code, SymbolKind::Function, true)),
+            "a compiler says so outright, and a static function is still a \
+             function"
+        );
+        assert!(
+            !starts_a_function(analysis, &named("table", code, SymbolKind::Data, false)),
+            "so is the other way round: the file saying data settles it"
+        );
+    }
 
     fn instruction(address: u64, text: &str) -> Instruction {
         Instruction {

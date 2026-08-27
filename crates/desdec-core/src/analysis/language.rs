@@ -352,6 +352,7 @@ mod tests {
             address: Some(0x1000),
             size: 0,
             imported: false,
+            ..Symbol::default()
         }
     }
 

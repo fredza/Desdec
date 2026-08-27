@@ -380,6 +380,7 @@ mod tests {
             address,
             size: 0,
             imported: false,
+            ..Symbol::default()
         }
     }
 

@@ -1202,7 +1202,11 @@ translations! {
         "Path copied",
         "Ruta copiada",
     ],
-    AsmStudioOpened => ["ASM Studio lancé :", "ASM Studio launched:", "ASM Studio lanzado:"],
+    AsmStudioOpened => [
+        "ASM Studio lancé (il n’ouvre pas le fichier lui-même : collez le chemin) :",
+        "ASM Studio launched (it does not open the file itself: paste the path):",
+        "ASM Studio lanzado (no abre el archivo por sí mismo: pegue la ruta):",
+    ],
     AsmStudioMissing => [
         "ASM Studio n’est pas installé : le fichier est écrit et son chemin copié.",
         "ASM Studio is not installed: the file is written and its path copied.",

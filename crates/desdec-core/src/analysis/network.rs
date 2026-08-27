@@ -311,6 +311,7 @@ mod tests {
             address: None,
             size: 0,
             imported: true,
+            ..Symbol::default()
         }
     }
 

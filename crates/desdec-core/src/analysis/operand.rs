@@ -739,12 +739,14 @@ mod tests {
             address: Some(0x1000),
             size: 0x20,
             imported: false,
+            ..Symbol::default()
         };
         let unsized_symbol = Symbol {
             name: "no_size".to_owned(),
             address: Some(0x2000),
             size: 0,
             imported: false,
+            ..Symbol::default()
         };
         let symbols = [sized, unsized_symbol];
         let name_for = |address: u64| {

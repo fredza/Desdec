@@ -48,7 +48,7 @@ pub use operand::{LastWrite, Target};
 pub use sections::{Permissions, Section};
 pub use stack::{StackSlot, StackState, Trace};
 pub use strings::{ExtractedString, StringEncoding};
-pub use symbols::Symbol;
+pub use symbols::{Symbol, SymbolKind};
 
 use crate::binary::{BinarySummary, inspect_bytes};
 

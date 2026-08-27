@@ -2755,11 +2755,11 @@ impl DesdecApp {
     /// **The file is written whether or not ASM Studio is there**, and its
     /// path is put on the clipboard either way. Two reasons. The export is
     /// worth having on its own — Desdec had no way at all to get assembly out
-    /// of a listing. And ASM Studio, as installed here, gives no sign of
-    /// reading a file named on its command line: its desktop entry declares no
-    /// `%f`, and it reaches its event loop before answering for an argument.
-    /// The path is passed anyway, which costs nothing if it is ignored; if it
-    /// is, the reader has the path in hand and opens it themselves.
+    /// of a listing. And ASM Studio does not read a file named on its command
+    /// line: tried against the build installed on 2026-08-27, it opens on its
+    /// own start screen with the path ignored. The path is passed regardless,
+    /// so that the day it does read one nothing here has to change; until
+    /// then the clipboard is the hand-off, and the journal says so.
     pub fn send_to_asm_studio(&mut self, ctx: &egui::Context) {
         let Some(analysis) = self.analysis.as_ref() else {
             return;

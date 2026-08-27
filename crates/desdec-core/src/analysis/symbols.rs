@@ -5,14 +5,41 @@ use crate::{
     bytes::{read_c_string, read_slice, read_u16, read_u32, read_u64},
 };
 
-/// A function name advertised by the binary.  An undefined symbol is imported;
+/// What a name in the symbol table names.
+///
+/// The file says this, and Desdec used to throw it away — it kept `STT_FUNC`
+/// and dropped everything else, which is right for a compiler's output and
+/// leaves a hand-written binary with no names at all.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SymbolKind {
+    /// The file says this is code that can be called.
+    Function,
+    /// The file says this is data.
+    Data,
+    /// The file says nothing. An assembler emits no `.type` directive, so
+    /// every name in a hand-written binary is one of these — the entry point
+    /// among them.
+    #[default]
+    Untyped,
+}
+
+/// A name advertised by the binary.  An undefined symbol is imported;
 /// a defined one is exported or local to the image.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Symbol {
     pub name: String,
     pub address: Option<u64>,
     pub size: u64,
     pub imported: bool,
+    /// What the file says this names; see [`SymbolKind`].
+    pub kind: SymbolKind,
+    /// Whether the name is local to the object file it came from.
+    ///
+    /// Kept because it is the one thing that separates a function from a label
+    /// *inside* one where neither carries a type: `_start` is global and
+    /// `_start.cmp_loop` is local, and treating the second as a function start
+    /// cuts the first into pieces.
+    pub local: bool,
 }
 
 const MAXIMUM_SYMBOLS: usize = 20_000;
@@ -32,6 +59,52 @@ fn tidy(mut symbols: Vec<Symbol>) -> Vec<Symbol> {
     symbols.sort_by(|a, b| a.name.cmp(&b.name));
     symbols.dedup_by(|a, b| a.name == b.name && a.imported == b.imported);
     symbols
+}
+
+/// Where the section index sits inside one symbol entry.
+const fn section_at(entry: usize, bits: u8) -> usize {
+    if bits == 64 {
+        entry.saturating_add(6)
+    } else {
+        entry.saturating_add(14)
+    }
+}
+
+/// Whether an ELF symbol names something a reader can be shown.
+///
+/// This used to keep `STT_FUNC` and nothing else, which is right for a
+/// compiler's output and wrong for everything written by hand: an assembler
+/// emits no `.type` directive, so every symbol of such a file is `STT_NOTYPE`
+/// and the whole table was thrown away. A crackme with twenty-one names —
+/// `_start`, `stored`, `cmp_loop` — was reported as having none, and its
+/// functions came out as `sub_4000f0`.
+///
+/// So the kinds that name a place are kept: a function, a piece of data, an
+/// indirect function, and an untyped label. What is dropped is what names no
+/// place at all — the source file's own name (`STT_FILE`) and the entry that
+/// stands for a section (`STT_SECTION`), both of which would appear as
+/// addresses that are not there.
+///
+/// The section index is the other half, and it is what keeps `stored` and
+/// drops `stored_len`. Both are `STT_NOTYPE`; the first lives in `.rodata` at
+/// `0x401028` and the second is `SHN_ABS`, an assembler constant whose value
+/// is ten. Kept, it would put the name `stored_len` on address ten.
+const fn worth_keeping(kind: u8, section: u16) -> bool {
+    /// `STT_NOTYPE`, `STT_OBJECT`, `STT_FUNC`, `STT_GNU_IFUNC`.
+    const NAMES_A_PLACE: [u8; 4] = [0, 1, 2, 10];
+    /// Everything from `SHN_LORESERVE` up: `SHN_ABS` and `SHN_COMMON` among
+    /// them, none of them an index into the section table.
+    const RESERVED: u16 = 0xff00;
+
+    let mut index = 0;
+    let mut named = false;
+    while index < NAMES_A_PLACE.len() {
+        if NAMES_A_PLACE[index] == kind {
+            named = true;
+        }
+        index += 1;
+    }
+    named && section < RESERVED
 }
 
 fn elf(file: &[u8], bits: u8, order: Endianness) -> Vec<Symbol> {
@@ -104,31 +177,32 @@ fn elf(file: &[u8], bits: u8, order: Endianness) -> Vec<Symbol> {
                 .get(entry.saturating_add(if bits == 64 { 4 } else { 12 }))
                 .copied()
                 .unwrap_or(0);
-            if info & 0x0f != 2 {
+            let section = read_u16(file, section_at(entry, bits), order).unwrap_or(0);
+            let kind = match info & 0x0f {
+                2 | 10 => SymbolKind::Function,
+                1 => SymbolKind::Data,
+                _ => SymbolKind::Untyped,
+            };
+            if !worth_keeping(info & 0x0f, section) {
                 continue;
             }
-            let (value_at, size_at, section_at) = if bits == 64 {
-                (
-                    entry.saturating_add(8),
-                    entry.saturating_add(16),
-                    entry.saturating_add(6),
-                )
+            let (value_at, size_at) = if bits == 64 {
+                (entry.saturating_add(8), entry.saturating_add(16))
             } else {
-                (
-                    entry.saturating_add(4),
-                    entry.saturating_add(8),
-                    entry.saturating_add(14),
-                )
+                (entry.saturating_add(4), entry.saturating_add(8))
             };
             let Some(name) = read_c_string(strings, name_at, 512).filter(|n| !n.is_empty()) else {
                 continue;
             };
-            let section = read_u16(file, section_at, order).unwrap_or(0);
             out.push(Symbol {
                 name,
                 address: word(file, value_at, bits, order).filter(|v| *v != 0),
                 size: word(file, size_at, bits, order).unwrap_or(0),
                 imported: section == 0,
+                kind,
+                // `STB_LOCAL` is zero; anything else — global, weak — is a
+                // name the object file offers to others.
+                local: info >> 4 == 0,
             });
         }
     }
@@ -216,6 +290,12 @@ fn mach_o(file: &[u8], bits: u8, order: Endianness) -> Vec<Symbol> {
                 // the next symbol instead.
                 size: 0,
                 imported,
+                // `nlist` has no type field of the kind ELF's `st_info`
+                // carries, so nothing here distinguishes code from data. What
+                // this reader returns was already read as code, and saying so
+                // keeps every format's answer meaning the same thing.
+                kind: SymbolKind::Function,
+                local: false,
             });
         }
         true
@@ -393,6 +473,9 @@ impl PeHeaders {
                     .map(|rva| self.image_base.saturating_add(u64::from(rva))),
                 size: 0,
                 imported: false,
+                // An export table names entry points, not data.
+                kind: SymbolKind::Function,
+                local: false,
             });
         }
     }
@@ -451,6 +534,8 @@ impl PeHeaders {
                         address: None,
                         size: 0,
                         imported: true,
+                        kind: SymbolKind::Function,
+                        local: false,
                     });
                 }
                 let Some(next) = thunk.checked_add(step) else {
@@ -473,6 +558,49 @@ fn word(file: &[u8], offset: usize, bits: u8, order: Endianness) -> Option<u64> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rule that used to throw a whole file away.
+    ///
+    /// `STT_FUNC` and nothing else is right for a compiler's output and wrong
+    /// for anything written by hand: an assembler emits no `.type` directive,
+    /// so a crackme with twenty-one names — `_start`, `stored`, `cmp_loop` —
+    /// was reported as having none.
+    #[test]
+    fn a_name_without_a_type_is_still_a_name() {
+        /// `.text`, an ordinary section index.
+        const IN_A_SECTION: u16 = 1;
+        /// `SHN_ABS`: not a section at all.
+        const ABSOLUTE: u16 = 0xfff1;
+
+        // The four kinds that name a place, whatever the file says they are.
+        for kind in [0_u8, 1, 2, 10] {
+            assert!(
+                worth_keeping(kind, IN_A_SECTION),
+                "type {kind} names a place in the file"
+            );
+        }
+        // `STT_FILE` names the source file and `STT_SECTION` stands for a
+        // section: an address for neither.
+        assert!(!worth_keeping(3, IN_A_SECTION));
+        assert!(!worth_keeping(4, ABSOLUTE));
+    }
+
+    /// The other half, and the one that keeps `stored` while dropping
+    /// `stored_len`. Both are untyped; the first lives in `.rodata` at
+    /// `0x401028` and the second is an assembler constant whose value is ten.
+    /// Kept, it would put the name `stored_len` on address ten.
+    #[test]
+    fn a_constant_is_not_an_address_however_it_is_spelt() {
+        assert!(worth_keeping(0, 2), "a label in a section is a place");
+        assert!(
+            !worth_keeping(0, 0xfff1),
+            "SHN_ABS is a value, not a location"
+        );
+        assert!(
+            !worth_keeping(0, 0xfff2),
+            "nor is SHN_COMMON, which names a size"
+        );
+    }
 
     /// A 64-bit little-endian Mach-O carrying one `LC_SYMTAB`: one symbol
     /// defined in a section, one expected from a library.

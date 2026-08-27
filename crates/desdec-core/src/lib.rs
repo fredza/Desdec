@@ -30,13 +30,12 @@ pub mod yara;
 
 pub use analysis::{
     ANALYSIS_BYTE_LIMIT, AnalysedFile, Analysis, BinaryDetails, Class, ClassMethod, ClassSource,
-    Confidence, Decoded,
-    ExtractedString, FileKind, Hardening, ImportSlot, ImportedLibrary, Instruction,
-    InstructionBytes, LanguageEvidence, LastWrite, NetworkName, NetworkUse, Permissions, Reach,
-    Relro, Section, Segment, SourceLanguage, StackSlot, StackState, StringEncoding, Symbol, Target,
-    Trace, analyse_bytes, analyse_path, analyse_path_cancellable,
-    analyse_path_with_bytes_cancellable, blocks, decode_one, discover, entropy, flags, flow, hash,
-    imports, language, network, operand, stack, strings,
+    Confidence, Decoded, ExtractedString, FileKind, Hardening, ImportSlot, ImportedLibrary,
+    Instruction, InstructionBytes, LanguageEvidence, LastWrite, NetworkName, NetworkUse,
+    Permissions, Reach, Relro, Section, Segment, SourceLanguage, StackSlot, StackState,
+    StringEncoding, Symbol, SymbolKind, Target, Trace, analyse_bytes, analyse_path,
+    analyse_path_cancellable, analyse_path_with_bytes_cancellable, blocks, decode_one, discover,
+    entropy, flags, flow, hash, imports, language, network, operand, stack, strings,
 };
 pub use binary::{Architecture, BinaryFormat, BinarySummary, Endianness, inspect_path};
 pub use patch::{Patch, PatchError};
