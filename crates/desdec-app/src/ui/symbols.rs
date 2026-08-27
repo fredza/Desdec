@@ -17,7 +17,7 @@ use eframe::egui;
 
 use crate::{
     i18n::{Language, Text, text},
-    ui::{MUTED, ROW_HEIGHT},
+    ui::{MUTED, ROW_HEIGHT, shown_toggle},
 };
 
 /// Whether a name is expected from elsewhere or provided by the image.
@@ -186,10 +186,8 @@ fn header(
                 .hint_text(text(language, Text::FilterHint))
                 .desired_width(240.0),
         );
-        // The toggles read as "show this kind"; they are stored as their
-        // opposite so the default, an untouched `false`, shows both.
-        kind_toggle(ui, hide_imports, text(language, Text::SymbolsShowImports));
-        kind_toggle(ui, hide_defined, text(language, Text::SymbolsShowDefined));
+        shown_toggle(ui, hide_imports, text(language, Text::SymbolsShowImports));
+        shown_toggle(ui, hide_defined, text(language, Text::SymbolsShowDefined));
 
         let filtering = !filter.is_empty();
         if ui
@@ -213,15 +211,6 @@ fn header(
             });
         });
     });
-}
-
-/// A checkbox that shows a kind, stored as the `hide` flag it is the opposite
-/// of, so an untouched view shows everything.
-fn kind_toggle(ui: &mut egui::Ui, hide: &mut bool, label: &str) {
-    let mut shown = !*hide;
-    if ui.checkbox(&mut shown, label).changed() {
-        *hide = !shown;
-    }
 }
 
 /// Draws one row and returns the address to navigate to if it was clicked.

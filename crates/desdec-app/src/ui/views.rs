@@ -141,6 +141,7 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 &app.string_references,
                 &mut app.strings_filter,
                 &mut app.strings_scope,
+                &mut app.strings_hide_prologues,
                 &mut app.selected_string,
                 language,
             );

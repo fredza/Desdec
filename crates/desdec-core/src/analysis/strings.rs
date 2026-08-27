@@ -127,9 +127,148 @@ fn read_utf16le(bytes: &[u8], start: usize) -> Option<Run> {
     })
 }
 
+/// Whether a run of printable bytes is an x86-64 register-save prologue
+/// rather than text.
+///
+/// The pushes that open a function encode as bytes that are all printable
+/// ASCII, so the extractor reports them as strings and a reader opening the
+/// Strings view of any optimised binary meets dozens of them:
+///
+/// ```text
+/// AUATUSH      41 55 41 54 55 53 48   push %r13; push %r12; push %rbp; push %rbx; …
+/// AVAUATUSH9   41 56 41 55 41 54 …    push %r14; push %r13; push %r12; …
+/// UAWAVSPH     55 41 57 41 56 53 50   push %rbp; push %r15; push %r14; …
+/// ```
+///
+/// The grammar is the encoding itself: `0x50`–`0x57` is `push` of one of the
+/// first eight registers, `0x41` is the `REX.B` prefix that names the other
+/// eight, and `0x58`–`0x5F` are the matching `pop`s. What may follow is the
+/// start of the next instruction — a `REX` prefix and an opcode or two, which
+/// is why so many of these end in `H` (`0x48`, `REX.W`) or `I` (`0x49`).
+///
+/// **This is not a decision on its own.** `STATUS` is `push %rbx; push %rsp;
+/// push %r12; push %rbp; push %rbx` read as code, and `TRUST` and `PURSUIT`
+/// are pushes too — every one of them a word a program really contains. What
+/// separates them is not their spelling but where they live: a prologue is in
+/// an executable section and a message is not. So this answers only the
+/// spelling question, and the caller is expected to have answered the other
+/// one; see `ui::strings::Scope` for the pairing.
+#[must_use]
+pub fn is_register_save_prologue(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    let mut pushes = 0;
+
+    while index < bytes.len() {
+        // `REX.B` and then the push it applies to: `%r8` through `%r15`.
+        if bytes[index] == REX_B && matches!(bytes.get(index + 1), Some(&next) if is_stack_op(next))
+        {
+            index += 2;
+            pushes += 1;
+            continue;
+        }
+        if is_stack_op(bytes[index]) {
+            index += 1;
+            pushes += 1;
+            continue;
+        }
+        break;
+    }
+
+    // Two is the fewest that can be told apart from a coincidence: one push is
+    // a single character, and the extractor reports nothing shorter than four.
+    if pushes < 2 {
+        return false;
+    }
+
+    // Whatever is left is the instruction the prologue was cut off in the
+    // middle of. It has to *look* like the start of one — a `REX` prefix and
+    // at most one byte behind it — or this is a string that merely began with
+    // something push-shaped.
+    //
+    // One byte and not three, which is the whole difference between this and
+    // a filter that hides words: `UPSTREAM` is five pushes and then `EAM`,
+    // and `SUPPRESS` is five and then `ESS`. The cost is a prologue whose
+    // next instruction happens to show three printable bytes, which stays in
+    // the list — a miss, and the direction to miss in.
+    match bytes.get(index) {
+        None => true,
+        Some(&byte) => is_rex(byte) && bytes.len() - index <= 2,
+    }
+}
+
+/// `REX.B`, the prefix that turns a push of one of the first eight registers
+/// into a push of one of the other eight.
+const REX_B: u8 = 0x41;
+
+/// `push` or `pop` of a whole register, which is one byte and its own opcode.
+const fn is_stack_op(byte: u8) -> bool {
+    byte >= 0x50 && byte <= 0x5F
+}
+
+/// Any of the sixteen `REX` prefixes, which is what an instruction operating
+/// on 64-bit registers begins with.
+const fn is_rex(byte: u8) -> bool {
+    byte >= 0x40 && byte <= 0x4F
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The eight a reader actually met in the Strings view, which is where
+    /// this came from.
+    #[test]
+    fn the_prologues_that_flood_the_strings_view_are_recognised() {
+        for value in [
+            "AUATI",
+            "UAWAVSPH",
+            "UAWAVAUATSH",
+            "AWAVATSH",
+            "AUATUSH",
+            "AVAUATUSH9",
+        ] {
+            assert!(
+                is_register_save_prologue(value),
+                "{value} is a run of pushes"
+            );
+        }
+    }
+
+    /// The whole reason this answers only half the question. Every one of
+    /// these is a word a program really contains, and every one of them reads
+    /// as a valid sequence of pushes — `STATUS` is `push %rbx; push %rsp;
+    /// push %r12; push %rbp; push %rbx`. Only the section they live in tells
+    /// them apart, which is the caller's business.
+    #[test]
+    fn ordinary_words_that_happen_to_spell_pushes_are_not_settled_by_spelling() {
+        for value in ["STATUS", "TRUST", "PURSUIT"] {
+            assert!(
+                is_register_save_prologue(value),
+                "{value} really does read as pushes — the section is what separates it"
+            );
+        }
+    }
+
+    /// What the grammar does rule out, on spelling alone: a string that opens
+    /// with something push-shaped and then goes on being text.
+    #[test]
+    fn text_that_merely_starts_with_a_push_is_not_a_prologue() {
+        for value in [
+            // Five pushes, a `REX` prefix, and then three more bytes: too
+            // much to be the instruction a prologue was cut off in.
+            "UPSTREAM", // Ends in a letter that is no `REX` prefix.
+            "SUPPRESS",
+            // A `REX` prefix, and then far too much to be one instruction.
+            "USHERING", // One push is a coincidence, not a prologue.
+            "Path",
+        ] {
+            assert!(
+                !is_register_save_prologue(value),
+                "{value} is not a prologue"
+            );
+        }
+    }
 
     #[test]
     fn short_runs_are_ignored() {

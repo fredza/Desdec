@@ -1179,6 +1179,12 @@ translations! {
         "En el archivo pero nunca cargadas: una ejecución no puede leerlas.",
     ],
     StringsScope => ["Portée", "Scope", "Alcance"],
+    StringsShowPrologues => ["Prologues", "Prologues", "Prólogos"],
+    StringsShowProloguesHelp => [
+        "Les suites de « push » qui ouvrent une fonction : leurs octets sont de l’ASCII imprimable, donc l’extraction les rapporte comme des chaînes. Décochez pour les écarter. Seules celles situées dans une section exécutable le sont, car « USER » et « STATUS » se lisent aussi comme des push.",
+        "The runs of pushes that open a function: their bytes are printable ASCII, so extraction reports them as strings. Untick to leave them out. Only those inside an executable section are, because “USER” and “STATUS” read as pushes too.",
+        "Las series de «push» que abren una función: sus bytes son ASCII imprimible, así que la extracción los reporta como cadenas. Desmarque para dejarlas fuera. Solo las situadas en una sección ejecutable, porque «USER» y «STATUS» también se leen como push.",
+    ],
     FilterHint => ["Ex. http, .dll, erreur…", "E.g. http, .dll, error…", "Ej. http, .dll, error…"],
     ShownOfTotal => ["affichées sur", "shown of", "mostradas de"],
     TruncatedAnalysis => [

@@ -733,6 +733,9 @@ pub struct DesdecApp {
     /// Free-text filter applied to the extracted strings.
     pub strings_filter: String,
     /// Hide strings that do not belong to a mapped memory region.
+    /// Whether the opening pushes of a function — printable bytes the string
+    /// extractor cannot tell from text — are kept out of the Strings view.
+    pub strings_hide_prologues: bool,
     /// Which strings the reader is asking to see; see [`crate::ui::strings::Scope`].
     pub strings_scope: crate::ui::strings::Scope,
     /// Free-text filter applied to the declared symbols.
@@ -1568,6 +1571,7 @@ impl DesdecApp {
                 self.open_view(command);
                 self.strings_filter.clear();
                 self.strings_scope = crate::ui::strings::Scope::All;
+                self.strings_hide_prologues = false;
             }
             Command::ThemeSystem => self.set_theme(ctx, ThemePreference::System),
             Command::ThemeDark => self.set_theme(ctx, ThemePreference::Dark),
@@ -2960,6 +2964,7 @@ impl DesdecApp {
         self.symbols_hide_defined = false;
         self.classes_filter.clear();
         self.strings_scope = crate::ui::strings::Scope::All;
+        self.strings_hide_prologues = false;
         self.selected_function = None;
         self.selected_instruction = None;
         self.pending_instruction_scroll = None;

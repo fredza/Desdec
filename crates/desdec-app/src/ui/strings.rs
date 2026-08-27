@@ -1,11 +1,11 @@
 //! Printable strings extracted from the loaded binary.
 
-use desdec_core::{Analysis, ExtractedString, Instruction};
+use desdec_core::{Analysis, ExtractedString, Instruction, StringEncoding};
 use eframe::egui;
 
 use crate::{
     i18n::{Language, Text, text},
-    ui::{MUTED, ROW_HEIGHT, card},
+    ui::{MUTED, ROW_HEIGHT, card, shown_toggle},
 };
 
 /// What a strings card asked of the workspace.
@@ -30,6 +30,7 @@ pub fn show(
     references: &CodeReferences,
     filter: &mut String,
     scope: &mut Scope,
+    hide_prologues: &mut bool,
     selected_string: &mut Option<u64>,
     language: Language,
 ) -> Action {
@@ -39,16 +40,12 @@ pub fn show(
         return action;
     }
 
-    let matches = matching(
-        analysis,
-        references,
-        filter,
-        *scope,
-    );
+    let matches = matching(analysis, references, filter, *scope, *hide_prologues);
     header(
         ui,
         filter,
         scope,
+        hide_prologues,
         matches.len(),
         analysis.strings.len(),
         language,
@@ -97,6 +94,7 @@ fn header(
     ui: &mut egui::Ui,
     filter: &mut String,
     scope: &mut Scope,
+    hide_prologues: &mut bool,
     shown: usize,
     total: usize,
     language: Language,
@@ -109,8 +107,18 @@ fn header(
                 .desired_width(240.0),
         );
         criteria(ui, scope, language);
+        // Its own control rather than another `Scope`: the scopes are one
+        // question with four answers, and this is a second question asked at
+        // the same time. A reader wants the code noise gone *and* the strings
+        // the program uses, not a choice between them.
+        shown_toggle(
+            ui,
+            hide_prologues,
+            text(language, Text::StringsShowPrologues),
+        )
+        .on_hover_text(text(language, Text::StringsShowProloguesHelp));
 
-        let filtering = !filter.is_empty() || *scope != Scope::All;
+        let filtering = !filter.is_empty() || *scope != Scope::All || *hide_prologues;
         if ui
             .add_enabled(
                 filtering,
@@ -120,6 +128,7 @@ fn header(
         {
             filter.clear();
             *scope = Scope::All;
+            *hide_prologues = false;
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -242,6 +251,40 @@ struct StringMatch<'a> {
     string: &'a ExtractedString,
     unmapped: bool,
     unreferenced: bool,
+    /// The bytes of a function's opening pushes, reported as a string because
+    /// they are printable; see [`is_prologue`].
+    prologue: bool,
+}
+
+/// Whether a string is really the opening pushes of a function.
+///
+/// Two conditions, and the second is what makes the first safe to act on. The
+/// spelling says the bytes read as `push` after `push` — but `USER`, `AUTH`,
+/// `STATUS` and `TRUST` all read that way too, and `ssh` carries every one of
+/// them. What separates a prologue from a word is where it lives: code is in
+/// an executable section and a message is not.
+///
+/// Measured over `/usr/bin/ssh`: 721 strings meet both conditions, and ten
+/// meet the spelling alone — `USER` and `AUTH` among them. Acting on the
+/// spelling by itself would have hidden those ten.
+fn is_prologue(analysis: &Analysis, string: &ExtractedString) -> bool {
+    string.encoding == StringEncoding::Ascii
+        && desdec_core::strings::is_register_save_prologue(&string.value)
+        && executable_section(analysis, string)
+}
+
+/// Whether the string's bytes live in a section the loader marks executable.
+///
+/// `None` — a string in no mapped section at all — is not executable: the
+/// answer has to be a fact read off the file, and where the file says nothing
+/// the string stays in the list.
+fn executable_section(analysis: &Analysis, string: &ExtractedString) -> bool {
+    analysis.sections.iter().any(|section| {
+        let end = section.file_offset.saturating_add(section.file_size);
+        section.is_mapped()
+            && section.permissions.execute
+            && (section.file_offset..end).contains(&string.file_offset)
+    })
 }
 
 /// The strings a reader has asked to see.
@@ -258,6 +301,7 @@ fn matching<'a>(
     references: &CodeReferences,
     filter: &str,
     scope: Scope,
+    hide_prologues: bool,
 ) -> Vec<StringMatch<'a>> {
     let needle = filter.to_lowercase();
 
@@ -271,11 +315,13 @@ fn matching<'a>(
                 string,
                 unmapped: address.is_none(),
                 unreferenced: !address.is_some_and(|address| references.any(address)),
+                prologue: is_prologue(analysis, string),
             }
         })
         // Several criteria narrow together: each one is a condition the string
         // has to meet, not another list added to the first.
         .filter(|item| scope.keeps(item.unmapped, item.unreferenced))
+        .filter(|item| !(hide_prologues && item.prologue))
         .collect()
 }
 
@@ -692,6 +738,74 @@ mod tests {
         }
     }
 
+    /// A file with both kinds of section, holding the two strings that spell
+    /// the same thing and mean opposite things: `AUATUSH` in the code, and
+    /// `STATUS` — which reads as pushes just as well — in the data.
+    fn analysis_with_code_and_data() -> Analysis {
+        let mut analysis = analysis_for_filters();
+        analysis.sections.push(Section {
+            name: ".text".to_owned(),
+            virtual_address: 0x5000,
+            file_offset: 0x300,
+            virtual_size: 0x100,
+            file_size: 0x100,
+            permissions: Permissions {
+                read: true,
+                execute: true,
+                ..Permissions::default()
+            },
+            entropy: None,
+        });
+        analysis.strings.push(ExtractedString {
+            file_offset: 0x310,
+            encoding: StringEncoding::Ascii,
+            value: "AUATUSH".to_owned(),
+            truncated: false,
+        });
+        analysis.strings.push(ExtractedString {
+            file_offset: 0x130,
+            encoding: StringEncoding::Ascii,
+            value: "STATUS".to_owned(),
+            truncated: false,
+        });
+        analysis
+    }
+
+    /// The pushes that open a function are printable, so the extractor reports
+    /// them and the view fills with `AUATUSH` and its kin. Leaving them out is
+    /// a question of *where they are*, not of how they are spelt: `STATUS` is
+    /// `push %rbx; push %rsp; push %r12; push %rbp; push %rbx` read as code,
+    /// and it has to survive the same filter that removes the prologue.
+    #[test]
+    fn leaving_the_prologues_out_keeps_the_word_that_is_spelt_like_one() {
+        let analysis = analysis_with_code_and_data();
+        let references = CodeReferences::of(&analysis);
+        let shown = |hide| {
+            matching(&analysis, &references, "", Scope::All, hide)
+                .into_iter()
+                .map(|item| item.string.value.clone())
+                .collect::<Vec<_>>()
+        };
+
+        assert!(
+            shown(false).contains(&"AUATUSH".to_owned()),
+            "untouched, the view shows everything the file holds"
+        );
+        let left = shown(true);
+        assert!(
+            !left.contains(&"AUATUSH".to_owned()),
+            "the prologue is in an executable section and reads as pushes"
+        );
+        assert!(
+            left.contains(&"STATUS".to_owned()),
+            "a word in the data reads as pushes too, and is not one"
+        );
+        assert!(
+            left.contains(&"referenced".to_owned()),
+            "nothing else moved"
+        );
+    }
+
     /// Each scope keeps what belongs to it, and the four together account for
     /// every string exactly once.
     ///
@@ -704,7 +818,7 @@ mod tests {
         let analysis = analysis_for_filters();
         let references = CodeReferences::of(&analysis);
         let shown = |scope| {
-            matching(&analysis, &references, "", scope)
+            matching(&analysis, &references, "", scope, false)
                 .into_iter()
                 .map(|item| item.string.value.clone())
                 .collect::<Vec<_>>()
@@ -748,7 +862,7 @@ mod tests {
     fn the_text_filter_applies_alongside_the_criteria() {
         let analysis = analysis_for_filters();
         let references = CodeReferences::of(&analysis);
-        let shown: Vec<String> = matching(&analysis, &references, "referenc", Scope::Used)
+        let shown: Vec<String> = matching(&analysis, &references, "referenc", Scope::Used, false)
             .into_iter()
             .map(|item| item.string.value.clone())
             .collect();

@@ -130,6 +130,22 @@ pub fn card(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)
 /// proportional family: `⬤` came out as `◻`, the replacement glyph, which
 /// turned the loudest mark on the overview into a sign that something was
 /// broken. A circle is two lines of painting and needs no font at all.
+/// A checkbox that reads as *show these*, over a flag that stores the
+/// opposite.
+///
+/// Said in the positive because that is what the box means to the reader: the
+/// tick is the list they are looking at. Stored as its opposite so that the
+/// default — an untouched `false` — shows everything, and no list is narrowed
+/// by a state nobody chose.
+pub fn shown_toggle(ui: &mut egui::Ui, hidden: &mut bool, label: &str) -> egui::Response {
+    let mut shown = !*hidden;
+    let response = ui.checkbox(&mut shown, label);
+    if response.changed() {
+        *hidden = !shown;
+    }
+    response
+}
+
 pub fn pip(ui: &mut egui::Ui, colour: egui::Color32) -> egui::Response {
     let diameter = ui.text_style_height(&egui::TextStyle::Body) * 0.52;
     let (rect, response) =
