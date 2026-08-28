@@ -165,6 +165,50 @@ impl Naming {
         self.by_register.get(register.root).map(String::as_str)
     }
 
+    /// Puts the reader's own names on the variables they named.
+    ///
+    /// Each is given by *where it lives* rather than by what this module
+    /// called it: `rbp-0x18` for a local — the same string the listing writes
+    /// — and a register root such as `rdi` for a parameter. Nothing else would
+    /// survive a second decompilation, since `local_18` and `argument_1` are
+    /// made up afresh on every pass and renumber as soon as a slot is added.
+    ///
+    /// A name for a slot this function does not have is ignored rather than
+    /// invented: a reader who names `rbp-0x18` and then edits the binary until
+    /// that slot is gone has a saying about nothing, and putting it somewhere
+    /// would be worse than dropping it.
+    pub fn rename<'a>(&mut self, named: impl Fn(&str) -> Option<&'a str>) {
+        for local in &mut self.locals {
+            if let Some(name) = named(&local.label) {
+                local.name = name.to_owned();
+            }
+        }
+        for parameter in &mut self.parameters {
+            if let Some(name) = named(parameter.root) {
+                parameter.name = name.to_owned();
+                self.by_register
+                    .insert(parameter.root, parameter.name.clone());
+            }
+        }
+    }
+
+    /// Where each variable lives, and what it is called now.
+    ///
+    /// What a view needs to offer the renaming: the slot is the identity to
+    /// store a name against, and the name is what is on screen to be replaced.
+    #[must_use]
+    pub fn variables(&self) -> Vec<(String, String)> {
+        self.parameters
+            .iter()
+            .map(|parameter| (parameter.root.to_owned(), parameter.name.clone()))
+            .chain(
+                self.locals
+                    .iter()
+                    .map(|local| (local.label.clone(), local.name.clone())),
+            )
+            .collect()
+    }
+
     /// Whether a slot is an array rather than a value.
     ///
     /// What the emitter needs to know to write `local_408` where it would

@@ -140,7 +140,18 @@ fn native(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 }
             });
     });
+    // Naming the variables, under the text they appear in. Gathered before the
+    // result is put back, because renaming writes to the notes the application
+    // owns and the text is borrowed from it.
+    let renames = decompiled
+        .as_ref()
+        .map(|decompiled| variables_card(app, ui, &decompiled.variables, address));
     app.native.result = decompiled;
+    // Writing them is the whole of it: the application notices the notes have
+    // changed on its own, and saves them once the reader has stopped typing.
+    for (slot, name) in renames.into_iter().flatten() {
+        app.annotations.name_variable(address, &slot, &name);
+    }
 
     // The one thing no external engine offers: the line knows its instruction,
     // so a click on it can go there.
@@ -343,6 +354,88 @@ impl PseudocodeActions {
             copy: app.can_run(Command::CopyPseudoCode),
         }
     }
+}
+
+/// The variables of the function, each with the name the reader may give it.
+///
+/// Its own card under the text rather than a menu on a word in it: what a
+/// reader wants to rename is a *variable*, and the same variable appears on
+/// nine lines. Picking it out of one of them would be picking a word out of a
+/// sentence, and the identity that gets stored — where the variable lives — is
+/// not on screen at all.
+///
+/// Answers with what was renamed, since writing it takes the notes the
+/// application owns and this is drawn from a borrow of the decompilation.
+fn variables_card(
+    app: &mut DesdecApp,
+    ui: &mut egui::Ui,
+    variables: &[(String, String)],
+    function: u64,
+) -> Vec<(String, String)> {
+    let language = app.preferences.language;
+    let mut renamed = Vec::new();
+    ui.add_space(6.0);
+    egui::CollapsingHeader::new(format!(
+        "{} ({})",
+        text(language, Text::Variables),
+        variables.len()
+    ))
+    .id_salt(("variables", function))
+    .show(ui, |ui| {
+        ui.small(egui::RichText::new(text(language, Text::VariablesHint)).color(MUTED));
+        ui.add_space(4.0);
+        if variables.is_empty() {
+            ui.small(egui::RichText::new(text(language, Text::VariableNone)).color(MUTED));
+            return;
+        }
+        egui::Grid::new(("variables_grid", function))
+            .num_columns(3)
+            .spacing([14.0, 6.0])
+            .striped(true)
+            .show(ui, |ui| {
+                ui.strong(text(language, Text::VariableWhere));
+                ui.strong(text(language, Text::YourOwnName));
+                ui.label("");
+                ui.end_row();
+
+                for (slot, shown) in variables {
+                    // Where it lives, in the spelling the listing uses: a
+                    // reader renaming `rbp-0x18` can find that same string in
+                    // the disassembly.
+                    ui.monospace(slot);
+                    // What it is called now, which is the reader's name when
+                    // they gave one and the decompiler's otherwise. Editing it
+                    // is the renaming — there is no button, because the field
+                    // *is* the name.
+                    let mut name = app
+                        .annotations
+                        .variable(function, slot)
+                        .unwrap_or(shown)
+                        .to_owned();
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut name)
+                            .desired_width(200.0)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                    if field.changed() {
+                        renamed.push((slot.clone(), name.clone()));
+                    }
+                    // Emptying the field takes the name back rather than
+                    // storing a blank, so there is nothing else to press.
+                    if app.annotations.variable(function, slot).is_some() {
+                        ui.small(
+                            egui::RichText::new(format!("← {shown}"))
+                                .color(MUTED)
+                                .monospace(),
+                        );
+                    } else {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                }
+            });
+    });
+    renamed
 }
 
 fn pseudocode_menu(

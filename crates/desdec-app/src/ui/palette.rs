@@ -98,6 +98,15 @@ fn contents(app: &mut DesdecApp, ui: &mut egui::Ui) -> Option<PaletteChoice> {
                         app.can_run(command),
                         egui::SelectableLabel::new(selected, label),
                     );
+                    // A sentence about what the entry does, for the few whose
+                    // label alone leaves the question open. A label is a name;
+                    // "Save the work (.dcl)" does not say what it writes,
+                    // where, or what already happens without it.
+                    let entry = match command.explanation() {
+                        Some(sentence) => entry
+                            .on_hover_text(crate::i18n::text(app.preferences.language, sentence)),
+                        None => entry,
+                    };
                     if entry.clicked() {
                         chosen = Some(PaletteChoice::Command(command));
                         app.palette.selected = index;

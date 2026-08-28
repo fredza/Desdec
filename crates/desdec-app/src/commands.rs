@@ -212,6 +212,23 @@ impl Command {
         true
     }
 
+    /// A sentence about what the command does, for the few whose label leaves
+    /// the question open.
+    ///
+    /// Deliberately not one per command: a list where every entry carries a
+    /// paragraph is a list nobody reads, and "Open binary" explains itself.
+    /// These two do not — what a `.dcl` is, and that Desdec already keeps the
+    /// notes without one, is exactly what a reader meeting the entry does not
+    /// know.
+    #[must_use]
+    pub const fn explanation(self) -> Option<crate::i18n::Text> {
+        match self {
+            Self::SaveSession => Some(crate::i18n::Text::SaveSessionHint),
+            Self::OpenSession => Some(crate::i18n::Text::OpenSessionHint),
+            _ => None,
+        }
+    }
+
     /// Whether the command acts on a loaded binary, and so needs one.
     ///
     /// Switching view is deliberately not in this list: with no binary open a

@@ -468,10 +468,16 @@ fn function_details(
     // A compiler-produced name can be wider than the whole detail panel. The
     // list owns a horizontal scrollbar, but this heading does not: keep the
     // panel within its column and leave the complete name one hover away.
-    ui.add(
-        egui::Label::new(egui::RichText::new(function.shown_name(mangled)).heading()).truncate(),
-    )
-    .on_hover_text(&function.name);
+    // The reader's own name when they gave one, like every other place this
+    // function is named. The file's spelling stays one hover away.
+    let heading = egui::RichText::new(function.named_by(notes, mangled)).heading();
+    let heading = if function.is_renamed(notes) {
+        heading.color(ui.visuals().hyperlink_color)
+    } else {
+        heading
+    };
+    ui.add(egui::Label::new(heading).truncate())
+        .on_hover_text(&function.name);
     ui.horizontal(|ui| {
         ui.monospace(format!("{:#018x}", function.start));
         // Beside the address, because that is what the reader is about to go
@@ -503,11 +509,19 @@ fn function_details(
     // Who calls this one, and what it calls, before the graph of its own
     // blocks: a reader arriving at a function asks how anything gets to it
     // before they ask what it does inside.
-    let walked = call_graph(ui, functions, graph, function, mangled, language);
+    let walked = call_graph(ui, functions, graph, function, mangled, notes, language);
     ui.add_space(8.0);
     let hovered_block = control_flow_graph(ui, analysis, function, language);
     ui.add_space(12.0);
-    pseudocode(ui, analysis, function, hovered_block, mangled, language);
+    pseudocode(
+        ui,
+        analysis,
+        function,
+        hovered_block,
+        mangled,
+        notes,
+        language,
+    );
     // What the reader clicked in the call graph is handled by the caller,
     // which owns the selection; the jump button's answer is kept for when
     // nothing in the graph was clicked.
@@ -532,6 +546,7 @@ fn call_graph(
     graph: &crate::callgraph::Graph,
     function: &Function,
     mangled: bool,
+    notes: &crate::annotations::Annotations,
     language: Language,
 ) -> Option<u64> {
     let edges = graph.edges(function.start)?;
@@ -541,7 +556,7 @@ fn call_graph(
             .find(|other| other.start == address)
             .map_or_else(
                 || format!("{address:#x}"),
-                |other| other.shown_name(mangled).to_owned(),
+                |other| other.named_by(notes, mangled).to_owned(),
             )
     };
     let mut chosen = None;
@@ -851,6 +866,7 @@ fn pseudocode(
     function: &Function,
     hovered_block: Option<u64>,
     mangled: bool,
+    notes: &crate::annotations::Annotations,
     language: Language,
 ) {
     let body = function.body(analysis);
@@ -877,7 +893,7 @@ fn pseudocode(
             .id_salt(("function_pseudocode", function.start))
             .max_height(available_height)
             .show(ui, |ui| {
-                let signature = format!("void {}(void) {{", function.shown_name(mangled));
+                let signature = format!("void {}(void) {{", function.named_by(notes, mangled));
                 ui.label(syntax::pseudo_code(
                     ui,
                     &signature,

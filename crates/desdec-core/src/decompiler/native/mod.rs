@@ -95,6 +95,15 @@ pub struct Request<'a> {
     /// an address points at, so that a call comes out as `puts("usage: …")`
     /// rather than as `puts(0x2004)`.
     pub file: Option<&'a [u8]>,
+    /// What the reader calls the variables of this function, by where each
+    /// one lives: `rbp-0x18` for a local, `rdi` for a parameter.
+    ///
+    /// Given by place rather than by the name this decompiler chose, because
+    /// `local_18` and `argument_1` are made up afresh on every pass — adding
+    /// one instruction can renumber the lot — while a frame offset and a
+    /// register do not move. Empty when the reader has named nothing, which is
+    /// the state every binary starts in.
+    pub named_variables: &'a [(String, String)],
 }
 
 /// Decompiles one function.
@@ -114,6 +123,7 @@ pub fn decompile(request: &Request<'_>) -> Decompiled {
             lines: Vec::new(),
             unmodelled: 0,
             instructions: 0,
+            variables: Vec::new(),
         };
     }
 
@@ -151,7 +161,20 @@ pub fn decompile(request: &Request<'_>) -> Decompiled {
     // `rdi` is a parameter — so this has to have happened before the interface
     // is read off the body.
     naming::arguments_of_calls(&mut statements, convention);
-    let naming = naming::recognise(&statements, convention);
+    let mut naming = naming::recognise(&statements, convention);
+    // The reader's own names, before `apply` puts any name into the code:
+    // afterwards the slots have become locals and there is nothing left to
+    // rename.
+    if !request.named_variables.is_empty() {
+        naming.rename(|slot| {
+            request
+                .named_variables
+                .iter()
+                .find(|(place, _)| place == slot)
+                .map(|(_, name)| name.as_str())
+        });
+    }
+    let naming = naming;
     naming::apply(&naming, &mut statements);
 
     let index_of: HashMap<u64, usize> = blocks
@@ -480,6 +503,11 @@ mod tests {
     }
 
     fn decompiled(body: &[Instruction]) -> Decompiled {
+        decompiled_naming(body, &[])
+    }
+
+    /// The same, with names the reader gave the variables.
+    fn decompiled_naming(body: &[Instruction], named: &[(String, String)]) -> Decompiled {
         let analysis = analysis();
         decompile(&Request {
             analysis: &analysis,
@@ -487,7 +515,73 @@ mod tests {
             start: body.first().map_or(0, |first| first.address),
             body,
             file: None,
+            named_variables: named,
         })
+    }
+
+    /// A name the reader gave a local reaches the pseudo-code.
+    ///
+    /// Given by *where the variable lives* rather than by what this decompiler
+    /// called it. `local_18` is made up afresh on every pass — the numbering
+    /// follows the order the slots are met, so one more instruction can
+    /// renumber the lot — while `rbp-0x18` is a fact about the machine and
+    /// does not move.
+    #[test]
+    fn a_name_the_reader_gave_a_local_is_used_in_the_output() {
+        let body = function(&[
+            (0x10, "mov %rdi,-0x18(%rbp)"),
+            (0x14, "mov -0x18(%rbp),%rax"),
+            (0x18, "ret"),
+        ]);
+
+        let plain = decompiled(&body).text();
+        assert!(plain.contains("local_18"), "{plain}");
+
+        let named =
+            decompiled_naming(&body, &[("rbp-0x18".to_owned(), "header".to_owned())]).text();
+        assert!(named.contains("header"), "{named}");
+        assert!(
+            !named.contains("local_18"),
+            "the made-up name is gone: {named}"
+        );
+    }
+
+    /// And one given a parameter, which lives in a register rather than in the
+    /// frame.
+    #[test]
+    fn a_name_the_reader_gave_a_parameter_is_used_in_the_output() {
+        let body = function(&[
+            (0x10, "mov %rdi,%rax"),
+            (0x13, "add $0x1,%rax"),
+            (0x17, "ret"),
+        ]);
+
+        let plain = decompiled(&body).text();
+        assert!(plain.contains("argument_1"), "{plain}");
+
+        let named = decompiled_naming(&body, &[("rdi".to_owned(), "count".to_owned())]).text();
+        assert!(named.contains("count"), "{named}");
+        assert!(!named.contains("argument_1"), "{named}");
+    }
+
+    /// A name for a slot this function does not have is dropped rather than
+    /// put somewhere. A reader who names `rbp-0x18` and then edits the binary
+    /// until that slot is gone has a saying about nothing, and moving it to
+    /// another variable would be worse than losing it.
+    #[test]
+    fn a_name_for_a_slot_that_is_not_there_lands_nowhere() {
+        let body = function(&[
+            (0x10, "mov %rdi,-0x18(%rbp)"),
+            (0x14, "mov -0x18(%rbp),%rax"),
+            (0x18, "ret"),
+        ]);
+
+        let named =
+            decompiled_naming(&body, &[("rbp-0x99".to_owned(), "nowhere".to_owned())]).text();
+
+        assert!(!named.contains("nowhere"), "{named}");
+        // And the slot that *is* there keeps the name it had.
+        assert!(named.contains("local_18"), "{named}");
     }
 
     /// The function the old line-by-line translation could not read: a
@@ -738,6 +832,7 @@ mod tests {
                     start: *start,
                     body,
                     file: Some(&fixture.bytes),
+                    named_variables: &[],
                 });
                 assert!(
                     body.is_empty() || !decompiled.lines.is_empty(),
@@ -770,6 +865,7 @@ mod tests {
             start,
             body: &analysis.instructions,
             file: Some(&fixture.bytes),
+            named_variables: &[],
         });
         assert_eq!(
             decompiled.unmodelled, decompiled.instructions,
@@ -857,6 +953,7 @@ mod tests {
                     start: *start,
                     body: &analysis.instructions[span],
                     file: Some(&fixture.bytes),
+                    named_variables: &[],
                 });
                 let text = decompiled.text();
                 for line in text.lines() {

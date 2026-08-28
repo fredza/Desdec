@@ -2205,10 +2205,19 @@ translations! {
         "Your own name",
         "Su propio nombre",
     ],
-    YourOwnNameHint => [
-        "Ce que vous avez compris de cet endroit. Il remplace le nom du fichier partout où Desdec le montre ; le nom d’origine reste sous le pointeur.",
-        "What you have worked out about this place. It stands in for the file's name everywhere Desdec shows it; the original stays under the pointer.",
-        "Lo que ha comprendido de este lugar. Sustituye al nombre del archivo dondequiera que Desdec lo muestre; el original permanece bajo el puntero.",
+
+    // --- Nommer les variables d'une fonction ---
+    Variables => ["Variables", "Variables", "Variables"],
+    VariablesHint => [
+        "Les paramètres et les emplacements du cadre que Desdec a reconnus. Les noms qu’il leur donne — argument_1, local_18 — sont refaits à chaque passe ; celui que vous écrivez est gardé, parce qu’il est attaché à l’endroit où vit la variable et non au nom inventé.",
+        "The parameters and frame slots Desdec recognised. The names it gives them — argument_1, local_18 — are made up afresh on every pass; the one you write is kept, because it is attached to where the variable lives rather than to the invented name.",
+        "Los parámetros y las ranuras del marco que Desdec reconoció. Los nombres que les da — argument_1, local_18 — se rehacen en cada pasada; el que usted escribe se conserva, porque está unido al lugar donde vive la variable y no al nombre inventado.",
+    ],
+    VariableWhere => ["Où", "Where", "Dónde"],
+    VariableNone => [
+        "Cette fonction n’a ni paramètre ni emplacement de cadre reconnu.",
+        "This function has no parameter and no recognised frame slot.",
+        "Esta función no tiene parámetro ni ranura de marco reconocida.",
     ],
 
     // --- La vue graphe ---

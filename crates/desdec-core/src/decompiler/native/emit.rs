@@ -70,6 +70,14 @@ pub struct Decompiled {
     /// count comments.
     pub unmodelled: usize,
     pub instructions: usize,
+    /// The variables of the function: where each lives, and what it is called
+    /// in the text above.
+    ///
+    /// Carried out so a view can offer to rename one. The place — `rbp-0x18`
+    /// for a local, `rdi` for a parameter — is what a name has to be stored
+    /// against, since the names in the text are made up afresh on every pass
+    /// and renumber as soon as a slot is added.
+    pub variables: Vec<(String, String)>,
 }
 
 impl Decompiled {
@@ -151,6 +159,7 @@ fn render(source: &Source<'_>, registers: &Registers) -> Decompiled {
         lines: writer.lines,
         unmodelled: writer.unmodelled,
         instructions: writer.instructions,
+        variables: source.naming.variables(),
     }
 }
 

@@ -55,6 +55,31 @@ pub struct InCode {
     pub kind: String,
 }
 
+/// A name the reader gave a variable of one decompiled function.
+///
+/// Named by *where the variable is* rather than by what the decompiler called
+/// it. `local_18` and `argument_1` are made up afresh on every pass — the
+/// numbering follows the order slots are met, so inserting one instruction can
+/// renumber the lot — and a name pinned to them would move to another variable
+/// the next time the function was decompiled.
+///
+/// What does not move is the machine: a local is a fixed offset from a frame
+/// register, and a parameter is the register the convention passes it in. That
+/// is what `slot` holds — `rbp-0x18` for a local, `rdi` for a parameter — and
+/// it is the same string the listing writes, so a reader can see in the
+/// disassembly what they named in the pseudo-code.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Variable {
+    /// Where the function starts, which is what makes `rbp-0x18` mean one
+    /// place rather than one in every function of the program.
+    pub function: u64,
+    /// Where the variable lives: `rbp-0x18`, `rsp+0x8`, or a register root.
+    pub slot: String,
+    /// What the reader calls it.
+    pub name: String,
+}
+
 /// Everything the reader has written about one binary.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -72,6 +97,8 @@ pub struct Annotations {
     types: String,
     /// Which type each register holds, function by function.
     in_code: Vec<InCode>,
+    /// What the reader calls the locals and parameters of each function.
+    variables: Vec<Variable>,
 }
 
 impl Annotations {
@@ -166,15 +193,53 @@ impl Annotations {
             .retain(|had| had.function != function || had.register != register);
     }
 
+    /// What the reader calls a variable of a function, if they named it.
+    ///
+    /// `slot` is where it lives — `rbp-0x18` for a local, `rdi` for a
+    /// parameter — which is what survives a second decompilation.
+    #[must_use]
+    pub fn variable(&self, function: u64, slot: &str) -> Option<&str> {
+        self.variables
+            .iter()
+            .find(|named| named.function == function && named.slot == slot)
+            .map(|named| named.name.as_str())
+    }
+
+    /// Names one, replacing whatever was called that place before. An empty
+    /// name takes the saying back rather than storing a blank.
+    pub fn name_variable(&mut self, function: u64, slot: &str, name: &str) {
+        self.variables
+            .retain(|named| named.function != function || named.slot != slot);
+        let name = name.trim();
+        if !name.is_empty() {
+            self.variables.push(Variable {
+                function,
+                slot: slot.to_owned(),
+                name: name.to_owned(),
+            });
+        }
+    }
+
+    /// Every variable the reader named, for the code that carries the names
+    /// into a decompilation.
+    #[must_use]
+    pub fn variables(&self) -> &[Variable] {
+        &self.variables
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty() && self.types.trim().is_empty() && self.in_code.is_empty()
+        self.entries.is_empty()
+            && self.types.trim().is_empty()
+            && self.in_code.is_empty()
+            && self.variables.is_empty()
     }
 
     pub fn clear(&mut self) {
         self.entries.clear();
         self.types.clear();
         self.in_code.clear();
+        self.variables.clear();
     }
 }
 
@@ -237,6 +302,51 @@ mod tests {
 
     fn digest(byte: u8) -> [u8; 32] {
         [byte; 32]
+    }
+
+    /// A name for a variable is kept against *where it lives*, so it survives
+    /// a second decompilation: `local_18` and `argument_1` are made up afresh
+    /// on every pass, `rbp-0x18` and `rdi` are facts about the machine.
+    #[test]
+    fn a_variable_is_named_by_where_it_lives() {
+        let mut annotations = Annotations::default();
+        annotations.name_variable(0x0040_1000, "rbp-0x18", "header");
+        annotations.name_variable(0x0040_1000, "rdi", "count");
+
+        assert_eq!(
+            annotations.variable(0x0040_1000, "rbp-0x18"),
+            Some("header")
+        );
+        assert_eq!(annotations.variable(0x0040_1000, "rdi"), Some("count"));
+        // The same place in another function is another variable: a frame
+        // offset means nothing without the function it belongs to.
+        assert_eq!(annotations.variable(0x0040_2000, "rbp-0x18"), None);
+    }
+
+    /// Naming the same place twice replaces rather than accumulates, and
+    /// emptying the name takes the saying back rather than storing a blank.
+    #[test]
+    fn naming_a_variable_again_replaces_what_was_said() {
+        let mut annotations = Annotations::default();
+        annotations.name_variable(0x0040_1000, "rdi", "count");
+        annotations.name_variable(0x0040_1000, "rdi", "length");
+        assert_eq!(annotations.variable(0x0040_1000, "rdi"), Some("length"));
+        assert_eq!(annotations.variables().len(), 1);
+
+        annotations.name_variable(0x0040_1000, "rdi", "   ");
+        assert_eq!(annotations.variable(0x0040_1000, "rdi"), None);
+        assert!(annotations.variables().is_empty());
+    }
+
+    /// And a file holding nothing but a named variable is still a file worth
+    /// writing: notes emptied to nothing take their file with them, and a
+    /// reader who has only renamed things has not emptied theirs.
+    #[test]
+    fn a_named_variable_alone_is_worth_keeping() {
+        let mut annotations = Annotations::default();
+        assert!(annotations.is_empty());
+        annotations.name_variable(0x0040_1000, "rdi", "count");
+        assert!(!annotations.is_empty());
     }
 
     #[test]

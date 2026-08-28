@@ -585,6 +585,11 @@ pub struct NativeDecompilation {
     /// The function the text belongs to.
     pub source: Option<u64>,
     pub result: Option<desdec_core::decompiler::native::emit::Decompiled>,
+    /// The reader's own names that produced this text, so renaming a variable
+    /// is enough to have the pseudo-code redone. Without it the text would be
+    /// kept as long as the function did not change, and a name given to a
+    /// local would appear only after walking away and coming back.
+    pub named: Vec<(String, String)>,
 }
 
 /// Result of the selected external decompiler.
@@ -1019,7 +1024,17 @@ impl DesdecApp {
         &mut self,
         address: u64,
     ) -> Option<&desdec_core::decompiler::native::emit::Decompiled> {
-        if self.native.source != Some(address) {
+        // Recomputed when the function changes, and when the reader has
+        // renamed something in it: a name given to a variable has to reach the
+        // pseudo-code without the reader having to walk away and come back.
+        let named: Vec<(String, String)> = self
+            .annotations
+            .variables()
+            .iter()
+            .filter(|named| named.function == address)
+            .map(|named| (named.slot.clone(), named.name.clone()))
+            .collect();
+        if self.native.source != Some(address) || self.native.named != named {
             let analysis = self.analysis.as_ref()?;
             let function = self
                 .functions
@@ -1033,9 +1048,11 @@ impl DesdecApp {
                     start: function.start,
                     body,
                     file: Some(&self.file_bytes),
+                    named_variables: &named,
                 },
             ));
             self.native.source = Some(address);
+            self.native.named = named;
         }
         self.native.result.as_ref()
     }
