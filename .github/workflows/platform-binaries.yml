@@ -78,14 +78,53 @@ jobs:
   linux-x86_64:
     name: Linux x86_64
     needs: version
-    runs-on: ubuntu-24.04
+    # Where this job runs, and how to move it without editing this file.
+    #
+    # `LINUX_RUNNER` is a repository variable. Unset — which it is until
+    # somebody sets it — this reads `ubuntu-24.04` and nothing changes. Set to
+    # a self-hosted runner's labels, the job goes there instead:
+    #
+    #     gh variable set LINUX_RUNNER --body '["self-hosted","desdec-linux"]'
+    #     gh variable delete LINUX_RUNNER          # and back to GitHub's
+    #
+    # A variable rather than a value written in here, because a self-hosted
+    # runner is a machine somebody owns: it gets turned off, it goes on
+    # holiday, its disk fills up. A job pinned to one that is not listening
+    # does not fail — it queues, for twenty-four hours, and then fails. Pinning
+    # it here would mean a release blocked behind a laptop, and an edit to this
+    # file plus a new tag to get out of it. A variable is one command, from
+    # anywhere, and it takes effect on the next run.
+    #
+    # The variable holds **JSON**, because `runs-on` takes either one label or
+    # an array of them and a self-hosted runner is usually named by several.
+    # A bare `self-hosted` is not JSON and will not parse; `"self-hosted"` is.
+    #
+    # `fromJSON` is given something valid whichever way this goes, rather than
+    # being guarded by the `&&` in front of it. Whether these operators
+    # short-circuit decides, in the guarded spelling, between reading the
+    # variable and calling `fromJSON('')` — and that call is an error that
+    # fails the job before a line of it runs. Written this way the question
+    # does not arise: the fallback is itself a JSON string, so there is no
+    # spelling of the variable, empty included, that reaches `fromJSON` with
+    # something it cannot read.
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER || '"ubuntu-24.04"') }}
     env:
       # rust-cache restores whole dependency trees between jobs.  sccache adds
       # the smaller-grained layer: it reuses rustc outputs when only an
       # unrelated crate or a workflow step changed.
+      #
+      # Both are GitHub's own cache service, which a self-hosted runner reaches
+      # exactly like a hosted one. They earn much less there — the disk already
+      # holds `target/` and `~/.cargo` from the last run — but they cost
+      # nothing to leave on, and turning them off would slow the first run
+      # after the runner is replaced or its disk is cleared.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:
+      # `clean: true` is the default and stays: a self-hosted runner keeps its
+      # working directory between runs, so a file left behind by a build — or
+      # by somebody's pull request — would otherwise still be there for the
+      # next one.
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
