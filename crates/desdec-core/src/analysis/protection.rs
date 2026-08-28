@@ -745,6 +745,28 @@ mod tests {
         detect(&[], sections, &[], &BinaryDetails::default(), None)
     }
 
+    // The markers these tests need, masked exactly like the table's own.
+    //
+    // A test that writes `b"UPX!"` puts that marker in the test binary as a
+    // plain string — and this suite analyses the test binary. The scanner then
+    // finds it, and `the_scanner_does_not_flag_its_own_binary` fails reporting
+    // Desdec as packed by UPX, VMProtect and Themida at once. That is the very
+    // trap the whole module is masked against; the table was masked and the
+    // tests were not, so the tests reintroduced it.
+    //
+    // Held as `const` so the masking really happens at compile time: written
+    // inline, `masked(b"UPX!")` may be worked out at run time and leaves the
+    // plain spelling in the image after all.
+    const UPX_MAGIC: [u8; 4] = masked(b"UPX!");
+    const UPX_NAME: [u8; 3] = masked(b"UPX");
+    const VMPROTECT: [u8; 9] = masked(b"VMProtect");
+    const THEMIDA: [u8; 20] = masked(b"Themida / WinLicense");
+
+    /// One masked marker, back as the bytes it was written from.
+    fn plain(marker: &[u8]) -> Vec<u8> {
+        marker.iter().map(|byte| byte ^ MASK).collect()
+    }
+
     #[test]
     fn a_packer_s_own_section_names_it() {
         let found = detect_sections(&[section("UPX1", None, true, true)]);
@@ -762,7 +784,9 @@ mod tests {
     fn a_numbered_section_matches_its_family() {
         for name in ["vmp0", ".vmp0", ".vmp1", ".VMP2"] {
             let found = detect_sections(&[section(name, None, true, false)]);
-            let named = found.iter().any(|item| item.name == "VMProtect");
+            let named = found
+                .iter()
+                .any(|item| item.name.as_bytes() == plain(&VMPROTECT));
             // `vmp0` without the dot is not the marker: the prefix is `.vmp`.
             assert_eq!(named, name.starts_with('.'), "{name}");
         }
@@ -785,12 +809,14 @@ mod tests {
     #[test]
     fn a_marker_in_the_bytes_names_the_product() {
         let mut file = vec![0_u8; 512];
-        file.extend_from_slice(b"UPX!");
+        file.extend_from_slice(&plain(&UPX_MAGIC));
         file.extend_from_slice(&[0_u8; 512]);
         let found = detect(&file, &[], &[], &BinaryDetails::default(), None);
 
         assert!(
-            found.iter().any(|item| item.name == "UPX"),
+            found
+                .iter()
+                .any(|item| item.name.as_bytes() == plain(&UPX_NAME)),
             "the stub's own magic was not read: {found:?}"
         );
     }
@@ -875,7 +901,7 @@ mod tests {
     #[test]
     fn a_product_found_twice_is_reported_once() {
         let mut file = vec![0_u8; 64];
-        file.extend_from_slice(b"UPX!");
+        file.extend_from_slice(&plain(&UPX_MAGIC));
         let found = detect(
             &file,
             &[section("UPX1", None, true, false)],
@@ -885,7 +911,10 @@ mod tests {
         );
 
         assert_eq!(
-            found.iter().filter(|item| item.name == "UPX").count(),
+            found
+                .iter()
+                .filter(|item| item.name.as_bytes() == plain(&UPX_NAME))
+                .count(),
             1,
             "{found:?}"
         );
@@ -896,12 +925,13 @@ mod tests {
     /// names the wrong product.
     #[test]
     fn a_masked_marker_reads_back_as_itself() {
-        assert_eq!(
-            unmasked(&masked(b"Themida / WinLicense")),
-            "Themida / WinLicense"
-        );
-        assert!(holds(b"....VMProtect begin....", &masked(b"VMProtect")));
-        assert!(!holds(b"an honest program", &masked(b"VMProtect")));
+        assert_eq!(unmasked(&THEMIDA).as_bytes(), plain(&THEMIDA));
+
+        let mut haystack = b"....".to_vec();
+        haystack.extend_from_slice(&plain(&VMPROTECT));
+        haystack.extend_from_slice(b" begin....");
+        assert!(holds(&haystack, &VMPROTECT));
+        assert!(!holds(b"an honest program", &VMPROTECT));
     }
 
     /// The trap this module was written around: Desdec analysing its own
