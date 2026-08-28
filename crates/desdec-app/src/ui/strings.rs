@@ -18,6 +18,8 @@ use crate::{
 pub struct Action {
     pub copy: Option<String>,
     pub go_to: Option<u64>,
+    /// An address whose string the reader wants to name themselves.
+    pub rename: Option<u64>,
 }
 
 #[expect(
@@ -32,6 +34,7 @@ pub fn show(
     scopes: &mut Scopes,
     hide_prologues: &mut bool,
     selected_string: &mut Option<u64>,
+    notes: &crate::annotations::Annotations,
     language: Language,
 ) -> Action {
     let mut action = Action::default();
@@ -76,20 +79,25 @@ pub fn show(
         .auto_shrink([false, false])
         .show_rows(ui, ROW_HEIGHT, matches.len(), |ui, range| {
             egui::Grid::new("strings")
-                .num_columns(3)
+                .num_columns(4)
                 .striped(true)
                 .spacing([18.0, row_spacing])
                 .min_row_height(ROW_HEIGHT)
                 .show(ui, |ui| {
                     for item in &matches[range] {
-                        if row(
+                        let address = string_address(analysis, item.string);
+                        let asked = row(
                             ui,
                             item,
                             *selected_string == Some(item.string.file_offset),
+                            address,
+                            notes,
                             language,
-                        ) {
+                        );
+                        if asked.chosen {
                             *selected_string = Some(item.string.file_offset);
                         }
+                        action.rename = action.rename.or(asked.rename);
                         ui.end_row();
                     }
                 });
@@ -446,10 +454,44 @@ impl CodeReferences {
     }
 }
 
-fn row(ui: &mut egui::Ui, item: &StringMatch<'_>, selected: bool, language: Language) -> bool {
+/// What one row of the table was asked to do.
+#[derive(Default)]
+struct RowAction {
+    /// The row was clicked, and is now the selected string.
+    chosen: bool,
+    /// The reader wants to give this string a name of their own, at the
+    /// address it is loaded at.
+    rename: Option<u64>,
+}
+
+fn row(
+    ui: &mut egui::Ui,
+    item: &StringMatch<'_>,
+    selected: bool,
+    address: Option<u64>,
+    notes: &crate::annotations::Annotations,
+    language: Language,
+) -> RowAction {
+    let mut asked = RowAction::default();
     let string = item.string;
     ui.monospace(format!("{:#010x}", string.file_offset));
     ui.label(egui::RichText::new(string.encoding.label()).color(MUTED));
+
+    // The reader's own name for it, when they gave one. A string called
+    // `banner` reads as what it is for; `"%s: cannot open %s\n"` reads as what
+    // it says, which is not the same question. Both are here — the name leads,
+    // the text follows — because a name that hid the string would make the
+    // table unsearchable.
+    let named = address.and_then(|address| notes.label(address));
+    if let Some(name) = named {
+        ui.label(
+            egui::RichText::new(name)
+                .color(ui.visuals().hyperlink_color)
+                .strong(),
+        );
+    } else {
+        ui.label("");
+    }
 
     let value = if string.truncated {
         format!("{}…", string.value)
@@ -489,7 +531,23 @@ fn row(ui: &mut egui::Ui, item: &StringMatch<'_>, selected: bool, language: Lang
             response.clone().on_hover_text(reasons.join("\n"));
         }
     }
-    response.clicked()
+    // Naming is offered only where there is an address to hang the name on: an
+    // unmapped string is never loaded, so nothing in the code can point at it
+    // and no name for it would ever be shown anywhere else.
+    response.context_menu(|ui| {
+        if ui
+            .add_enabled(
+                address.is_some(),
+                egui::Button::new(text(language, Text::RenameString)),
+            )
+            .clicked()
+        {
+            asked.rename = address;
+            ui.close_menu();
+        }
+    });
+    asked.chosen = response.clicked();
+    asked
 }
 
 /// Tallest the references card grows before it scrolls inside itself.

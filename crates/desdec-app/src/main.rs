@@ -29,6 +29,7 @@ mod plugins;
 mod preferences;
 mod script;
 mod search;
+mod session;
 mod storage;
 #[cfg(test)]
 mod testing;

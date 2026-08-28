@@ -7,6 +7,11 @@
 #   scripts/unsl.sh --name desdec-dev   # remove a side install, leave the release alone
 #   scripts/unsl.sh --prefix /usr/local/bin
 #   scripts/unsl.sh --purge             # and the notes, preferences and library catalogue
+#
+# `--purge` reaches what Desdec keeps for itself. It never reaches a `.dcl`
+# saved beside a binary: that is a file of yours, in a directory of yours, and
+# uninstalling a program is no reason to go through a disk deleting files by
+# extension.
 #   scripts/unsl.sh --keep-path         # leave the shell profile untouched
 #
 # Run it before installing over an older Desdec — an install under a different
@@ -195,6 +200,13 @@ if [ "$purge" = yes ]; then
         find "$directory" -type f 2>/dev/null | sed 's/^/    /'
         drop "$directory"
     done
+    # And say what `--purge` does *not* reach, because it is the reader's work
+    # too: a `.dcl` saved beside a binary is a file of theirs, in a directory
+    # of theirs, and nothing here goes looking for one. Removing Desdec has
+    # never been a reason to walk somebody's disk deleting files by extension.
+    say ""
+    say "kept  the .dcl files you saved beside your binaries — this removes"
+    say "      Desdec, not the work you did with it"
 else
     for directory in "$data_home/desdec" "$config_home/desdec"; do
         [ -d "$directory" ] && say "kept  $directory — pass --purge to remove your notes and preferences too"

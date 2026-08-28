@@ -56,12 +56,46 @@ pub struct Function {
 impl Function {
     /// What to put on the row: the source spelling when it was recovered and
     /// the reader has not asked for the file's own, and the file's otherwise.
+    ///
+    /// This is what the *file* calls the function. What the **reader** calls
+    /// it wins over both, and comes from the notes rather than from here —
+    /// see [`Function::named_by`], which is what the views actually show.
     #[must_use]
     pub fn shown_name(&self, mangled: bool) -> &str {
         match &self.readable {
             Some(readable) if !mangled => readable,
             _ => &self.name,
         }
+    }
+
+    /// What to show for this function: the reader's own name if they gave it
+    /// one, and what the file says otherwise.
+    ///
+    /// A reader renaming `sub_401000` to `parse_header` has worked something
+    /// out that the file does not contain, and it is the whole reason the
+    /// notes exist. The listing already showed such a name in its own column;
+    /// the functions view, the graph and the call graph went on showing
+    /// `sub_401000`, so the same function had two names depending on where it
+    /// was looked at.
+    ///
+    /// The file's own spelling is never lost — it is one hover away on every
+    /// row that shows a reader's name, because a name someone invented has to
+    /// be checkable against the one the file carries.
+    #[must_use]
+    pub fn named_by<'a>(
+        &'a self,
+        notes: &'a crate::annotations::Annotations,
+        mangled: bool,
+    ) -> &'a str {
+        notes
+            .label(self.start)
+            .unwrap_or_else(|| self.shown_name(mangled))
+    }
+
+    /// Whether the name on screen is the reader's rather than the file's.
+    #[must_use]
+    pub fn is_renamed(&self, notes: &crate::annotations::Annotations) -> bool {
+        notes.label(self.start).is_some()
     }
 
     fn size(&self) -> u64 {
@@ -90,11 +124,12 @@ pub fn show(
     graph: &crate::callgraph::Graph,
     selected_function: &mut Option<u64>,
     mangled: &mut bool,
+    notes: &crate::annotations::Annotations,
     language: Language,
-) -> Option<u64> {
+) -> Action {
     if functions.is_empty() {
         ui.label(egui::RichText::new(text(language, Text::NoFunctionSymbols)).color(MUTED));
-        return None;
+        return Action::default();
     }
     if !selected_function.is_some_and(|address| functions.iter().any(|item| item.start == address))
     {
@@ -147,15 +182,19 @@ pub fn show(
     }
 
     let mut go_to = None;
+    let mut asked_rename = None;
     ui.columns(2, |columns| {
-        go_to = function_list(
+        let listed = function_list(
             &mut columns[0],
             analysis,
             functions,
             selected_function,
             *mangled,
+            notes,
             language,
         );
+        go_to = listed.go_to;
+        asked_rename = listed.rename;
         let selected = selected_function
             .and_then(|address| functions.iter().find(|function| function.start == address));
         let details = function_details(
@@ -165,6 +204,7 @@ pub fn show(
             graph,
             selected,
             *mangled,
+            notes,
             language,
         );
         go_to = go_to.or(details.go_to);
@@ -175,7 +215,23 @@ pub fn show(
             *selected_function = Some(walked);
         }
     });
-    go_to
+    Action {
+        go_to,
+        rename: asked_rename,
+    }
+}
+
+/// What the functions view asked of the application this frame.
+///
+/// Returned rather than carried out: the view is drawn from borrows of the
+/// analysis, the function list and the notes, and both of these write to the
+/// application that owns them.
+#[derive(Default)]
+pub struct Action {
+    /// An address to show in the listing.
+    pub go_to: Option<u64>,
+    /// A function the reader wants to name themselves.
+    pub rename: Option<u64>,
 }
 
 /// The few distinctions a reader needs before the table can answer questions
@@ -212,9 +268,11 @@ fn function_list(
     functions: &[Function],
     selected_function: &mut Option<u64>,
     mangled: bool,
+    notes: &crate::annotations::Annotations,
     language: Language,
-) -> Option<u64> {
+) -> ListAction {
     let mut go_to = None;
+    let mut rename = None;
     card(ui, text(language, Text::Functions), |ui| {
         // Virtualised like the listings: a stripped-nothing binary declares
         // tens of thousands of function symbols, and the table never changes
@@ -260,19 +318,36 @@ fn function_list(
                                 go_to = entry;
                             }
                             // The file's own spelling stays one hover away
-                            // whichever way the switch is set: a reading is
-                            // only checkable against what it was read from.
-                            let hover = match &function.readable {
-                                Some(_) if !mangled => format!(
-                                    "{:#018x}\n{} {}",
-                                    function.start,
+                            // whichever name is on the row: a reading, and a
+                            // reader's own invention even more so, is only
+                            // checkable against what it was read from.
+                            let mut hover = format!("{:#018x}", function.start);
+                            if function.is_renamed(notes) {
+                                hover.push_str(&format!(
+                                    "\n{} {}",
+                                    text(language, Text::NameInTheFile),
+                                    function.shown_name(mangled)
+                                ));
+                            }
+                            if function.readable.is_some() && !mangled {
+                                hover.push_str(&format!(
+                                    "\n{} {}",
                                     text(language, Text::MangledName),
                                     function.name
-                                ),
-                                _ => format!("{:#018x}", function.start),
+                                ));
+                            }
+                            let shown = function.named_by(notes, mangled);
+                            let label = if function.is_renamed(notes) {
+                                // A name the reader gave is drawn in the
+                                // accent, so a table of a thousand rows says
+                                // at a glance which ones have been worked out
+                                // and which are still the file's.
+                                egui::RichText::new(shown).color(ui.visuals().hyperlink_color)
+                            } else {
+                                egui::RichText::new(shown)
                             };
                             let name = ui
-                                .selectable_label(selected, function.shown_name(mangled))
+                                .selectable_label(selected, label)
                                 .on_hover_text(hover)
                                 .on_hover_cursor(egui::CursorIcon::PointingHand);
                             if name.clicked() {
@@ -292,6 +367,13 @@ fn function_list(
                                     go_to = entry;
                                     ui.close_menu();
                                 }
+                                // Renaming is asked for here and carried out
+                                // by the caller: this table is drawn from a
+                                // borrow of the notes it would be writing to.
+                                if ui.button(text(language, Text::RenameFunction)).clicked() {
+                                    rename = Some(function.start);
+                                    ui.close_menu();
+                                }
                             });
                             ui.label(format_size(function.size()));
                             ui.label(function.blocks.len().to_string());
@@ -301,7 +383,14 @@ fn function_list(
                     });
             });
     });
-    go_to
+    ListAction { go_to, rename }
+}
+
+/// What the table asked of the application, once its borrows have ended.
+struct ListAction {
+    go_to: Option<u64>,
+    /// A function whose name the reader wants to give themselves.
+    rename: Option<u64>,
 }
 
 /// Where a row came from: the file's own symbol table, or the code.
@@ -364,6 +453,7 @@ fn function_details(
     graph: &crate::callgraph::Graph,
     selected: Option<&Function>,
     mangled: bool,
+    notes: &crate::annotations::Annotations,
     language: Language,
 ) -> Details {
     let Some(function) = selected else {
@@ -1080,6 +1170,7 @@ mod tests {
                     &app.callgraph,
                     &mut app.selected_function,
                     &mut false,
+                    &crate::annotations::Annotations::default(),
                     Language::English,
                 );
             });

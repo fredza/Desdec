@@ -102,6 +102,10 @@ commands! {
     Patches => [Patches], Some(Shortcut::ctrl(KeyName::Num5)),
     Segments => [Segments], Some(Shortcut::ctrl(KeyName::Num6)),
     ExportPatched => [Patches, ExportPatched], None,
+    // The reader's own work, in a file beside the binary. Ctrl+S is what every
+    // application on the machine binds to saving, and nothing here used it.
+    SaveSession => [Session, SaveSession], Some(Shortcut::ctrl(KeyName::S)),
+    OpenSession => [Session, OpenSession], None,
     DiscardPatches => [Patches, DiscardPatches], None,
     DecompilerBuiltin => [Decompiler, BuiltinDecompiler], None,
     DecompilerRzGhidra => [Decompiler, RzGhidraEngine], None,
@@ -219,6 +223,10 @@ impl Command {
             self,
             Self::CloseBinary
                 | Self::ExportPatched
+                // Both act on the binary open: there is nothing to save the
+                // work on, and nowhere to read it back beside, without one.
+                | Self::SaveSession
+                | Self::OpenSession
                 | Self::DiscardPatches
                 | Self::RunYara
                 | Self::AskAboutBinary

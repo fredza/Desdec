@@ -24,7 +24,7 @@ use eframe::egui;
 use crate::{
     app::{DesdecApp, WorkspaceView},
     i18n::{Language, Text, text},
-    ui::{MUTED, functions::Function, machine},
+    ui::{MUTED, machine},
 };
 
 /// Colours of the three kinds of arrow, which are x64dbg's: the arm taken when
@@ -324,21 +324,36 @@ fn line_of(instruction: &Instruction) -> String {
 /// Draws the view. Returns an address the reader asked to see in the listing.
 pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Option<u64> {
     let language = app.preferences.language;
-    let analysis = app.analysis.as_ref()?;
+    if app.analysis.is_none() {
+        return None;
+    }
     if app.functions.is_empty() {
         ui.label(egui::RichText::new(text(language, Text::NoFunctionSymbols)).color(MUTED));
         return None;
     }
 
     let chosen = chosen_function(app);
-    let function = app
+    // Settled before anything is drawn, and written back: the picker below
+    // changes it, and every other view — the listing, the decompiler, the
+    // machine — reads the same field. A graph shown for one function while
+    // `selected_function` names another is how a reader ends up disassembling
+    // something they were not looking at.
+    let start = app
         .functions
         .iter()
         .find(|function| Some(function.start) == chosen)
-        .or_else(|| app.functions.first())?;
+        .or_else(|| app.functions.first())
+        .map(|function| function.start)?;
+    app.selected_function = Some(start);
 
-    heading(ui, function, language);
+    let asked = header(app, ui, start);
     ui.add_space(8.0);
+    if let Some(address) = asked {
+        return Some(address);
+    }
+
+    let analysis = app.analysis.as_ref()?;
+    let function = app.functions.iter().find(|item| item.start == start)?;
 
     let body = function.body(analysis);
     let blocks = desdec_core::blocks::of(body);
@@ -411,18 +426,95 @@ fn shortened(name: &str) -> String {
     format!("{kept}…")
 }
 
-fn heading(ui: &mut egui::Ui, function: &Function, language: Language) {
+/// The row above the graph: which function is drawn, and the way out of it.
+///
+/// Answers with the address to disassemble when the reader asks for it, which
+/// the caller carries out — this view is drawn from borrows of the analysis
+/// and the function list, and moving the workspace takes the whole
+/// application.
+fn header(app: &mut DesdecApp, ui: &mut egui::Ui, start: u64) -> Option<u64> {
+    let language = app.preferences.language;
+    let mangled = app.mangled_names;
+    // The list the picker offers, built before the row is drawn: the picker
+    // writes to the application, and it cannot do that while holding a borrow
+    // of the functions it is listing.
+    let choices: Vec<(u64, String)> = app
+        .functions
+        .iter()
+        .map(|function| (function.start, function.shown_name(mangled).to_owned()))
+        .collect();
+    let entry = app
+        .functions
+        .iter()
+        .find(|function| function.start == start)
+        .and_then(|function| {
+            let body = function.instructions.clone();
+            app.analysis
+                .as_ref()?
+                .instructions
+                .get(body.start)
+                .filter(|_| !body.is_empty())
+                .map(|instruction| instruction.address)
+        });
+    let shown = choices
+        .iter()
+        .find(|(address, _)| *address == start)
+        .map_or_else(|| format!("{start:#x}"), |(_, name)| name.clone());
+
+    let mut asked = None;
     ui.horizontal(|ui| {
-        // Shortened here rather than by egui: a truncating label in a
-        // horizontal row takes all the width there is and pushes everything
-        // beside it off the window, and a mangled Rust name runs to a hundred
-        // characters. The whole of it stays one hover away.
-        ui.strong(shortened(&function.name))
-            .on_hover_text(&function.name);
-        ui.label(egui::RichText::new(format!("{:#018x}", function.start)).monospace());
+        ui.label(crate::ui::section_title(
+            &text(language, Text::GraphPickFunction).to_uppercase(),
+        ))
+        .on_hover_text(text(language, Text::GraphPickFunctionHint));
+        // A picker rather than a heading. The graph used to name the function
+        // it had been given and offer no way to change it: reaching another
+        // one meant leaving for the functions view, choosing there, and coming
+        // back. The name is shortened in the box for the same reason it was
+        // shortened as a heading — a mangled name runs to a hundred characters
+        // — and the whole of it is in the list.
+        egui::ComboBox::from_id_salt("graph_function")
+            .selected_text(shortened(&shown))
+            .width(300.0)
+            .show_ui(ui, |ui| {
+                for (address, name) in &choices {
+                    if ui
+                        .selectable_label(*address == start, format!("{name}  {address:#x}"))
+                        .clicked()
+                    {
+                        app.selected_function = Some(*address);
+                        // The pan and zoom belong to the function that was
+                        // being read; another function starts framed on its
+                        // own first block rather than wherever the last one
+                        // had been dragged to.
+                        app.graph = crate::ui::graph::View::default();
+                    }
+                }
+            });
+        ui.label(egui::RichText::new(format!("{start:#018x}")).monospace());
+        ui.separator();
+        // The listing, from here. A graph is read to find the block worth
+        // reading instruction by instruction, and that was a trip through
+        // another view.
+        if ui
+            .add_enabled(
+                entry.is_some(),
+                egui::Button::new(text(language, Text::GraphDisassemble)),
+            )
+            .on_hover_text(text(language, Text::GraphDisassembleHint))
+            .clicked()
+        {
+            asked = entry;
+        }
         ui.separator();
         ui.label(egui::RichText::new(text(language, Text::GraphHelp)).color(MUTED));
     });
+    ui.label(
+        egui::RichText::new(text(language, Text::GraphLeaveHint))
+            .small()
+            .color(MUTED),
+    );
+    asked
 }
 
 /// The pannable, zoomable surface the graph is drawn on.
@@ -685,11 +777,79 @@ pub fn show_in(app: &mut DesdecApp, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::{COLUMN_GAP, Layout, layout};
+    use crate::app::WorkspaceView;
     use desdec_core::{
         Instruction, InstructionBytes,
         blocks::{self, BasicBlock},
     };
     use eframe::egui;
+
+    /// Escape leaves the graph, which is a view a reader looks into rather
+    /// than works in. Without it the way back was the navigation rail, which
+    /// is collapsed to icons on a narrow window.
+    #[test]
+    fn escape_leaves_the_graph_for_the_listing() {
+        let mut app = crate::testing::opened_app(WorkspaceView::Graph);
+        let ctx = egui::Context::default();
+        let mut input = crate::testing::window_input();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = ctx.run(input, |ctx| app.run_frame(ctx));
+
+        assert_eq!(app.active_view, WorkspaceView::Disassembly);
+    }
+
+    /// And only the graph: a key that emptied whichever view the reader was in
+    /// would be a key nobody could press safely.
+    #[test]
+    fn escape_leaves_every_other_view_where_it_is() {
+        for view in [
+            WorkspaceView::Disassembly,
+            WorkspaceView::Strings,
+            WorkspaceView::Functions,
+            WorkspaceView::Overview,
+        ] {
+            let mut app = crate::testing::opened_app(view);
+            let ctx = egui::Context::default();
+            let mut input = crate::testing::window_input();
+            input.events.push(egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            let _ = ctx.run(input, |ctx| app.run_frame(ctx));
+
+            assert_eq!(app.active_view, view, "{view:?} was left by Escape");
+        }
+    }
+
+    /// The graph settles which function is selected, so the listing and the
+    /// decompiler follow it. A graph drawn for one function while the rest of
+    /// the application names another is how a reader ends up disassembling
+    /// something they were not looking at.
+    #[test]
+    fn the_graph_names_the_function_the_rest_of_the_application_follows() {
+        let mut app = crate::testing::opened_app(WorkspaceView::Graph);
+        if app.functions.is_empty() {
+            return; // Nothing decoded on this host.
+        }
+        app.selected_function = None;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(crate::testing::window_input(), |ctx| app.run_frame(ctx));
+
+        let chosen = app.selected_function.expect("the graph settles on one");
+        assert!(
+            app.functions.iter().any(|item| item.start == chosen),
+            "and on a function that exists"
+        );
+    }
 
     fn body(lines: &[(u64, &str)]) -> Vec<Instruction> {
         lines

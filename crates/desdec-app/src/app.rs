@@ -1506,6 +1506,8 @@ impl DesdecApp {
                 self.open_view(command);
                 self.export_patched_copy(ctx);
             }
+            Command::SaveSession => self.save_session(),
+            Command::OpenSession => self.open_session(),
             Command::DiscardPatches => self.discard_patches(),
             Command::SendToAsmStudio => {
                 self.open_view(command);
@@ -1683,8 +1685,30 @@ impl DesdecApp {
     }
 
     fn dismiss_dialog_with_escape(&mut self, ctx: &egui::Context) {
-        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
-            self.dismiss_topmost_dialog();
+        if !ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            return;
+        }
+        // A dialog first, always: the key belongs to whatever is in front of
+        // the reader, and a window open over the graph is in front of it.
+        if self.dismiss_topmost_dialog() {
+            return;
+        }
+        self.leave_view_with_escape();
+    }
+
+    /// Views a reader looks *into* and then leaves, rather than works in.
+    ///
+    /// The graph is one: it is opened to find the block worth reading, and
+    /// what follows is reading it. Escape is the key every viewer uses for
+    /// that, and without it the way back was the navigation rail — which is
+    /// collapsed to icons on a narrow window.
+    ///
+    /// Only the graph, deliberately. The listing, the strings and the rest are
+    /// places a reader stays; a key that emptied whichever of them they were
+    /// in would be a key nobody could press safely.
+    fn leave_view_with_escape(&mut self) {
+        if self.active_view == WorkspaceView::Graph {
+            self.active_view = WorkspaceView::Disassembly;
         }
     }
 
@@ -2729,6 +2753,100 @@ impl DesdecApp {
 
     /// Asks where to write the patched copy. The analysed file is never the
     /// destination: [`desdec_core::patch::write_patched_copy`] refuses it.
+    /// Writes the reader's work to `binary.dcl`, beside the binary.
+    ///
+    /// No dialog and no chosen path: the file is named after the binary and
+    /// sits next to it, which is the whole point — a reader who wants it
+    /// somewhere else can copy it, and one who wants it saved wants it saved
+    /// rather than wants to be asked where.
+    ///
+    /// Desdec keeps these notes on its own already, under its data directory
+    /// and keyed by the binary's digest. This file is the other half: one a
+    /// reader can commit next to the binary, or hand to whoever asked them
+    /// what the thing does.
+    pub fn save_session(&mut self) {
+        let Some(analysis) = self.analysis.as_ref() else {
+            self.note(
+                crate::journal::Level::Warning,
+                self.t(Text::SessionNoBinary),
+            );
+            return;
+        };
+        let binary = analysis.summary.path.clone();
+        let session = crate::session::Session::of(&binary, analysis.sha256, &self.annotations);
+        let path = crate::session::beside(&binary);
+        match crate::session::write(&path, &session) {
+            Ok(()) => self.note(
+                crate::journal::Level::Note,
+                format!("{} : {}", self.t(Text::SessionSaved), path.display()),
+            ),
+            Err(error) => self.note(
+                crate::journal::Level::Failure,
+                format!("{} : {error}", self.t(Text::SessionFailed)),
+            ),
+        }
+    }
+
+    /// Reads the work back from `binary.dcl`.
+    ///
+    /// A file written about a *different* binary is read and then said so:
+    /// the notes are the reader's and are not thrown away, but an address
+    /// means nothing without the bytes it points into, and a name landing on
+    /// the wrong function is worse than no name at all. What to do about it is
+    /// the reader's decision, so they are told rather than protected.
+    pub fn open_session(&mut self) {
+        let Some(analysis) = self.analysis.as_ref() else {
+            self.note(
+                crate::journal::Level::Warning,
+                self.t(Text::SessionNoBinary),
+            );
+            return;
+        };
+        let digest = analysis.sha256;
+        let path = crate::session::beside(&analysis.summary.path);
+        let session = match crate::session::read(&path) {
+            Ok(session) => session,
+            Err(crate::session::Error::FromTheFuture { version }) => {
+                self.note(
+                    crate::journal::Level::Failure,
+                    format!(
+                        "{} (v{version}) : {}",
+                        self.t(Text::SessionFromTheFuture),
+                        path.display()
+                    ),
+                );
+                return;
+            }
+            Err(crate::session::Error::Unreadable(why)) => {
+                self.note(
+                    crate::journal::Level::Failure,
+                    format!("{} : {why}", self.t(Text::SessionUnreadable)),
+                );
+                return;
+            }
+            Err(crate::session::Error::Io(why)) => {
+                self.note(crate::journal::Level::Failure, why);
+                return;
+            }
+        };
+
+        if session.belongs_to(digest) == crate::session::Belongs::ToAnother {
+            self.note(
+                crate::journal::Level::Warning,
+                format!("{} ({})", self.t(Text::SessionOtherBinary), session.binary),
+            );
+        }
+        self.annotations = session.notes;
+        // Written back to Desdec's own store too, so the work read from the
+        // file is what a later session finds without the file being opened
+        // again.
+        self.annotations_changed_at = Some(0.0);
+        self.note(
+            crate::journal::Level::Note,
+            format!("{} : {}", self.t(Text::SessionOpened), path.display()),
+        );
+    }
+
     pub fn export_patched_copy(&mut self, ctx: &egui::Context) {
         if self.jobs.export_picker.is_some() || self.patches.is_empty() {
             return;

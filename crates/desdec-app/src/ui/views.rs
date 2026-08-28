@@ -184,6 +184,9 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
     // of the analysis has ended, since moving the workspace takes the whole
     // application.
     let mut go_to = None;
+    // A function the reader asked to name themselves. Acted on once the
+    // borrows the view was drawn under have ended, like `go_to`.
+    let mut rename = None;
     match view {
         WorkspaceView::Overview => {
             let explain = app.preferences.explain_libraries;
@@ -221,23 +224,28 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
                 &mut app.strings_scopes,
                 &mut app.strings_hide_prologues,
                 &mut app.selected_string,
+                &app.annotations,
                 language,
             );
             if let Some(value) = action.copy {
                 app.copy_to_clipboard(ui.ctx(), &value, Text::AddressCopied);
             }
             go_to = action.go_to;
+            rename = action.rename;
         }
         WorkspaceView::Functions => {
-            go_to = functions::show(
+            let asked = functions::show(
                 ui,
                 analysis,
                 &app.functions,
                 &app.callgraph,
                 &mut app.selected_function,
                 &mut app.mangled_names,
+                &app.annotations,
                 language,
             );
+            go_to = asked.go_to;
+            rename = asked.rename;
         }
         WorkspaceView::Symbols => {
             let action = symbols::show(
@@ -261,6 +269,10 @@ fn content(app: &mut DesdecApp, ui: &mut egui::Ui) {
         }
     }
     app.pending_section_scroll = bring_section_into_view;
+    if let Some(address) = rename {
+        app.annotating_address = Some(address);
+        app.dialogs.open(Dialog::Annotation);
+    }
     if let Some(address) = go_to {
         app.go_to_address(ui.ctx(), address);
     }

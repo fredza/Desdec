@@ -2134,6 +2134,110 @@ translations! {
     ],
     MangledName => ["Nom dans le fichier", "Name in the file", "Nombre en el archivo"],
 
+    // --- Le travail, dans un fichier à soi ---
+    Session => ["Travail", "Work", "Trabajo"],
+    SaveSession => [
+        "Enregistrer le travail (.dcl)",
+        "Save the work (.dcl)",
+        "Guardar el trabajo (.dcl)",
+    ],
+    SaveSessionHint => [
+        "Écrit vos noms, commentaires, marques et types dans un fichier .dcl portant le nom du binaire, à côté de lui. Desdec garde déjà tout cela de son côté ; ce fichier-ci se copie, se versionne et se donne.",
+        "Writes your names, comments, marks and types to a .dcl file named after the binary, beside it. Desdec already keeps all of that on its own; this file is one you can copy, commit and hand to someone.",
+        "Escribe sus nombres, comentarios, marcas y tipos en un archivo .dcl con el nombre del binario, junto a él. Desdec ya guarda todo eso por su cuenta; este archivo se copia, se versiona y se entrega.",
+    ],
+    OpenSession => [
+        "Ouvrir le travail (.dcl)",
+        "Open the work (.dcl)",
+        "Abrir el trabajo (.dcl)",
+    ],
+    OpenSessionHint => [
+        "Relit le .dcl posé à côté du binaire ouvert. Ce qu’il contient remplace ce que vous avez à l’écran.",
+        "Reads back the .dcl sitting beside the open binary. What it holds replaces what is on screen.",
+        "Relee el .dcl que está junto al binario abierto. Lo que contiene reemplaza lo que hay en pantalla.",
+    ],
+    SessionSaved => ["Travail enregistré", "Work saved", "Trabajo guardado"],
+    SessionOpened => ["Travail relu", "Work read back", "Trabajo releído"],
+    SessionFailed => [
+        "Le travail n’a pas pu être enregistré",
+        "The work could not be saved",
+        "No se pudo guardar el trabajo",
+    ],
+    SessionUnreadable => [
+        "Ce fichier n’est pas un travail Desdec",
+        "This file is not Desdec work",
+        "Este archivo no es un trabajo de Desdec",
+    ],
+    SessionFromTheFuture => [
+        "Ce fichier vient d’un Desdec plus récent",
+        "This file comes from a newer Desdec",
+        "Este archivo viene de un Desdec más reciente",
+    ],
+    SessionOtherBinary => [
+        "Ce travail a été écrit sur un autre binaire : ses adresses peuvent ne désigner ici rien de ce qu’elles nommaient.",
+        "This work was written about a different binary: its addresses may name nothing here of what they named there.",
+        "Este trabajo se escribió sobre otro binario: sus direcciones pueden no designar aquí nada de lo que nombraban.",
+    ],
+    SessionNoBinary => [
+        "Ouvrez un binaire d’abord.",
+        "Open a binary first.",
+        "Abra primero un binario.",
+    ],
+
+    // --- Ce que le lecteur nomme lui-même ---
+    RenameFunction => [
+        "Renommer cette fonction…",
+        "Rename this function…",
+        "Renombrar esta función…",
+    ],
+    RenameString => [
+        "Nommer cette chaîne…",
+        "Name this string…",
+        "Nombrar esta cadena…",
+    ],
+    NameInTheFile => [
+        "Dans le fichier :",
+        "In the file:",
+        "En el archivo:",
+    ],
+    YourOwnName => [
+        "Votre nom",
+        "Your own name",
+        "Su propio nombre",
+    ],
+    YourOwnNameHint => [
+        "Ce que vous avez compris de cet endroit. Il remplace le nom du fichier partout où Desdec le montre ; le nom d’origine reste sous le pointeur.",
+        "What you have worked out about this place. It stands in for the file's name everywhere Desdec shows it; the original stays under the pointer.",
+        "Lo que ha comprendido de este lugar. Sustituye al nombre del archivo dondequiera que Desdec lo muestre; el original permanece bajo el puntero.",
+    ],
+
+    // --- La vue graphe ---
+    GraphPickFunction => [
+        "Fonction à dessiner",
+        "Function to draw",
+        "Función a dibujar",
+    ],
+    GraphPickFunctionHint => [
+        "Choisissez la fonction dont le graphe est dessiné. C’est aussi celle que le désassemblage et la décompilation suivent.",
+        "Choose the function whose graph is drawn. It is also the one the disassembly and the decompilation follow.",
+        "Elija la función cuyo grafo se dibuja. Es también la que siguen el desensamblado y la descompilación.",
+    ],
+    GraphDisassemble => [
+        "Désassembler",
+        "Disassemble",
+        "Desensamblar",
+    ],
+    GraphDisassembleHint => [
+        "Ouvre le listing à la première instruction de cette fonction.",
+        "Opens the listing at this function's first instruction.",
+        "Abre el listado en la primera instrucción de esta función.",
+    ],
+    GraphLeaveHint => [
+        "Échap revient au désassemblage.",
+        "Escape goes back to the disassembly.",
+        "Escape vuelve al desensamblado.",
+    ],
+
     AbyssTheme => ["Abyss", "Abyss", "Abyss"],
     French => ["Français", "French", "Francés"],
     English => ["Anglais", "English", "Inglés"],
