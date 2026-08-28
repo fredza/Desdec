@@ -346,29 +346,11 @@ pub struct Action {
 /// should not also be wondering where the buttons went — and nothing else.
 fn toolbar(app: &mut DesdecApp, ui: &mut egui::Ui, action: &mut Action) -> bool {
     let language = app.preferences.language;
-    if app.analysis.is_none() {
+    let Some(analysis) = app.analysis.as_ref() else {
         return false;
-    }
-    // Drawn while the analysis is lifted out of the application: the row holds
-    // both the walk's buttons, which need `&mut DesdecApp` to run a command,
-    // and the two that act on the selected instruction, which need the section
-    // table to know whether that instruction's bytes are in the file at all.
-    // Lifting it out and putting it back is what lets one row hold both.
-    let lifted = app.analysis.take();
-    let empty = lifted
-        .as_ref()
-        .is_none_or(|analysis| analysis.instructions.is_empty());
-    if let Some(analysis) = &lifted {
-        transport(
-            app,
-            ui,
-            // No instruction to act on when none was decoded, so the two
-            // buttons are left off rather than drawn permanently greyed.
-            (!empty).then_some(analysis),
-            action,
-        );
-    }
-    app.analysis = lifted;
+    };
+    let empty = analysis.instructions.is_empty();
+    transport(app, ui, action);
     if empty {
         ui.label(egui::RichText::new(text(language, Text::NoDisassembly)).color(MUTED));
     }
@@ -388,13 +370,11 @@ fn toolbar(app: &mut DesdecApp, ui: &mut egui::Ui, action: &mut Action) -> bool 
 /// offered when nothing is selected.
 fn selection_actions(
     ui: &mut egui::Ui,
-    analysis: &Analysis,
     selected: Option<u64>,
+    patchable: bool,
     language: Language,
     action: &mut Action,
 ) {
-    let patchable =
-        selected.is_some_and(|address| crate::patches::file_offset_of(analysis, address).is_some());
     let button = ui.add_enabled(
         selected.is_some() && patchable,
         egui::Button::new(text(language, Text::EditInstruction)),
@@ -428,12 +408,7 @@ fn selection_actions(
 /// the bytes already say. Where a running program would consult a register or
 /// a flag, the walk stops and reports that, and the two step buttons are what
 /// let the reader choose the path a condition would otherwise decide.
-fn transport(
-    app: &mut DesdecApp,
-    ui: &mut egui::Ui,
-    analysis: Option<&Analysis>,
-    action: &mut Action,
-) {
+fn transport(app: &mut DesdecApp, ui: &mut egui::Ui, action: &mut Action) {
     /// In the order a reader follows the code path, left to right.
     const BUTTONS: &[(Icon, Command)] = &[
         (Icon::WalkToEntry, Command::WalkToEntry),
@@ -443,9 +418,45 @@ fn transport(
         (Icon::WalkOut, Command::WalkStepOut),
         (Icon::WalkClear, Command::WalkClear),
     ];
+
+    // Everything the row needs, read before a single widget is placed.
+    //
+    // The row asks two things of the application at once — whether each
+    // command can run, and whether the selected instruction has bytes in the
+    // file — and the second used to be answered by lifting the analysis out of
+    // `DesdecApp` for the duration of the drawing. That answered it and broke
+    // the first: `can_run` refuses every command that needs a binary, and with
+    // the analysis lifted out there was none, so the whole transport was drawn
+    // permanently greyed and no step, no restart and no jump to the entry
+    // point did anything at all. Reading first and drawing after keeps both
+    // questions answerable, and holds no borrow while the row is built.
     let language = app.preferences.language;
     let theme = accent(app.preferences.theme);
     let selected = app.selected_instruction;
+    let walk_help = text(language, Text::WalkHelp);
+    let steps = app.walk.steps();
+    let depth = app.walk.depth();
+    let offered: Vec<(Icon, Command, bool, Option<String>)> = BUTTONS
+        .iter()
+        .map(|(icon, command)| {
+            (
+                *icon,
+                *command,
+                app.can_run(*command),
+                app.optional_command_tooltip(*command),
+            )
+        })
+        .collect();
+    // Whether the selected instruction's bytes are in the file, which is what
+    // decides if it can be edited at all. `None` when nothing was decoded, and
+    // the two buttons are then left off rather than drawn permanently greyed.
+    let patchable = app.analysis.as_ref().and_then(|analysis| {
+        (!analysis.instructions.is_empty()).then(|| {
+            selected
+                .is_some_and(|address| crate::patches::file_offset_of(analysis, address).is_some())
+        })
+    });
+    let tooltips = app.preferences.show_tooltips;
     let mut pressed = None;
 
     ui.horizontal(|ui| {
@@ -461,30 +472,26 @@ fn transport(
         let title = ui.label(crate::ui::section_title(
             &text(language, Text::StaticWalk).to_uppercase(),
         ));
-        app.tooltip(title, text(language, Text::WalkHelp));
-        for (icon, command) in BUTTONS {
+        if tooltips {
+            title.on_hover_text(walk_help);
+        }
+        for (icon, command, enabled, tooltip) in offered {
             // A button that cannot move is drawn but not offered: a press it
             // swallowed would read as a broken transport.
-            let enabled = app.can_run(*command);
-            let tooltip = app.optional_command_tooltip(*command);
             let button = ui
-                .add_enabled_ui(enabled, |ui| {
-                    icons::button(ui, *icon, tooltip, false, theme)
-                })
+                .add_enabled_ui(enabled, |ui| icons::button(ui, icon, tooltip, false, theme))
                 .inner;
             if button.clicked() {
-                pressed = Some(*command);
+                pressed = Some(command);
             }
         }
         // What is done with the selected instruction, on the same row: it is
         // the same subject — the instruction the transport stopped on — and a
         // second row of its own said so less clearly and cost a line.
-        if let Some(analysis) = analysis {
+        if let Some(patchable) = patchable {
             ui.separator();
-            selection_actions(ui, analysis, selected, language, action);
+            selection_actions(ui, selected, patchable, language, action);
         }
-        let steps = app.walk.steps();
-        let depth = app.walk.depth();
         if steps > 0 || depth > 0 {
             ui.separator();
         }
@@ -2875,6 +2882,129 @@ mod tests {
             "the pseudo-code beside it must scroll to the same instruction: \
              {pseudo_code} is not in what was drawn"
         );
+    }
+
+    /// The transport has to be *offered*, not merely drawn: pressing a step
+    /// has to take one.
+    ///
+    /// Every one of these commands refuses to run without a binary, and the
+    /// row that holds them once lifted the analysis out of `DesdecApp` for the
+    /// duration of its own drawing — so `can_run` answered no to all of them,
+    /// every button came out greyed, and stepping, restarting and jumping to
+    /// the entry point did nothing at all.
+    ///
+    /// Two weaker versions of this test were written first and both passed
+    /// against that very defect. Asking `can_run` once the view has been drawn
+    /// proves nothing, because the analysis is back by then. Counting the
+    /// colours the row was painted in proves nothing either: a greyed
+    /// transport still shares its row with a separator drawn in another shade,
+    /// which was enough to satisfy "more than one colour". Only pressing the
+    /// button and looking at what moved says anything at all.
+    #[test]
+    fn pressing_a_step_in_the_transport_takes_one() {
+        let analysis = reference_analysis();
+        if analysis.instructions.is_empty() {
+            return; // Nothing decoded on this host.
+        }
+        let mut app = opened_app(WorkspaceView::Disassembly);
+        let ctx = egui::Context::default();
+        app.run_command(&ctx, Command::WalkToEntry);
+        let before = app.walk.steps();
+
+        let mut draw = |ctx: &egui::Context| {
+            views::show_central_panel(&mut app, ctx);
+        };
+        let _ = ctx.run(listing_window_input(), &mut draw);
+        let output = ctx.run(listing_window_input(), &mut draw);
+
+        // Where the buttons are, read off the frame rather than guessed at:
+        // the glyphs are the only thing drawn on that row, and they fall into
+        // one cluster of ink per button.
+        let heading = text(Language::French, Text::StaticWalk).to_uppercase();
+        let (_, at) = drawn(&output.shapes)
+            .into_iter()
+            .find(|(said, _)| *said == heading)
+            .expect("the transport names itself");
+        let mut marks = Vec::new();
+        for clipped in &output.shapes {
+            collect_ink(&clipped.shape, at, &mut marks);
+        }
+        let buttons = buttons_from(&marks, ctx.style().spacing.item_spacing.x);
+        assert!(
+            buttons.len() >= 6,
+            "the transport draws six buttons; found {} clusters of ink",
+            buttons.len()
+        );
+
+        // The fourth of them, in the order the row lays them out: step over.
+        let _ = ctx.run(crate::testing::click_at(buttons[3]), &mut draw);
+        let _ = ctx.run(listing_window_input(), &mut draw);
+
+        assert!(
+            app.walk.steps() > before,
+            "pressing step-over left the walk where it was: {} steps",
+            app.walk.steps()
+        );
+    }
+
+    /// Where line work was laid down on the transport's own row.
+    ///
+    /// Only that row and only to the right of its heading, so the rest of the
+    /// view cannot be mistaken for a button.
+    fn collect_ink(shape: &egui::Shape, row: egui::Pos2, out: &mut Vec<egui::Pos2>) {
+        let mut take = |at: egui::Pos2, width: f32| {
+            if width > 0.0 && at.x > row.x && (at.y - row.y).abs() < crate::ui::ROW_HEIGHT {
+                out.push(at);
+            }
+        };
+        match shape {
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_ink(shape, row, out);
+                }
+            }
+            egui::Shape::LineSegment { points, stroke } => take(points[0], stroke.width),
+            egui::Shape::Path(path) => {
+                if let Some(first) = path.points.first() {
+                    take(*first, path.stroke.width);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The centre of each button of the transport, from the ink on its row.
+    ///
+    /// Bucketed by the row's own pitch — a button's width plus the spacing
+    /// between two of them — rather than by the gaps between marks. A glyph is
+    /// about as wide as the space between two of them, so grouping by gap
+    /// merged neighbours and found three buttons where there are six.
+    fn buttons_from(marks: &[egui::Pos2], spacing: f32) -> Vec<egui::Pos2> {
+        let pitch = crate::icons::BUTTON_SIZE.x + spacing;
+        let Some(left) = marks.iter().map(|at| at.x).min_by(f32::total_cmp) else {
+            return Vec::new();
+        };
+        let mut buckets: std::collections::BTreeMap<i64, Vec<egui::Pos2>> =
+            std::collections::BTreeMap::new();
+        for mark in marks {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a toolbar is a handful of buttons wide"
+            )]
+            let bucket = ((mark.x - left) / pitch).round() as i64;
+            buckets.entry(bucket).or_default().push(*mark);
+        }
+        buckets
+            .into_values()
+            .map(|cluster| {
+                #[expect(clippy::cast_precision_loss, reason = "a handful of marks per glyph")]
+                let count = cluster.len() as f32;
+                let sum = cluster
+                    .iter()
+                    .fold(egui::Vec2::ZERO, |sum, at| sum + at.to_vec2());
+                (sum / count).to_pos2()
+            })
+            .collect()
     }
 
     /// The two columns of the view are one listing read two ways, so the C for
