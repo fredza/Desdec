@@ -1099,13 +1099,35 @@ mod tests {
             .and_then(|edges| edges.callers.first())
             .map(|call| call.from)
             .expect("it has a caller");
-        let name = app
+        // Named as the pane spells it, which is not always as the file spells
+        // it: the switch above the table is off here, so a name the compiler
+        // encoded is shown read back into the source's own spelling. Looking
+        // for the file's spelling passed on a machine whose caller happened to
+        // carry a plain name and failed on one whose caller was a Rust closure
+        // — a host-dependent failure, found by the release build and not by
+        // the author's.
+        let function = app
             .functions
             .iter()
             .find(|function| function.start == caller)
-            .map(|function| function.name.clone())
             .expect("the caller is a function");
-        assert!(said.contains(&name), "the caller is named: {name}");
+        let name = function.shown_name(false);
+        assert!(
+            said.contains(name),
+            "the caller is named: {name} (the file spells it {})",
+            function.name
+        );
+        // And when that caller carries a name the compiler encoded, the pane
+        // shows the source's spelling rather than the linker's. Only some
+        // hosts have such a caller, which is the whole reason this test failed
+        // on a release runner and not on the author's machine.
+        if function.readable.is_some() {
+            assert!(
+                !said.contains(&function.name),
+                "the pane still shows the file's spelling: {}",
+                function.name
+            );
+        }
     }
 
     /// A file that names nothing still has a Functions view.
