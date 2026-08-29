@@ -383,6 +383,14 @@ mod window_sheet {
                 }
                 app.dialogs.open(Dialog::Expression);
             }
+            // The calculator, with something worth looking at in it:
+            // `DESDEC_WINDOW=calculator`.
+            Ok("calculator") => {
+                app.dialogs.close(Dialog::Plugins);
+                app.dialogs.close(Dialog::Console);
+                app.calculator.set(0x0048_656c_6c6f);
+                app.dialogs.open(Dialog::Calculator);
+            }
             Ok("trace") => {
                 app.dialogs.close(Dialog::Plugins);
                 app.dialogs.close(Dialog::Console);

@@ -212,6 +212,8 @@ pub enum Dialog {
     Update,
     /// The reader's own arithmetic over the machine's state.
     Expression,
+    /// One value in every base at once, and the bit operations over it.
+    Calculator,
     /// A run carried on until a condition holds.
     TraceUntil,
     /// The reader's own descriptions of the libraries they meet.
@@ -221,7 +223,7 @@ pub enum Dialog {
 }
 
 impl Dialog {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::CommandPalette,
         Self::Preferences,
         Self::About,
@@ -237,6 +239,7 @@ impl Dialog {
         Self::UpdateConsent,
         Self::Update,
         Self::Expression,
+        Self::Calculator,
         Self::TraceUntil,
         Self::LibraryFile,
         Self::ExternalAnalysis,
@@ -271,6 +274,10 @@ impl Dialog {
                 // machine the reader is stepping in the view behind: a press
                 // there is how they change what it will answer.
                 | Self::Expression
+                // The calculator is kept open beside the listing for as long
+                // as the reader is converting things in it, and a press on the
+                // view behind is how they find the next thing to convert.
+                | Self::Calculator
                 // The descriptions are typed over several minutes, and a
                 // press on the listing behind would throw away what is in
                 // the box before it reached the file.
@@ -734,6 +741,8 @@ pub struct DesdecApp {
     pub machine_convention: desdec_core::emulate::Convention,
     /// Where the graph view has been panned and zoomed to.
     pub graph: crate::ui::graph::View,
+    /// The calculator: the value it holds, and how wide it is read.
+    pub calculator: crate::ui::calculator::State,
     /// The expression window: what is written in it, and what it answered.
     pub expression: crate::ui::expression::State,
     /// The reader's own expressions, read again at every pause.
@@ -1595,6 +1604,10 @@ impl DesdecApp {
             Command::Graph => self.select_view(WorkspaceView::Graph),
             Command::Structures => self.select_view(WorkspaceView::Structures),
             Command::Expression => self.dialogs.open(Dialog::Expression),
+            // Toggled, like every other window a reader keeps open beside
+            // the listing: the button in the bar is lit while it is on
+            // screen, and a lit button that cannot be pressed off is a lie.
+            Command::Calculator => self.dialogs.toggle(Dialog::Calculator),
             Command::AskAboutBinary => {
                 self.open_view(command);
                 self.request_assistance(ctx, assistant::Question::Binary);
@@ -3605,6 +3618,7 @@ impl DesdecApp {
         ui::references::show(self, ctx);
         ui::search::show(self, ctx);
         ui::expression::show(self, ctx);
+        ui::calculator::show(self, ctx);
         ui::external_analysis::show(self, ctx);
         ui::trace_until::show(self, ctx);
         ui::script::show(self, ctx);

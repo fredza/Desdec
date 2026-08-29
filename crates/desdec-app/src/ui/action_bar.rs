@@ -30,10 +30,15 @@ pub const VIEW_ACTIONS: &[WorkspaceView] = &[
 ];
 
 /// Right-aligned actions, drawn right to left in this order.
-const ACTIONS: &[(Icon, Command)] = &[
-    (Icon::Palette, Command::CommandPalette),
-    (Icon::Open, Command::OpenBinary),
-];
+///
+/// The calculator alone. Opening a file and the command palette used to sit
+/// here, and neither belonged: the file is already named in this very bar, one
+/// separator to the left, with the button that closes it — and the palette is
+/// what a reader reaches for by key, not by pointer. What is worth a button in
+/// the corner of every frame is the thing a reader wants *while* reading a
+/// listing and cannot get from the listing: a number turned into another base.
+const ACTIONS: &[(Icon, Command, Dialog)] =
+    &[(Icon::Calculator, Command::Calculator, Dialog::Calculator)];
 
 pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
     egui::TopBottomPanel::top("action_bar")
@@ -206,20 +211,22 @@ fn toolbar(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
     // row by row. Drawn in the bar's own direction rather than among the
     // right-aligned actions, where they would have come out back to front, and
     // only while there is room for them and for the actions after them: the
-    // bar is one fixed row, and a narrow window must not lose the palette.
+    // bar is one fixed row, and a narrow window must not lose the calculator.
     if ui.available_width() > flags::NEEDED_WIDTH {
         ui.separator();
         flags::show(app, ui);
     }
 
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        for (icon, command) in ACTIONS {
+        for (icon, command, dialog) in ACTIONS {
+            // Lit while the window it opens is on screen: the button is the
+            // way back to a window the reader may have pushed behind the
+            // listing, and an unlit one reads as *not open*.
             if icons::button(
                 ui,
                 *icon,
                 app.optional_command_tooltip(*command),
-                matches!(command, Command::CommandPalette)
-                    && app.dialogs.is_open(Dialog::CommandPalette),
+                app.dialogs.is_open(*dialog),
                 accent,
             )
             .clicked()
@@ -243,7 +250,7 @@ mod tests {
     /// view the toolbar shows.
     #[test]
     fn the_trailing_actions_are_not_views() {
-        for (_, command) in ACTIONS {
+        for (_, command, _) in ACTIONS {
             assert!(
                 command.opens_view().is_none(),
                 "{command:?} opens a view, and the toolbar already lists those"

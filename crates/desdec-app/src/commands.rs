@@ -157,6 +157,10 @@ commands! {
     // The reader's own arithmetic over the machine's state: x64dbg's
     // calculator, in the language its conditions are already written in.
     Expression => [Expression], Some(Shortcut::ctrl_shift(KeyName::E)),
+    // One value read in every base at once, and the bit operations over it.
+    // Nothing to do with the file open: it is the arithmetic a reader does on
+    // paper beside the listing, which is why it is a window and not a view.
+    Calculator => [Calculator], Some(Shortcut::ctrl_alt(KeyName::C)),
     // What the bytes at an address mean, which is the one thing the file does
     // not state and the reader does know. Ctrl+0 because it sits at the end of
     // the row of view keys, where a tenth view has to go.

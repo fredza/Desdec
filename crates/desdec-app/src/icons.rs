@@ -31,6 +31,8 @@ pub enum Icon {
     Plugins,
     Open,
     Palette,
+    /// One value in every base at once, and the bit operations over it.
+    Calculator,
     Preferences,
     Output,
     About,
@@ -81,6 +83,7 @@ impl Icon {
         Self::Plugins,
         Self::Open,
         Self::Palette,
+        Self::Calculator,
         Self::Preferences,
         Self::Output,
         Self::About,
@@ -222,6 +225,7 @@ pub fn draw_with_stroke(
         Icon::Plugins => plugins(&pen),
         Icon::Open => open(&pen),
         Icon::Palette => palette(&pen),
+        Icon::Calculator => calculator(&pen),
         Icon::Preferences => preferences(&pen),
         Icon::Output => output(&pen),
         Icon::About => about(&pen),
@@ -535,6 +539,22 @@ fn palette(pen: &Pen) {
     pen.line((0.28, 0.23), (0.66, 0.23));
     for (y, end) in [(0.68_f32, 0.9_f32), (0.94, 0.64)] {
         pen.line((0.06, y), (end, y));
+    }
+}
+
+/// A calculator: the body, the display band across the top, and the keys.
+///
+/// The outer edge is what tells it from the dump's field of bytes, which is
+/// otherwise the same picture — small cells in rows. A calculator is an object
+/// with a rim, and the filled band it reads out on is a mark no other glyph
+/// here carries.
+fn calculator(pen: &Pen) {
+    pen.boxed((0.16, 0.02), (0.84, 0.98), 2.0);
+    pen.filled((0.28, 0.14), (0.72, 0.32), 1.0);
+    for y in [0.56_f32, 0.82] {
+        for x in [0.32_f32, 0.5, 0.68] {
+            pen.dot((x, y));
+        }
     }
 }
 

@@ -7,6 +7,7 @@ pub mod about;
 pub mod action_bar;
 pub mod annotation;
 pub mod assistant;
+pub mod calculator;
 pub mod classes;
 pub mod decompile;
 pub mod disassembly;
