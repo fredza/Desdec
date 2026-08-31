@@ -134,6 +134,18 @@ pub struct Preferences {
     /// the file at the address an instruction computes, and a reader who wants
     /// the listing and nothing else should be able to say so.
     pub show_operand_hints: bool,
+    /// Whether the listing spells x86 the way NASM does rather than the way
+    /// GAS does.
+    ///
+    /// A reading, not a re-analysis: the file is decoded once, into the AT&T
+    /// spelling everything else here is built on, and this switch only decides
+    /// what the assembly column reads. The row is re-decoded from its own
+    /// bytes to answer it — see [`desdec_core::Nasm`] — so nothing about the
+    /// instruction changes with the spelling.
+    ///
+    /// Off by default: AT&T is what the listing has always shown, and a reader
+    /// who has not asked for Intel order should not find it one morning.
+    pub nasm_syntax: bool,
     pub disassembly_start: DisassemblyStart,
     pub persistence_enabled: bool,
     /// Which model, if any, the assistant asks. `None` by default.
@@ -221,6 +233,7 @@ impl Default for Preferences {
             show_toolbar: true,
             show_tooltips: true,
             show_operand_hints: true,
+            nasm_syntax: false,
             disassembly_start: DisassemblyStart::Main,
             persistence_enabled: true,
             assistant: AssistantPreference::None,
@@ -549,6 +562,10 @@ mod tests {
         assert!(defaults.show_toolbar);
         assert!(defaults.show_tooltips);
         assert!(defaults.show_operand_hints);
+        assert!(
+            !defaults.nasm_syntax,
+            "the listing opens in the AT&T spelling it is decoded in"
+        );
         assert!(defaults.save_annotations);
         assert!(defaults.persistence_enabled);
         assert_eq!(defaults.binary_analyzer, BinaryAnalyzerPreference::Internal);

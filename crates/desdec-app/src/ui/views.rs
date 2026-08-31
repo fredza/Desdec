@@ -6,9 +6,9 @@ use crate::{
     i18n::{Language, Text, text},
     preferences::accent,
     ui::{
-        ERROR, MUTED, assistant, card, classes, columns, decompile, disassembly, dump, expert,
-        format_size, functions, graph, machine, monospace_value, patches_view, segments, strings,
-        symbols, types, warning_sign, yara,
+        ERROR, MUTED, assistant, card, classes, columns, compare, decompile, disassembly, dump,
+        expert, format_size, functions, graph, machine, monospace_value, patches_view, segments,
+        strings, symbols, types, warning_sign, yara,
     },
 };
 
@@ -78,6 +78,26 @@ fn view_header(app: &DesdecApp, ui: &mut egui::Ui) {
     ui.add_space(12.0);
 }
 
+/// The comparison, and what it asked the application to do.
+///
+/// The view itself holds nothing but the comparison's own state, so choosing
+/// the other file, forgetting it and moving to the listing all come back here
+/// as answers rather than being done inside it.
+fn compare_view(app: &mut DesdecApp, ui: &mut egui::Ui) {
+    let reading = app.comparison_running();
+    let language = app.preferences.language;
+    let action = compare::show(ui, &mut app.compare, reading, language);
+    if action.choose_other {
+        app.choose_comparison(ui.ctx());
+    }
+    if action.forget {
+        app.compare.clear();
+    }
+    if let Some(address) = action.go_to {
+        app.go_to_address(ui.ctx(), address);
+    }
+}
+
 /// The views that act on the whole application rather than read the analysis,
 /// drawn here because each takes `&mut DesdecApp` and returns nothing to the
 /// caller. Answers whether it drew one.
@@ -96,6 +116,14 @@ fn whole_application_view(app: &mut DesdecApp, ui: &mut egui::Ui) -> bool {
         }
         WorkspaceView::Yara => {
             yara::show(app, ui);
+            true
+        }
+        // The comparison takes the whole application: it opens a file dialog,
+        // forgets the file it is holding, and moves the workspace to the
+        // listing — none of which a view drawn over a borrow of the analysis
+        // can do.
+        WorkspaceView::Compare => {
+            compare_view(app, ui);
             true
         }
         WorkspaceView::Dump => {

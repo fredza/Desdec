@@ -9,6 +9,9 @@ pub mod assistant;
 mod binary;
 mod bytes;
 pub mod decompiler;
+/// Comparing two binaries: what is the same, what moved, what changed; see the
+/// module's own documentation.
+pub mod diff;
 /// Running a binary on a processor Desdec builds; see the module's own
 /// documentation.
 pub mod emulate;
@@ -31,7 +34,7 @@ pub mod yara;
 pub use analysis::{
     ANALYSIS_BYTE_LIMIT, AnalysedFile, Analysis, BinaryDetails, Class, ClassMethod, ClassSource,
     Confidence, Decoded, ExtractedString, FileKind, Hardening, ImportSlot, ImportedLibrary,
-    Instruction, InstructionBytes, LanguageEvidence, LastWrite, NetworkName, NetworkUse,
+    Instruction, InstructionBytes, LanguageEvidence, LastWrite, Nasm, NetworkName, NetworkUse,
     Permissions, Protection, ProtectionKind, Reach, Relro, Section, Segment, SourceLanguage,
     StackSlot, StackState, StringEncoding, Symbol, SymbolKind, Target, Trace, analyse_bytes,
     analyse_path, analyse_path_cancellable, analyse_path_with_bytes_cancellable, blocks,

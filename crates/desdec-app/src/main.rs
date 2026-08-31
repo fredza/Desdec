@@ -17,6 +17,7 @@ mod app;
 mod callgraph;
 mod cli;
 mod commands;
+mod compare;
 mod fonts;
 mod i18n;
 mod icon;

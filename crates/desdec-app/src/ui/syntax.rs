@@ -18,11 +18,14 @@ enum Class {
     Mnemonic,
     /// Branch, call or return: the reader looks for these first.
     Control,
-    /// Machine register, in either the AT&T (`%rax`) or ARM64 (`x0`) spelling.
+    /// Machine register, in the AT&T (`%rax`), NASM (`rax`) or ARM64 (`x0`)
+    /// spelling.
     Register,
     /// Immediate operand (`$0x10`, `#-8`) or bare numeric literal.
     Number,
-    /// C keyword of the pseudo-code.
+    /// C keyword of the pseudo-code, and the width NASM writes in front of a
+    /// memory operand — `qword [rbp-8]` — which is a modifier rather than
+    /// something the machine holds.
     Keyword,
     /// Name used as a call target.
     Call,
@@ -224,6 +227,114 @@ fn is_arm_register(word: &str) -> bool {
         && word[1..].chars().all(|c| c.is_ascii_digit())
 }
 
+/// Whether a bare word names an x86 register.
+///
+/// Only NASM ever asks: AT&T marks every register with a `%`, so this is what
+/// tells a register from anything else once the listing is re-spelled. The
+/// numbered banks are recognised by shape rather than listed — `r8` through
+/// `r15` with the suffix that names the width used, and `xmm0` through
+/// `zmm31` — and the rest are named, because their spelling follows no rule.
+fn is_x86_register(word: &str) -> bool {
+    let numbered = |bank: &str| {
+        word.strip_prefix(bank)
+            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+    };
+    // `r8`, and the same register read as four, two or one byte: `r8d`,
+    // `r8w`, `r8b`.
+    if let Some(rest) = word.strip_prefix('r')
+        && numbered_width(rest)
+    {
+        return true;
+    }
+    if [
+        "xmm", "ymm", "zmm", "tmm", "mm", "st", "cr", "dr", "bnd", "k",
+    ]
+    .iter()
+    .any(|bank| numbered(bank))
+    {
+        return true;
+    }
+    matches!(
+        word,
+        "rax"
+            | "rbx"
+            | "rcx"
+            | "rdx"
+            | "rsi"
+            | "rdi"
+            | "rbp"
+            | "rsp"
+            | "rip"
+            | "eax"
+            | "ebx"
+            | "ecx"
+            | "edx"
+            | "esi"
+            | "edi"
+            | "ebp"
+            | "esp"
+            | "eip"
+            | "ax"
+            | "bx"
+            | "cx"
+            | "dx"
+            | "si"
+            | "di"
+            | "bp"
+            | "sp"
+            | "ip"
+            | "al"
+            | "bl"
+            | "cl"
+            | "dl"
+            | "ah"
+            | "bh"
+            | "ch"
+            | "dh"
+            | "sil"
+            | "dil"
+            | "bpl"
+            | "spl"
+            | "cs"
+            | "ds"
+            | "es"
+            | "fs"
+            | "gs"
+            | "ss"
+    )
+}
+
+/// Whether what follows `r` is a register number, with or without the letter
+/// that names how much of it the operand uses.
+fn numbered_width(rest: &str) -> bool {
+    let digits = rest.strip_suffix(['b', 'w', 'd']).unwrap_or(rest);
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The width NASM writes in front of a memory operand, and the reach it writes
+/// in front of a branch. Neither is a register or a mnemonic: both say how to
+/// read the operand after them.
+fn is_operand_width(word: &str) -> bool {
+    matches!(
+        word,
+        "byte"
+            | "word"
+            | "dword"
+            | "qword"
+            | "tword"
+            | "oword"
+            | "yword"
+            | "zword"
+            | "ptr"
+            | "short"
+            | "near"
+            | "far"
+            | "rel"
+            | "abs"
+            | "strict"
+    )
+}
+
 fn assembly_spans(source: &str) -> Vec<(&str, Class)> {
     let mut spans = Vec::new();
     let mut rest = source;
@@ -254,8 +365,10 @@ fn assembly_spans(source: &str) -> Vec<(&str, Class)> {
                 } else {
                     Class::Mnemonic
                 }
-            } else if is_arm_register(word) {
+            } else if is_arm_register(word) || is_x86_register(word) {
                 Class::Register
+            } else if is_operand_width(word) {
+                Class::Keyword
             } else {
                 Class::Plain
             };
@@ -356,6 +469,34 @@ mod tests {
         assert_eq!(class_of(&spans, "-0x8"), Some(Class::Number));
         assert_eq!(class_of(&spans, "%rbp"), Some(Class::Register));
         assert_eq!(class_of(&spans, "%rax"), Some(Class::Register));
+    }
+
+    /// The same instruction the AT&T test above colours, re-spelled: a listing
+    /// switched to NASM must not go grey, and the words that changed shape —
+    /// a register with no `%`, a width in front of the memory operand — are
+    /// exactly the ones the scanner has to recognise by themselves.
+    #[test]
+    fn colours_nasm_syntax_operands() {
+        let source = "mov rax, qword [rbp-8]";
+        let spans = assembly_spans(source);
+        assert_lossless(source, &spans);
+        assert_eq!(class_of(&spans, "mov"), Some(Class::Mnemonic));
+        assert_eq!(class_of(&spans, "rax"), Some(Class::Register));
+        assert_eq!(class_of(&spans, "qword"), Some(Class::Keyword));
+        assert_eq!(class_of(&spans, "rbp"), Some(Class::Register));
+        assert_eq!(class_of(&spans, "-8"), Some(Class::Number));
+    }
+
+    /// The numbered banks are recognised by shape, so the shape has to stop
+    /// where a register stops: `retq` opens with an `r` and is not one.
+    #[test]
+    fn a_word_that_merely_starts_like_a_register_is_not_one() {
+        for word in ["retq", "rep", "ret", "sub", "leave"] {
+            assert!(!is_x86_register(word), "{word} is not a register");
+        }
+        for word in ["r8", "r8d", "r15b", "xmm0", "zmm31", "k1", "rax", "spl"] {
+            assert!(is_x86_register(word), "{word} is a register");
+        }
     }
 
     #[test]

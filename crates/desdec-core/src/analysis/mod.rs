@@ -42,7 +42,7 @@ pub mod symbols;
 
 pub use classes::{Class, ClassMethod, ClassSource};
 pub use details::{BinaryDetails, FileKind, Hardening, ImportedLibrary, Relro, Segment};
-pub use disassembly::{Decoded, Instruction, InstructionBytes, decode_one};
+pub use disassembly::{Decoded, Instruction, InstructionBytes, Nasm, decode_one};
 pub use imports::ImportSlot;
 pub use language::{Confidence, LanguageEvidence, SourceLanguage};
 pub use network::{NetworkName, NetworkUse, Reach};

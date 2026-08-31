@@ -11,7 +11,7 @@ use capstone::{
     Capstone,
     arch::{BuildsCapstone, arm64},
 };
-use iced_x86::{Decoder, DecoderOptions, Formatter, GasFormatter};
+use iced_x86::{Decoder, DecoderOptions, Formatter, GasFormatter, NasmFormatter};
 use std::sync::Arc;
 
 /// The machine bytes of one instruction, held inline.
@@ -87,6 +87,102 @@ pub struct Instruction {
     /// shared library really does reach, now that nothing caps it — spent half
     /// a gigabyte repeating `.text`.
     pub section: Arc<str>,
+}
+
+/// Re-spells decoded x86 instructions the way NASM writes them.
+///
+/// The listing is decoded once, in the AT&T spelling GAS uses, and that text
+/// is what every reading built on it — the pseudo-code, the jump arrows, the
+/// operand hints — parses. A reader who would rather read Intel order gets it
+/// here, and gets it from the instruction's own bytes rather than from that
+/// text: turning `mov %rax,-0x8(%rbp)` into `mov [rbp-8], rax` by moving words
+/// around works until the two syntaxes stop corresponding word for word, and
+/// they stop at the string operations, the sign-extending moves, the segment
+/// overrides and every operand whose size only the mnemonic suffix carried.
+/// Decoding the fifteen bytes again cannot invent an instruction that is not
+/// there: what comes out is another spelling of what the processor would run.
+///
+/// One speller is built and lent to each row that needs it, rather than built
+/// per instruction: a formatter carries its options and its own scratch space,
+/// and a virtualised listing asks this of every visible row on every frame.
+pub struct Nasm {
+    bitness: u32,
+    formatter: NasmFormatter,
+}
+
+impl Nasm {
+    /// A speller for `architecture`, or `None` where the question does not
+    /// arise: `AArch64` has one spelling and Capstone already prints it, and an
+    /// architecture that decodes to nothing has nothing to spell.
+    #[must_use]
+    pub fn for_architecture(architecture: Architecture) -> Option<Self> {
+        let bitness = Self::bitness(architecture)?;
+        let mut formatter = NasmFormatter::new();
+        // Hexadecimal as the rest of the listing writes it — `0x8`, not NASM's
+        // own `8h`, and lower case like the address column beside it. This is
+        // a reading, not a source file: what matters is that a number here
+        // looks like the same number two columns to the left.
+        formatter.options_mut().set_hex_prefix("0x");
+        formatter.options_mut().set_hex_suffix("");
+        formatter.options_mut().set_uppercase_hex(false);
+        formatter
+            .options_mut()
+            .set_space_after_operand_separator(true);
+        // A branch target padded to sixteen digits is an address column, and
+        // this listing already has one of those.
+        formatter.options_mut().set_branch_leading_zeros(false);
+        Some(Self { bitness, formatter })
+    }
+
+    /// Whether this architecture has two spellings to choose between.
+    ///
+    /// Asked before a speller is built, so an interface can leave the choice
+    /// out where there is none to make rather than offer one that does
+    /// nothing.
+    #[must_use]
+    pub const fn spells(architecture: Architecture) -> bool {
+        Self::bitness(architecture).is_some()
+    }
+
+    /// The mode this architecture decodes in, or `None` for one iced-x86 does
+    /// not read at all.
+    const fn bitness(architecture: Architecture) -> Option<u32> {
+        match architecture {
+            Architecture::X86 => Some(32),
+            Architecture::X86_64 => Some(64),
+            Architecture::Arm64 | Architecture::Arm | Architecture::Unknown => None,
+        }
+    }
+
+    /// `instruction` as NASM writes it, or `None` when its own bytes do not
+    /// decode back to it.
+    ///
+    /// `None` rather than an empty line or a guess: the caller keeps the text
+    /// the listing already holds, which for bytes that decode to nothing is
+    /// GAS saying so.
+    pub fn spell(&mut self, instruction: &Instruction) -> Option<String> {
+        let bytes = instruction.bytes.as_slice();
+        let mut decoder = Decoder::with_ip(
+            self.bitness,
+            bytes,
+            instruction.address,
+            DecoderOptions::NONE,
+        );
+        if !decoder.can_decode() {
+            return None;
+        }
+        let read = decoder.decode();
+        // The same bytes must decode to the same one instruction. A shorter
+        // read means these bytes were decoded in another context — a prefix
+        // the listing attached to the row before — and spelling the fragment
+        // would put an instruction on this line that is not the one there.
+        if read.is_invalid() || read.len() != bytes.len() {
+            return None;
+        }
+        let mut text = String::new();
+        self.formatter.format(&read, &mut text);
+        Some(text)
+    }
 }
 
 /// Instructions decoded from a file, and whether any code was left undecoded.
@@ -494,5 +590,85 @@ mod tests {
             "the listing must be sorted by address"
         );
         assert_eq!(decoded.instructions[0].address, 0x40_1000);
+    }
+
+    fn x86_64() -> Nasm {
+        Nasm::for_architecture(Architecture::X86_64).expect("x86-64 has two spellings")
+    }
+
+    fn one(bytes: &[u8]) -> Instruction {
+        decode_one(bytes, Architecture::X86_64, 0x40_1000).expect("one whole instruction")
+    }
+
+    /// The point of the switch: the operands come back in the other order,
+    /// the register loses its `%`, and the memory operand gains the brackets
+    /// GAS left off — none of which could be had by moving the words of the
+    /// AT&T text around.
+    #[test]
+    fn an_instruction_is_respelled_from_its_own_bytes() {
+        let store = one(&[0x48, 0x89, 0x45, 0xf8]);
+        assert_eq!(store.text, "mov %rax,-8(%rbp)");
+        assert_eq!(x86_64().spell(&store).as_deref(), Some("mov [rbp-8], rax"));
+
+        let load = one(&[0x48, 0x8b, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00]);
+        assert_eq!(load.text, "mov 0x1000,%rax");
+        assert_eq!(x86_64().spell(&load).as_deref(), Some("mov rax, [0x1000]"));
+    }
+
+    /// A branch target is written the way the listing writes an address
+    /// everywhere else, and without the sixteen digits of padding: the row
+    /// already carries an address column, and a second one inside the
+    /// instruction reads as a number nobody can compare at a glance.
+    #[test]
+    fn a_branch_target_keeps_the_listings_own_hexadecimal() {
+        let call = one(&[0xe8, 0x00, 0x01, 0x00, 0x00]);
+        assert_eq!(x86_64().spell(&call).as_deref(), Some("call 0x401105"));
+    }
+
+    /// `AArch64` has one spelling, which Capstone already wrote. The choice is
+    /// not offered there rather than offered and ignored.
+    #[test]
+    fn an_architecture_with_one_spelling_is_not_offered_another() {
+        assert!(!Nasm::spells(Architecture::Arm64));
+        assert!(!Nasm::spells(Architecture::Unknown));
+        assert!(Nasm::spells(Architecture::X86));
+        assert!(Nasm::spells(Architecture::X86_64));
+        assert!(Nasm::for_architecture(Architecture::Arm64).is_none());
+    }
+
+    /// Bytes that do not decode back to this one instruction are not spelled
+    /// at all: the caller keeps what the listing holds, which is the decoder
+    /// saying what it made of them.
+    #[test]
+    fn bytes_that_do_not_decode_back_are_left_to_the_listing() {
+        let invalid = Instruction {
+            address: 0x40_1000,
+            // `push es`, which 64-bit mode does not encode.
+            bytes: InstructionBytes::new(&[0x06]).expect("one byte fits"),
+            text: "(bad)".to_owned(),
+            section: Arc::from(".text"),
+        };
+        assert_eq!(x86_64().spell(&invalid), None);
+
+        // Two instructions in one row's bytes: spelling the first would put
+        // an instruction on the line that is not the whole of what is there.
+        let two = Instruction {
+            address: 0x40_1000,
+            bytes: InstructionBytes::new(&[0x90, 0x90]).expect("two bytes fit"),
+            text: "nop".to_owned(),
+            section: Arc::from(".text"),
+        };
+        assert_eq!(x86_64().spell(&two), None);
+    }
+
+    /// One speller, many rows: the formatter is reused, and reusing it must
+    /// not leave anything of the previous row in the next one.
+    #[test]
+    fn one_speller_writes_every_row_from_scratch() {
+        let mut nasm = x86_64();
+        let store = one(&[0x48, 0x89, 0x45, 0xf8]);
+        let first = nasm.spell(&store);
+        assert_eq!(nasm.spell(&one(&[0xc3])).as_deref(), Some("ret"));
+        assert_eq!(nasm.spell(&store), first);
     }
 }

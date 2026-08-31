@@ -172,6 +172,12 @@ commands! {
     // and starts another program, and a reader should have chosen the key that
     // does that.
     SendToAsmStudio => [Disassembly, SendToAsmStudio], None,
+    // Setting this binary beside another one. No default key: it opens a file
+    // dialog, and a keystroke that puts a dialog on the screen is one the
+    // reader should have chosen.
+    Compare => [Compare], None,
+    CompareChooseOther => [Compare, CompareChooseOther], None,
+    CompareForget => [Compare, CompareForget], None,
     Yara => [Yara], None,
     RunYara => [Yara, RunYara], None,
     ToggleYaraModule => [Yara, ToggleYaraModule], None,
@@ -250,6 +256,9 @@ impl Command {
                 | Self::OpenSession
                 | Self::DiscardPatches
                 | Self::RunYara
+                // Both are about the binary open and the one set against it.
+                | Self::CompareChooseOther
+                | Self::CompareForget
                 | Self::AskAboutBinary
                 | Self::AskAboutFunction
                 | Self::AskAboutInstruction
@@ -346,6 +355,9 @@ impl Command {
             | Self::MachineTraceUntil => WorkspaceView::Machine,
             Self::Graph => WorkspaceView::Graph,
             Self::Structures => WorkspaceView::Structures,
+            Self::Compare | Self::CompareChooseOther | Self::CompareForget => {
+                WorkspaceView::Compare
+            }
             _ => return None,
         })
     }

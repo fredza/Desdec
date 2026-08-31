@@ -52,6 +52,8 @@ pub enum Icon {
     Machine,
     /// One function drawn as its control flow.
     Graph,
+    /// Two binaries set beside each other.
+    Compare,
     /// A run of bytes cut into the members of a structure.
     Structures,
     Run,
@@ -241,6 +243,7 @@ pub fn draw_with_stroke(
         Icon::WalkClear => walk_clear(&pen),
         Icon::Machine => machine(&pen),
         Icon::Graph => graph(&pen),
+        Icon::Compare => compare(&pen),
         Icon::Structures => structures(&pen),
         Icon::Run => run(&pen),
         Icon::Restart => restart(&pen),
@@ -745,6 +748,17 @@ fn graph(pen: &Pen) {
     pen.boxed((0.6, 0.7), (0.96, 0.94), 1.0);
     pen.line((0.42, 0.3), (0.22, 0.7));
     pen.line((0.58, 0.3), (0.78, 0.7));
+}
+
+/// Two files side by side, one of them marked where the other is not: two
+/// bands of equal width, and one band of the right-hand one filled.
+///
+/// The fill is the whole glyph. Two empty columns say "two files"; the filled
+/// row is what makes it say "and they differ here", which is the view.
+fn compare(pen: &Pen) {
+    pen.boxed((0.04, 0.1), (0.46, 0.9), 1.0);
+    pen.boxed((0.54, 0.1), (0.96, 0.9), 1.0);
+    pen.solid(&[(0.54, 0.42), (0.96, 0.42), (0.96, 0.58), (0.54, 0.58)]);
 }
 
 /// A run of bytes with the cuts a structure makes in it: one band, divided

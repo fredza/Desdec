@@ -13,7 +13,7 @@ use crate::{
     ui::syntax,
     walk,
 };
-use desdec_core::{Analysis, Instruction, StackSlot, Trace, operand};
+use desdec_core::{Analysis, Instruction, Nasm, StackSlot, Trace, operand};
 use eframe::egui;
 
 /// Bytes a pending patch would write, marked so an edited row is never taken
@@ -149,6 +149,15 @@ struct Listing<'a> {
     /// `None` until the reader asks for a run, so a listing read without ever
     /// opening the Machine view is drawn exactly as it was before.
     machine: Option<&'a desdec_core::emulate::Machine>,
+    /// How the assembly column is spelled, when the reader asked for NASM
+    /// rather than the AT&T the file was decoded in.
+    ///
+    /// `None` in the AT&T reading, and on ARM64, where there is one spelling
+    /// and Capstone already wrote it. A cell because a formatter writes into
+    /// itself as it works and every row is drawn from a shared borrow of the
+    /// listing: one speller is built for the frame and lent to each visible
+    /// row in turn, rather than sixty built and dropped per frame.
+    nasm: Option<&'a std::cell::RefCell<Nasm>>,
     language: Language,
 }
 
@@ -165,6 +174,19 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
         return action;
     }
 
+    // Built before the listing borrows it, and only when it is asked for: a
+    // reader in the AT&T spelling pays nothing at all for this.
+    let nasm = app
+        .preferences
+        .nasm_syntax
+        .then(|| {
+            app.analysis
+                .as_ref()
+                .and_then(|analysis| Nasm::for_architecture(analysis.summary.architecture))
+        })
+        .flatten()
+        .map(std::cell::RefCell::new);
+
     let listing = Listing {
         patches: &app.patches,
         stack: &app.stack,
@@ -178,6 +200,7 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
         hints: app.preferences.show_tooltips && app.preferences.show_operand_hints,
         columns: app.listing_columns.pixels(ui, language),
         machine: app.machine.as_ref(),
+        nasm: nasm.as_ref(),
         language,
     };
     let Some(analysis) = &app.analysis else {
@@ -457,6 +480,13 @@ fn transport(app: &mut DesdecApp, ui: &mut egui::Ui, action: &mut Action) {
         })
     });
     let tooltips = app.preferences.show_tooltips;
+    // Whether the spelling switch has anything to act on. NASM is an x86
+    // question; ARM64 has one spelling and Capstone already wrote it, so the
+    // choice is drawn but not offered rather than silently doing nothing.
+    let respellable = app
+        .analysis
+        .as_ref()
+        .is_some_and(|analysis| Nasm::spells(analysis.summary.architecture));
     let mut pressed = None;
 
     ui.horizontal(|ui| {
@@ -501,6 +531,23 @@ fn transport(app: &mut DesdecApp, ui: &mut egui::Ui, action: &mut Action) {
         if depth > 0 {
             ui.small(format!("{} {depth}", text(language, Text::WalkDepth)));
         }
+        // How the listing is spelled, at the far end of the row. Not a move
+        // the transport makes — it is how what the walk steps through is
+        // written — and pinned to the right edge so it stays where the reader
+        // left it as the step counters beside the buttons come and go.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let spelling = ui
+                .add_enabled_ui(respellable, |ui| {
+                    ui.checkbox(
+                        &mut app.preferences.nasm_syntax,
+                        text(language, Text::NasmSyntax),
+                    )
+                })
+                .inner;
+            if tooltips {
+                spelling.on_hover_text(text(language, Text::NasmSyntaxHelp));
+            }
+        });
     });
     if let Some(command) = pressed {
         app.run_command(ui.ctx(), command);
@@ -1481,6 +1528,14 @@ fn instruction_row(
     sized_cell(ui, listing.columns[3], |ui| {
         stack_cell(ui, analysis, listing.stack, instruction.address, language)
     });
+    // What this row reads as assembly. When NASM was asked for, it is this
+    // instruction's own bytes decoded again — never the AT&T text with its
+    // words moved around — and the AT&T stands wherever those bytes decode
+    // back to nothing, which is the listing saying so about them.
+    let respelled = listing
+        .nasm
+        .and_then(|nasm| nasm.borrow_mut().spell(instruction));
+    let spelling = respelled.as_deref().unwrap_or(&instruction.text);
     // The reader's own name and comment ride at the end of the line, where an
     // assembler puts a comment — a column of their own sat off the right edge
     // of the listing, where nobody would ever scroll to find them.
@@ -1488,7 +1543,7 @@ fn instruction_row(
         .add(
             egui::Label::new(syntax::annotated(
                 ui,
-                &instruction.text,
+                spelling,
                 listing.members.get(instruction.address),
                 listing.notes.label(instruction.address),
                 listing.notes.comment(instruction.address),
@@ -1721,10 +1776,16 @@ fn target_hint(
             // A jump lands on code, and the instruction there says more than
             // the bytes it is made of.
             if let Some(landing) = analysis.instruction_at(target.address) {
+                // Spelled the way the row it came from is: a hover that
+                // answered in AT&T over a NASM listing would read as another
+                // instruction rather than as the one on that line.
+                let respelled = listing
+                    .nasm
+                    .and_then(|nasm| nasm.borrow_mut().spell(landing));
                 ui.strong(text(language, Text::TargetInstruction));
                 ui.label(syntax::assembly(
                     ui,
-                    &landing.text,
+                    respelled.as_deref().unwrap_or(&landing.text),
                     egui::Color32::TRANSPARENT,
                 ));
                 ui.end_row();
@@ -2056,8 +2117,8 @@ mod tests {
     use eframe::egui;
 
     use super::{
-        JUMP, LEADING, SECTION_SNAP, VIEWPORT_MINIMUM_HEIGHT, instruction_at_overview_row, is_jump,
-        jump_target, lanes, overview_row, overview_y, row_of, run_marks, section_near,
+        JUMP, LEADING, Nasm, SECTION_SNAP, VIEWPORT_MINIMUM_HEIGHT, instruction_at_overview_row,
+        is_jump, jump_target, lanes, overview_row, overview_y, row_of, run_marks, section_near,
         section_starts, snapped_row,
     };
     use crate::{
@@ -2249,6 +2310,7 @@ mod tests {
                     hints: false,
                     columns: [0.0; 4],
                     machine: app.machine.as_ref(),
+                    nasm: None,
                     language: Language::English,
                 },
                 address,
@@ -2631,6 +2693,66 @@ mod tests {
         assert!(
             !hinted(false),
             "and must say nothing once the preference is off"
+        );
+    }
+
+    /// The file is decoded once, in AT&T, and can be read in NASM: the switch
+    /// changes what the assembly column says, and says it from the row's own
+    /// bytes.
+    ///
+    /// The reference binary is this host's own executable, so an `AArch64`
+    /// runner has one spelling and nothing to check; the test says so by
+    /// stopping rather than by asserting something true everywhere.
+    #[test]
+    fn the_listing_can_be_read_in_the_nasm_spelling() {
+        let analysis = reference_analysis();
+        let Some(mut nasm) = Nasm::for_architecture(analysis.summary.architecture) else {
+            return; // One spelling on this host: no choice to make.
+        };
+        // A row whose two spellings differ, which is what tells the reading
+        // apart from the decoding.
+        let Some((address, att, intel)) = analysis.instructions.iter().find_map(|instruction| {
+            let spelled = nasm.spell(instruction)?;
+            (spelled != instruction.text)
+                .then(|| (instruction.address, instruction.text.clone(), spelled))
+        }) else {
+            return;
+        };
+
+        let read = |nasm_syntax: bool| {
+            let mut app = opened_app(WorkspaceView::Disassembly);
+            app.preferences.language = Language::English;
+            app.preferences.nasm_syntax = nasm_syntax;
+            app.selected_instruction = Some(address);
+            let ctx = egui::Context::default();
+            // Two frames to put the row on screen: the scroll area learns its
+            // content size from the first and lands on the second.
+            for _ in 0..2 {
+                app.pending_instruction_scroll = Some(address);
+                let _ = ctx.run(listing_window_input(), |ctx| {
+                    views::show_central_panel(&mut app, ctx);
+                });
+            }
+            app.pending_instruction_scroll = Some(address);
+            let placed = ctx.run(listing_window_input(), |ctx| {
+                views::show_central_panel(&mut app, ctx);
+            });
+            crate::testing::drawn_text(&placed.shapes)
+        };
+
+        let in_att = read(false);
+        assert!(
+            in_att.contains(&att),
+            "the listing is written in AT&T until it is asked otherwise"
+        );
+        let in_nasm = read(true);
+        assert!(
+            in_nasm.contains(&intel),
+            "the row must be re-spelled: {intel} was not drawn"
+        );
+        assert!(
+            !in_nasm.contains(&att),
+            "and the AT&T spelling of that row must be gone with it"
         );
     }
 

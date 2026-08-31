@@ -77,6 +77,8 @@ pub enum WorkspaceView {
     /// What the bytes at an address mean, through a type the reader wrote; see
     /// [`crate::ui::types`].
     Structures,
+    /// This binary set beside another one; see [`crate::ui::compare`].
+    Compare,
     Patches,
     Yara,
 }
@@ -96,6 +98,7 @@ impl WorkspaceView {
         Self::Machine,
         Self::Graph,
         Self::Structures,
+        Self::Compare,
         Self::Patches,
         Self::Yara,
     ];
@@ -115,6 +118,7 @@ impl WorkspaceView {
             Self::Machine => Text::Machine,
             Self::Graph => Text::Graph,
             Self::Structures => Text::Structures,
+            Self::Compare => Text::Compare,
             Self::Patches => Text::Patches,
             Self::Yara => Text::Yara,
         }
@@ -137,6 +141,7 @@ impl WorkspaceView {
             Self::Machine => Icon::Machine,
             Self::Graph => Icon::Graph,
             Self::Structures => Icon::Structures,
+            Self::Compare => Icon::Compare,
             Self::Patches => Icon::Patches,
             Self::Yara => Icon::Yara,
         }
@@ -159,6 +164,7 @@ impl WorkspaceView {
             Self::Machine => Command::Machine,
             Self::Graph => Command::Graph,
             Self::Structures => Command::Structures,
+            Self::Compare => Command::Compare,
             Self::Patches => Command::Patches,
             Self::Yara => Command::Yara,
         }
@@ -171,7 +177,7 @@ impl WorkspaceView {
             Self::Overview | Self::Segments | Self::Functions | Self::Strings => None,
             Self::Symbols | Self::Classes => None,
             Self::Disassembly | Self::Decompile | Self::Dump | Self::Assistant => None,
-            Self::Machine | Self::Graph | Self::Structures => None,
+            Self::Machine | Self::Graph | Self::Structures | Self::Compare => None,
             Self::Patches | Self::Yara => None,
         }
     }
@@ -414,6 +420,11 @@ struct BackgroundJobs {
     export_picker: Option<Receiver<Option<PathBuf>>>,
     /// Optional external YARA scan, which can take time on large files.
     yara: Option<Receiver<Result<Vec<yara::Match>, String>>>,
+    /// Where the reader chose the binary to set against the open one.
+    compare_picker: Option<Receiver<Option<PathBuf>>>,
+    /// Reading that binary and comparing the two, which is a whole second
+    /// analysis and an alignment per pair of functions.
+    comparison: Option<Receiver<(PathBuf, std::io::Result<PreparedComparison>)>>,
     /// A model reading the listing, local or remote; both take seconds.
     assistance: Option<Receiver<Result<assistant::Answer, assistant::Error>>>,
     /// Asking GitHub whether there is a newer release.
@@ -469,6 +480,17 @@ impl PreparedInspection {
             names,
         }
     }
+}
+
+/// The other file, read and compared away from the frame loop.
+///
+/// The comparison is part of the job for the same reason the indexes are part
+/// of opening a file: aligning two bodies is quadratic in their length, and a
+/// pair of programs holds tens of thousands of them. Doing that on the frame
+/// thread would stop the interface for as long as it took.
+struct PreparedComparison {
+    other: crate::compare::Other,
+    report: crate::compare::Report,
 }
 
 /// The usual place for downloads, where a platform has one.
@@ -749,6 +771,9 @@ pub struct DesdecApp {
     pub watches: Vec<crate::ui::expression::Watch>,
     /// The conditional trace: what to run until, and for how long at most.
     pub trace_until: crate::ui::trace_until::State,
+    /// The other binary, when one has been set against this one, and what
+    /// comparing the two came to; see [`crate::compare`].
+    pub compare: crate::compare::State,
     /// The types the reader has written about this binary's data, and what is
     /// applied where; see [`crate::ui::types`].
     pub structures: crate::ui::types::State,
@@ -1603,6 +1628,15 @@ impl DesdecApp {
             // moves nothing else.
             Command::Graph => self.select_view(WorkspaceView::Graph),
             Command::Structures => self.select_view(WorkspaceView::Structures),
+            Command::Compare => self.select_view(WorkspaceView::Compare),
+            Command::CompareChooseOther => {
+                self.open_view(command);
+                self.choose_comparison(ctx);
+            }
+            Command::CompareForget => {
+                self.open_view(command);
+                self.compare.clear();
+            }
             Command::Expression => self.dialogs.open(Dialog::Expression),
             // Toggled, like every other window a reader keeps open beside
             // the listing: the button in the bar is lit while it is on
@@ -1865,6 +1899,123 @@ impl DesdecApp {
         });
     }
 
+    /// Whether the other binary is being read and compared right now.
+    #[must_use]
+    pub const fn comparison_running(&self) -> bool {
+        self.jobs.comparison.is_some()
+    }
+
+    /// Whether a second file may be chosen to set against the open one.
+    ///
+    /// Not while one is being read: two comparisons in flight would land in
+    /// either order, and the reader would be shown the answer to whichever
+    /// finished last under the name of whichever they asked for last.
+    #[must_use]
+    pub const fn can_choose_comparison(&self) -> bool {
+        self.analysis.is_some() && self.jobs.comparison.is_none()
+    }
+
+    /// Opens the dialog for the binary to set against the open one.
+    pub fn choose_comparison(&mut self, ctx: &egui::Context) {
+        if !self.can_choose_comparison() || self.jobs.compare_picker.is_some() {
+            return;
+        }
+        let title = self.t(Text::CompareChooseOther).to_owned();
+        let repaint = ctx.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.jobs.compare_picker = Some(receiver);
+        std::thread::spawn(move || {
+            let path = pollster::block_on(rfd::AsyncFileDialog::new().set_title(title).pick_file())
+                .map(|file| file.path().to_path_buf());
+            let _ = sender.send(path);
+            repaint.request_repaint();
+        });
+    }
+
+    /// Reads the other binary and compares it with the open one.
+    ///
+    /// The worker reads *both* files, rather than being handed the analysis
+    /// this application is already holding. Handing it over would mean cloning
+    /// it, and an [`Analysis`] is the file's bytes and every instruction
+    /// decoded from them: the copy is made on the frame thread, where it stops
+    /// the interface, and while the comparison runs the machine holds three of
+    /// them instead of two. Reading the file again costs the worker one more
+    /// analysis and costs the reader nothing.
+    ///
+    /// What that trades away is the guarantee that the two are the same file,
+    /// and it is bought back below rather than assumed: the digest and the
+    /// size of what was read are checked against the ones on screen, and a
+    /// file that changed under the reader is reported rather than compared.
+    fn compare_with(&mut self, ctx: &egui::Context, path: PathBuf) {
+        let Some(analysis) = self.analysis.as_ref() else {
+            return;
+        };
+        if self.jobs.comparison.is_some() {
+            return;
+        }
+        let mine = analysis.summary.path.clone();
+        let identity = (analysis.sha256, analysis.summary.size);
+        let changed_under_us = self.t(Text::CompareOpenFileChanged).to_owned();
+        self.compare.error = None;
+        self.note(
+            crate::journal::Level::Note,
+            format!("{} {}", self.t(Text::CompareReading), path.display()),
+        );
+        let repaint = ctx.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.jobs.comparison = Some(receiver);
+        std::thread::spawn(move || {
+            let result = desdec_core::analyse_path(&mine).and_then(|mine| {
+                if (mine.sha256, mine.summary.size) != identity {
+                    return Err(std::io::Error::other(changed_under_us));
+                }
+                let theirs = desdec_core::analyse_path(&path)?;
+                let my_functions = crate::ui::functions::all(&mine);
+                let their_functions = crate::ui::functions::all(&theirs);
+                let report =
+                    crate::compare::Report::of(&mine, &my_functions, &theirs, &their_functions);
+                // Both analyses are dropped here, on the thread that built
+                // them: what the reader is shown is the report, and it holds
+                // every name and address it draws.
+                Ok(PreparedComparison {
+                    other: crate::compare::Other { path: path.clone() },
+                    report,
+                })
+            });
+            let _ = sender.send((path, result));
+            repaint.request_repaint();
+        });
+    }
+
+    fn apply_comparison(&mut self, path: &Path, result: std::io::Result<PreparedComparison>) {
+        match result {
+            Ok(prepared) => {
+                let changed = prepared.report.count(crate::compare::Standing::Changed);
+                self.compare.other = Some(prepared.other);
+                self.compare.report = Some(prepared.report);
+                self.compare.error = None;
+                self.note(
+                    crate::journal::Level::Note,
+                    format!(
+                        "{} — {changed} {}",
+                        path.display(),
+                        self.t(Text::CompareChanged)
+                    ),
+                );
+            }
+            Err(failure) => {
+                // The file that was there before is kept: a second file that
+                // could not be read is not a reason to throw away the answer
+                // the reader is looking at.
+                self.compare.error = Some(format!("{}: {failure}", path.display()));
+                self.note(
+                    crate::journal::Level::Warning,
+                    format!("{} : {failure}", path.display()),
+                );
+            }
+        }
+    }
+
     fn apply_inspection(&mut self, path: &Path, result: std::io::Result<PreparedInspection>) {
         match result {
             Ok(prepared) => {
@@ -1973,6 +2124,26 @@ impl DesdecApp {
                 self.run_plugins_on_open(ctx);
             }
             Some(Err(TryRecvError::Disconnected)) => self.jobs.inspection = None,
+            Some(Err(TryRecvError::Empty)) | None => {}
+        }
+
+        let compare_picker = self.jobs.compare_picker.as_ref().map(Receiver::try_recv);
+        match compare_picker {
+            Some(Ok(Some(path))) => {
+                self.jobs.compare_picker = None;
+                self.compare_with(ctx, path);
+            }
+            Some(Ok(None) | Err(TryRecvError::Disconnected)) => self.jobs.compare_picker = None,
+            Some(Err(TryRecvError::Empty)) | None => {}
+        }
+
+        let comparison = self.jobs.comparison.as_ref().map(Receiver::try_recv);
+        match comparison {
+            Some(Ok((path, result))) => {
+                self.jobs.comparison = None;
+                self.apply_comparison(&path, result);
+            }
+            Some(Err(TryRecvError::Disconnected)) => self.jobs.comparison = None,
             Some(Err(TryRecvError::Empty)) | None => {}
         }
 
@@ -2247,7 +2418,9 @@ impl DesdecApp {
     #[cfg(test)]
     #[must_use]
     pub const fn showing_a_native_dialog(&self) -> bool {
-        self.jobs.file_picker.is_some() || self.jobs.export_picker.is_some()
+        self.jobs.file_picker.is_some()
+            || self.jobs.export_picker.is_some()
+            || self.jobs.compare_picker.is_some()
     }
 
     /// What is installed for `engine`, detected once per configured path.
@@ -3257,6 +3430,12 @@ impl DesdecApp {
         self.structures = crate::ui::types::State::default();
         self.member_names = crate::ui::types::MemberNames::default();
         self.references_address = None;
+        // A comparison is about two files, and one of them is being put away:
+        // keeping it would answer questions about a binary that is no longer
+        // open, under the name of the one that is.
+        self.compare.clear();
+        self.jobs.comparison = None;
+        self.jobs.compare_picker = None;
         self.search = crate::ui::search::State::default();
         self.dump = crate::ui::dump::State::default();
         self.strings_filter.clear();
@@ -4357,6 +4536,7 @@ mod tests {
             WorkspaceView::Machine,
             WorkspaceView::Graph,
             WorkspaceView::Structures,
+            WorkspaceView::Compare,
             WorkspaceView::Patches,
             WorkspaceView::Yara,
         ];

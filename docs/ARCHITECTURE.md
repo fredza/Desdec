@@ -29,7 +29,14 @@ what keeps it usable as a library and testable without a window.
 - **Disassembly** — iced-x86 for x86 and x86-64, Capstone for AArch64. Every
   executable byte that was read is decoded; nothing caps the number of
   instructions, and `Decoded::truncated` marks only code lying past the bytes
-  the analysis read.
+  the analysis read. The x86 text is GAS's, in AT&T order, and everything built
+  on the listing parses that one spelling. A reader who wants Intel order gets
+  it from `Nasm`, which decodes the row's own fifteen bytes again rather than
+  moving the words of the AT&T text around: the two syntaxes stop corresponding
+  word for word at the string operations, the sign-extending moves and every
+  operand whose width only a mnemonic suffix carried, and a rewriter would
+  invent an instruction exactly there. It is a reading, not a second analysis —
+  nothing about the instruction changes with the spelling.
 - **Analysis** — printable strings, per-region entropy, the source language a
   file gives evidence of, what an operand designates, what last wrote a
   register, which condition flags an instruction settles and consults
@@ -42,6 +49,21 @@ what keeps it usable as a library and testable without a window.
   millisecond per function, and every line of the output carries the address
   of the instruction it came from — which is what lets the view take a click
   to the listing, and what no external engine publishes.
+- **Comparison** (`diff`) — two binaries set beside each other. Functions are
+  paired in passes, strongest first: a name both files carry, the same address
+  with the same bytes, the same bytes anywhere, the same instructions once the
+  numbers they carry are set aside, and — last — the one unpaired function each
+  side of a pair already made calls. Each pass sees only what the ones before
+  it left, and every pass refuses a key that is not unique on *both* sides:
+  three identical stubs on the left and three on the right pair six ways, and
+  an arbitrary pairing is not a weaker answer than none, it is a wrong one.
+  Whether a pair changed is settled by its bytes, which is exact; how far apart
+  the bodies are is the longest common subsequence of their instructions with
+  those numbers ignored, so a build at another base address is not reported as
+  a program rewritten — and a changed pair that measures no distance says
+  exactly that. The alignment is bounded (`MAXIMUM_ALIGNMENT`) and answers
+  `None` rather than an estimate above it. Nothing here reads a file; it works
+  over two analyses already made.
 - **Assembly and patching** — one typed line encoded back to bytes
   (`assemble`), and patches that keep their length and are written to a copy.
 - **Emulation** (`emulate`) — a processor Desdec builds: a register file, an

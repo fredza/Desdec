@@ -9,6 +9,7 @@ pub mod annotation;
 pub mod assistant;
 pub mod calculator;
 pub mod classes;
+pub mod compare;
 pub mod decompile;
 pub mod disassembly;
 pub mod dump;
