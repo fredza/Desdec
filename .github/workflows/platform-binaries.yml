@@ -268,6 +268,63 @@ jobs:
             desdec-macos-aarch64-release.zip.sha256
           if-no-files-found: error
 
+  # The Linux archive, out as soon as it exists, and never as the latest
+  # release.
+  #
+  # Linux takes half an hour on a runner of our own; macOS and Windows take an
+  # hour and three quarters each on GitHub's. Waiting for all three to attach
+  # anything means a tag pushed at six is installable at eight, and the person
+  # waiting is usually on Linux.
+  #
+  # So this publishes the Linux half **as a pre-release**, and the job below
+  # attaches the other two and takes that flag off. The flag is the whole of
+  # the design, and it is not decoration:
+  #
+  # - `/releases/latest` ignores a pre-release. A Mac or a PC running
+  #   `install.sh` with no argument therefore keeps getting the last complete
+  #   release, and never lands on one holding nothing it can run. That exact
+  #   failure is what 0.4.12 and 0.4.13 were — one bare executable published,
+  #   the forge showing green, and somebody trying to install finding out.
+  # - `install.sh --pre` and `install.ps1 -Pre` already exist and mean "count
+  #   pre-releases too". Someone on Linux who wants the build of the day asks
+  #   for it in the words the scripts already have.
+  # - A macOS or Windows job that fails leaves the release standing as a
+  #   pre-release rather than promoting a half of one. It says what it is, and
+  #   `verify-release.sh --partial` checks it for what it claims to be.
+  linux-release:
+    name: Publish the Linux archive early
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [linux-x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      # No checkout here either, and for the reason spelled out below: the
+      # artifacts land in this directory, and a checkout would clean it.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desdec-linux-*-release
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          prerelease: true
+          # No generated notes yet: the release below regenerates them once
+          # every platform is in, and two passes of generation would leave the
+          # reader with the same list twice.
+          fail_on_unmatched_files: true
+          # Written so that it is still true after the release is completed:
+          # the job below appends to this body rather than replacing it, and a
+          # sentence saying "Linux only, for now" would sit in the finished
+          # release for good.
+          body: |
+            Published in two steps: the Linux archive as soon as it is built,
+            macOS and Windows when theirs are done. While this says
+            **Pre-release**, only the Linux archive is attached — and
+            `install.sh --pre` is how to ask for it by name.
+          files: |
+            desdec-linux-x86_64-release.tar.gz
+            desdec-linux-x86_64-release.tar.gz.sha256
+
   github-release:
     name: Publish GitHub release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
@@ -289,6 +346,12 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v3
         with:
+          # Said out loud rather than left to the action's own reading of the
+          # tag name: this is the step that turns the Linux-only pre-release
+          # above into the release, and a default that happened to agree with
+          # it today would be a default that could change.
+          prerelease: false
+          make_latest: true
           generate_release_notes: true
           append_body: true
           # A named file that is not there is the failure this job exists to

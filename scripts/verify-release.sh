@@ -4,6 +4,7 @@
 #   scripts/verify-release.sh              # the latest release
 #   scripts/verify-release.sh v0.4.60      # a particular one
 #   scripts/verify-release.sh --quick      # names and sizes only, no download
+#   scripts/verify-release.sh --partial    # a pre-release carrying Linux alone
 #
 # A release is not published or not published: it is published with the six
 # files a reader needs, or it is published broken. Both have happened here.
@@ -38,6 +39,9 @@ ARCHIVES=(
 )
 
 quick=0
+# Whether a Linux-only pre-release is what we came to check, rather than a
+# release that lost four of its files.
+partial=0
 tag=""
 
 say()  { printf '%s\n' "$*"; }
@@ -46,10 +50,12 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat <<'USAGE'
-Usage: verify-release.sh [tag] [--quick]
+Usage: verify-release.sh [tag] [--quick] [--partial]
 
   tag       The release to check (default: the latest published one)
   --quick   Check the files are there, without downloading them
+  --partial Expect a pre-release carrying the Linux archive alone, which is
+            what the workflow publishes before macOS and Windows are built
   -h        Show this message
 
 Exits non-zero when the release is missing a file or an archive does not
@@ -60,6 +66,7 @@ USAGE
 while [ $# -gt 0 ]; do
     case "$1" in
         --quick) quick=1; shift ;;
+        --partial) partial=1; shift ;;
         -h|--help) usage; exit 0 ;;
         -*) die "unknown option: $1" ;;
         *) tag="$1"; shift ;;
@@ -86,8 +93,29 @@ state="$(gh release view "$tag" --repo "$REPO" --json isDraft,isPrerelease \
     -q '"\(.isDraft) \(.isPrerelease)"')" || die "$tag is not a release of $REPO"
 case "$state" in
     "true "*) die "$tag is a draft: nothing can install it" ;;
-    *" true") warn "note: $tag is a pre-release, so no running copy is offered it" ;;
+    *" true")
+        # Being a pre-release is the *point* under `--partial`: it is what
+        # keeps a Linux-only release out of `/releases/latest`, where a Mac
+        # would find it and have nothing to install. Said plainly either way,
+        # because "pre-release" means two very different things depending on
+        # whether anyone meant it.
+        if [ "$partial" -eq 1 ]; then
+            say "pre-release, as a partial one must be: no running copy is offered it"
+        else
+            warn "note: $tag is a pre-release, so no running copy is offered it"
+        fi
+        ;;
+    *)
+        [ "$partial" -eq 0 ] ||
+            die "$tag is a full release: a partial one must stay a pre-release"
+        ;;
 esac
+
+# What a partial release is allowed to carry, which is the platform the
+# workflow builds first and nothing else.
+if [ "$partial" -eq 1 ]; then
+    ARCHIVES=("desdec-linux-x86_64-release.tar.gz")
+fi
 
 published="$(gh release view "$tag" --repo "$REPO" --json assets -q '.assets[].name')"
 say ""
@@ -118,10 +146,11 @@ if [ -n "$extra" ]; then
 fi
 
 say ""
+expected=$((${#ARCHIVES[@]} * 2))
 if [ "$missing" -gt 0 ]; then
-    die "$missing of the six files a release must carry are missing or empty"
+    die "$missing of the $expected files this release must carry are missing or empty"
 fi
-say "all six files are there"
+say "all $expected files are there"
 
 if [ "$quick" -eq 1 ]; then
     say "--quick: the archives were not downloaded, so nothing was hashed"
