@@ -130,8 +130,6 @@ jobs:
     name: Linux x86_64
     needs: version
     if: needs.version.outputs.build == 'true'
-    if: needs.version.outputs.build == 'true'
-    if: needs.version.outputs.build == 'true'
     # Where this job runs, and how to move it without editing this file.
     #
     # `LINUX_RUNNER` is a repository variable. Unset — which it is until
