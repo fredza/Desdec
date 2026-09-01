@@ -108,7 +108,9 @@ bash install.sh   # installe dans ~/.local/bin
 ```
 
 Sous Linux, il pose aussi l'icône et une entrée de menu qu'un dock peut
-épingler, sous `~/.local/share` ; `--no-desktop` n'installe que le binaire.
+épingler, sous `~/.local/share`. Sous macOS, il écrit un bundle d'application
+dans `~/Applications`, ce qui met Desdec dans le Dock, dans Spotlight et dans
+le Launchpad. `--no-desktop` n'installe que le binaire.
 
 Sur Windows (x86-64), le même script en PowerShell — aucun shell POSIX requis :
 
@@ -117,6 +119,9 @@ irm https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.ps1 -Ou
 notepad install.ps1   # il est court, et vous allez l'exécuter
 .\install.ps1        # installe dans %LOCALAPPDATA%\Programs\Desdec
 ```
+
+Sous Windows, il écrit un raccourci du menu Démarrer portant la même icône,
+demandée au binaire en `.ico` ; `-NoShortcut` n'installe que le binaire.
 
 Les deux acceptent `--version` / `-Version v0.4.65` pour une version précise,
 `--prefix` / `-Prefix` pour installer ailleurs, et `--from-source` /

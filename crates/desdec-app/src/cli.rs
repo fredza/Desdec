@@ -59,9 +59,11 @@ Usage: desdec [options] [file]
   -h, --help       Show this message and exit.
   -V, --version    Show the version and exit.
   --write-icon <file>
-                   Write the application's icon to <file> as a PNG and
-                   exit. The installer uses this to put the icon beside
-                   the desktop entry.
+                   Write the application's icon to <file> and exit.
+                   The format follows the extension: .ico for Windows,
+                   .icns for a macOS bundle, a PNG for anything else.
+                   The installers use this to put the icon beside the
+                   desktop entry, the shortcut or the bundle.
   --               Read everything after this as a path, even if it
                    begins with a dash.
 

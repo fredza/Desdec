@@ -108,7 +108,9 @@ bash install.sh   # installs into ~/.local/bin
 ```
 
 On Linux it also adds the icon and a menu entry a dock can pin, both under
-`~/.local/share`; `--no-desktop` installs the binary alone.
+`~/.local/share`. On macOS it writes an application bundle into
+`~/Applications`, which is what puts Desdec in the Dock, in Spotlight and in
+Launchpad. `--no-desktop` installs the binary alone.
 
 On Windows (x86-64), the same script in PowerShell — no POSIX shell needed:
 
@@ -117,6 +119,9 @@ irm https://raw.githubusercontent.com/fredza/Desdec/main/scripts/install.ps1 -Ou
 notepad install.ps1   # it is short, and you are about to run it
 .\install.ps1        # installs into %LOCALAPPDATA%\Programs\Desdec
 ```
+
+On Windows it writes a Start menu shortcut with the same icon, asked of the
+binary as a `.ico`; `-NoShortcut` installs the binary alone.
 
 Both take `--version` / `-Version v0.4.65` for a particular release,
 `--prefix` / `-Prefix` for somewhere else, and `--from-source` / `-FromSource`

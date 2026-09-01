@@ -61,7 +61,33 @@ fn main() -> eframe::Result<()> {
             // drawn on a context built for the purpose and thrown away, so
             // asking for it costs a few milliseconds and touches nothing.
             let image = icon::render(icon::SIDE);
-            if let Err(error) = std::fs::write(&file, icon::png(&image)) {
+            // The extension decides the format, because the three callers
+            // each need their own and none can use another's: a desktop entry
+            // names a PNG in the hicolor theme, a Windows shortcut names an
+            // `.ico` and shows a generic document mark for anything else, and
+            // a macOS bundle names an `.icns`. Asked for anything else, this
+            // writes the PNG it always wrote.
+            let extension = file
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or_default();
+            let written = if extension.eq_ignore_ascii_case("ico") {
+                icon::ico(&image)
+            } else if extension.eq_ignore_ascii_case("icns") {
+                match icon::icns(&image) {
+                    Some(written) => written,
+                    None => {
+                        eprintln!(
+                            "desdec: {} pixels is not a size an .icns can name",
+                            icon::SIDE
+                        );
+                        std::process::exit(2);
+                    }
+                }
+            } else {
+                icon::png(&image)
+            };
+            if let Err(error) = std::fs::write(&file, written) {
                 eprintln!("desdec: {}: {error}", file.display());
                 std::process::exit(2);
             }

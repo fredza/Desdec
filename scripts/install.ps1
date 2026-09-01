@@ -17,16 +17,22 @@
     Nothing is written outside the prefix. The user PATH is left alone unless
     -AddToPath is given, and then only that one entry is appended.
 
-    No Start menu shortcut is written, where install.sh gives a Linux install
-    an icon and a menu entry. Two things are missing for it and neither is a
-    line of PowerShell: desdec-app.exe embeds no icon resource, so a shortcut
-    to it would carry the generic one, and `--write-icon` writes a PNG, which
-    a shortcut cannot use. Saying so is better than a tile with no mark on it.
+    It also writes a Start menu shortcut, with the icon asked of the binary
+    that was just installed — the same three things install.sh gives a Linux
+    install. -NoShortcut leaves both out.
+
+    The icon is asked for as a .ico, which is the only kind of file a shortcut
+    can point at: handed a PNG, Windows shows the generic mark for an unknown
+    document. A Desdec from before 2026-09-01 writes a PNG whatever extension
+    it is given, and then no shortcut is written at all — a tile with no mark
+    on it is worse than no tile.
 
 .EXAMPLE
     .\install.ps1
 .EXAMPLE
     .\install.ps1 -Version v0.4.65 -Prefix C:\Tools
+.EXAMPLE
+    .\install.ps1 -NoShortcut
 .EXAMPLE
     .\install.ps1 -FromSource
 #>
@@ -42,7 +48,8 @@ param(
     # command that still carries it keeps working rather than failing on a
     # parameter that no longer exists.
     [switch] $SkipSignature,
-    [switch] $AddToPath
+    [switch] $AddToPath,
+    [switch] $NoShortcut
 )
 
 Set-StrictMode -Version Latest
@@ -72,6 +79,82 @@ New-Item -ItemType Directory -Path $workspace | Out-Null
 
 # Puts one built binary in place. Written beside the target and then moved, so
 # a copy that is running is replaced rather than truncated under its own feet.
+# The icon and the Start menu shortcut.
+#
+# The icon is asked of the binary that was just installed rather than carried
+# beside this script: it is the only arrangement in which the menu cannot come
+# to show an older mark than the window. Every failure here is a warning — the
+# binary is installed and runs, and a shell that would not take a shortcut is
+# no reason to call the install failed.
+function Add-StartMenuShortcut([string] $Target) {
+    $ico = Join-Path $Prefix "$Name.ico"
+
+    # Start-Process rather than a call: a release build of desdec-app.exe is a
+    # GUI subsystem executable, so `& $Target ...` hands the prompt straight
+    # back and the file would be looked for before it exists. The arguments go
+    # as one quoted string, which is the form both Windows PowerShell 5.1 and
+    # PowerShell 7 pass through unchanged when a path holds a space.
+    try {
+        $writing = Start-Process -FilePath $Target `
+            -ArgumentList "--write-icon `"$ico`"" `
+            -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+    } catch {
+        Write-Warning "$Target could not be run to write its icon — skipping the shortcut"
+        return
+    }
+    if ($writing.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $ico)) {
+        Write-Warning "$Target could not write its icon — skipping the shortcut"
+        Write-Warning '    (a Desdec from before 2026-09-01 writes a PNG whatever the extension)'
+        return
+    }
+    # It has to be an icon rather than a PNG under that name, which is exactly
+    # what an older Desdec leaves here: the first four bytes of an .ico are
+    # 00 00 01 00, and a PNG begins with 89 50 4E 47.
+    # Read through .NET rather than Get-Content: `-AsByteStream` is PowerShell
+    # 6 and later, `-Encoding Byte` is Windows PowerShell 5.1, and the machines
+    # this script is fetched onto carry both.
+    try {
+        $head = [System.IO.File]::ReadAllBytes($ico)
+    } catch {
+        Write-Warning "could not read $ico — skipping the shortcut"
+        return
+    }
+    if ($head.Length -lt 4 -or $head[0] -ne 0 -or $head[1] -ne 0 -or $head[2] -ne 1 -or $head[3] -ne 0) {
+        Remove-Item -LiteralPath $ico -Force -ErrorAction SilentlyContinue
+        Write-Warning "$Target wrote a PNG rather than an icon — skipping the shortcut"
+        Write-Warning '    (upgrade to a Desdec that knows how to write an .ico)'
+        return
+    }
+
+    # An install under another name gets a tile of its own so it does not
+    # overwrite the ordinary one, the same way the Linux entry does.
+    $label = if ($Name -eq 'desdec') { 'Desdec' } else { "Desdec ($Name)" }
+    $programs = [Environment]::GetFolderPath('Programs')
+    if (-not $programs) {
+        Write-Warning 'no Start menu folder for this user — skipping the shortcut'
+        return
+    }
+    $lnk = Join-Path $programs "$label.lnk"
+
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($lnk)
+        $shortcut.TargetPath = $Target
+        # `,0` is the index of the icon within the file, and this file holds
+        # one.
+        $shortcut.IconLocation = "$ico,0"
+        $shortcut.WorkingDirectory = $Prefix
+        $shortcut.Description = 'Read what a program is made of'
+        $shortcut.Save()
+    } catch {
+        Write-Warning "could not write $lnk : $($_.Exception.Message)"
+        return
+    }
+
+    Write-Host "Added the icon $ico and the Start menu shortcut $lnk"
+    Write-Host 'To remove them later, delete those two files; nothing else is left behind.'
+}
+
 function Install-Binary([string] $Built) {
     if (-not (Test-Path $Prefix)) { New-Item -ItemType Directory -Path $Prefix -Force | Out-Null }
     $target = Join-Path $Prefix "$Name.exe"
@@ -89,6 +172,8 @@ function Install-Binary([string] $Built) {
         Write-Host ''
         Write-Warning "$Prefix is not on your PATH. Re-run with -AddToPath, or add it yourself."
     }
+
+    if (-not $NoShortcut) { Add-StartMenuShortcut $target }
 }
 
 function Get-LatestTag {

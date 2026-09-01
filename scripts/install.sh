@@ -8,10 +8,12 @@
 #   scripts/install.sh --no-desktop       # the binary alone, no menu entry
 #
 # On Linux it also puts Desdec in the desktop menu, with the icon the binary
-# writes itself — the same three things `insl.sh` gives a checkout. macOS and
-# Windows get the binary alone: a menu entry there is a bundle and a shortcut,
-# neither of which this script knows how to write, and saying so is better
-# than half of one.
+# writes itself — the same three things `insl.sh` gives a checkout. Windows
+# gets the same from `install.ps1`, which writes a Start menu shortcut; this
+# script installs the binary alone there, since it only runs under MSYS in the
+# first place. On macOS it writes an application bundle into `~/Applications`,
+# which is what puts a program in the Dock, in Spotlight and in Launchpad.
+# `--no-desktop` skips whichever of the three this machine would have got.
 #
 # It downloads the archive for this machine, checks its SHA-256, and only then
 # puts the binary anywhere. A release whose checksum does not match is thrown
@@ -46,6 +48,8 @@ data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 script_dir=""
 # Set by install_desktop_entry when it wrote one, and read by the last message.
 menu_entry_added=""
+# What the installed binary answers to `--version`, without the `desdec v`.
+reported_version=""
 if [ -n "${BASH_SOURCE[0]:-}" ]; then
     script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || script_dir=""
 fi
@@ -63,11 +67,13 @@ Usage: install.sh [options]
   --prefix <dir>    Install into this directory (default: ~/.local/bin)
   --name <name>     Install under this name (default: desdec)
   --from-source     Build from source with cargo instead of downloading
-  --no-desktop      Do not add the menu entry and its icon (Linux only)
+  --no-desktop      Do not add the menu entry, the icon or the macOS
+                    application bundle
   -h, --help        Show this message
 
 DESDEC_PREFIX sets the default prefix, XDG_DATA_HOME the directory the icon
-and the menu entry are written under.
+and the menu entry are written under, and DESDEC_APPLICATIONS the directory
+the macOS bundle goes into.
 USAGE
 }
 
@@ -181,6 +187,17 @@ install_binary() {
     if command -v timeout >/dev/null 2>&1; then
         reported="$(timeout 5 "$target" --version 2>/dev/null || true)"
     fi
+    # Kept for the macOS bundle's plist, which states a version and has no
+    # other honest source for one: the tag names the release, the binary names
+    # itself. Empty when the answer was not obtained, and the keys are then
+    # left out rather than filled with a guess.
+    case "$reported" in
+        desdec\ v*)
+            reported_version="${reported#desdec v}"
+            reported_version="${reported_version%% *}"
+            ;;
+        *) reported_version="" ;;
+    esac
     case "$reported" in
         desdec\ v*) say "Installed $target — $reported" ;;
         *)           say "Installed $target" ;;
@@ -306,6 +323,109 @@ install_desktop_entry() {
     menu_entry_added="$menu_name"
 }
 
+# The macOS application bundle.
+#
+# A binary in `~/.local/bin` is reachable from a terminal and from nowhere
+# else: macOS puts a program in the Dock, in Spotlight and in Launchpad by way
+# of a bundle, which is a directory with a plist in it. This writes the
+# smallest one that is a real application — the executable, the icon, and the
+# statement of what the two are.
+#
+# The binary is copied into the bundle rather than symlinked out of it. A
+# bundle whose executable points outside itself is not what any part of macOS
+# expects to find, and a reader who removed the prefix would be left with an
+# application that opens onto nothing. Both copies are written by this same
+# run, so they cannot start out disagreeing.
+#
+# Every failure here is a warning: the binary is installed and runs from a
+# terminal, and a Finder that would not take the bundle is no reason to call
+# the install failed.
+install_app_bundle() {
+    [ "$desktop" = yes ] || return 0
+    [ "$(uname -s)" = Darwin ] || return 0
+
+    local target="$prefix/$name"
+    local label="Desdec"
+    # The bundle identifier follows the install name, because macOS identifies
+    # an application by it and by nothing else: two bundles sharing one id are
+    # one application as far as Launch Services is concerned, and it may open
+    # either when asked for the other. Anything a bundle id may not hold
+    # becomes a dash, so `--name desdec.dev` cannot invent a level of the
+    # reversed domain.
+    local identifier="io.github.fredza.desdec"
+    if [ "$name" != "$DEFAULT_NAME" ]; then
+        label="Desdec ($name)"
+        identifier="io.github.fredza.$(printf '%s' "$name" | tr -c 'A-Za-z0-9-' '-')"
+    fi
+    local app="${DESDEC_APPLICATIONS:-$HOME/Applications}/$label.app"
+    local contents="$app/Contents"
+
+    mkdir -p "$contents/MacOS" "$contents/Resources" || {
+        warn "cannot write $app — skipping the application bundle"
+        return 0
+    }
+
+    # The icon is asked of the binary that was just installed, as an `.icns`,
+    # which is the only kind of file the Dock reads. A Desdec from before
+    # 2026-09-01 writes a PNG whatever the extension, and a bundle carrying
+    # one shows the blank sheet macOS uses for an application with no icon —
+    # so the four bytes are read back, and a bundle is written without an icon
+    # rather than with a wrong one.
+    local icon="$contents/Resources/$name.icns"
+    local icon_key=""
+    if "$target" --write-icon "$icon" 2>/dev/null && [ "$(head -c 4 "$icon" 2>/dev/null)" = "icns" ]; then
+        icon_key="    <key>CFBundleIconFile</key><string>$name</string>"
+    else
+        rm -f "$icon"
+        warn "$target could not write an .icns — the bundle goes without an icon"
+        warn "    (a Desdec from before 2026-09-01 writes a PNG whatever the extension)"
+    fi
+
+    local version_keys=""
+    if [ -n "$reported_version" ]; then
+        version_keys="    <key>CFBundleShortVersionString</key><string>$reported_version</string>
+    <key>CFBundleVersion</key><string>$reported_version</string>"
+    fi
+
+    cp "$target" "$contents/MacOS/$name" || {
+        warn "cannot copy the binary into $app — skipping the application bundle"
+        return 0
+    }
+    chmod +x "$contents/MacOS/$name"
+
+    # `CFBundleIconFile` names the file without its extension, which is the
+    # one field of this plist that is easy to write wrongly and that gives no
+    # error when it is: the bundle simply shows the blank sheet.
+    cat > "$contents/Info.plist" <<PLIST || { warn "cannot write $contents/Info.plist"; return 0; }
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>$label</string>
+    <key>CFBundleDisplayName</key><string>$label</string>
+    <key>CFBundleIdentifier</key><string>$identifier</string>
+    <key>CFBundleExecutable</key><string>$name</string>
+$icon_key
+$version_keys
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
+
+    # Nothing here is notarised, and Gatekeeper refuses a downloaded binary
+    # that is not. The attribute is only set on files a browser wrote, so this
+    # is a no-op when curl fetched the archive.
+    xattr -dr com.apple.quarantine "$app" 2>/dev/null || true
+    # The Finder notices a bundle whose directory changed. Without this it can
+    # keep showing the previous icon until it is asked again.
+    touch "$app" 2>/dev/null || true
+
+    say "Added the application $app"
+    menu_entry_added="$label"
+}
+
 build_from_source() {
     need cargo
     need git
@@ -330,6 +450,7 @@ build_from_source() {
     # The tree it just built is right here, so its own entry is the one that
     # matches the binary exactly — no download, whatever the tag says.
     install_desktop_entry "$source_dir/packaging/Desdec.desktop"
+    install_app_bundle
 }
 
 install_from_release() {
@@ -407,6 +528,7 @@ install_from_release() {
     install_desktop_entry \
         "$(find "$unpacked" -type f -name 'Desdec.desktop' -print -quit)" \
         "${script_dir:+$script_dir/packaging/Desdec.desktop}"
+    install_app_bundle
 }
 
 if [ "$from_source" -eq 1 ]; then
@@ -419,7 +541,11 @@ say ""
 say "Run it with:  $name              # open the window"
 say "              $name /bin/ls      # or analyse a file straight away"
 
-if [ -n "$menu_entry_added" ]; then
+if [ -n "$menu_entry_added" ] && [ "$(uname -s)" = Darwin ]; then
+    say ""
+    say "To keep it in the Dock: open $menu_entry_added, then right-click its icon"
+    say "there and choose Options, Keep in Dock."
+elif [ -n "$menu_entry_added" ]; then
     say ""
     say "To pin it: open $menu_entry_added from the menu, then right-click its icon in"
     say "the dock and choose to pin it. Some desktops read new entries only after"

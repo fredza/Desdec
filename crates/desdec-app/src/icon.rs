@@ -336,6 +336,136 @@ pub fn png(image: &Image) -> Vec<u8> {
     out
 }
 
+/// The image as a Windows `.ico`.
+///
+/// A shortcut in the Start menu names an icon *file*, and the only formats it
+/// reads are the ones Windows calls icons: a PNG handed to it shows as the
+/// generic mark for an unknown document, which is worse than no shortcut at
+/// all. That is what kept `install.ps1` from writing one.
+///
+/// From Vista on, an `.ico` may carry a PNG whole rather than the bitmap and
+/// mask of the original format, so this is the same twenty lines as the PNG
+/// with a directory of one entry in front: six bytes saying what the file is
+/// and how many images it holds, sixteen describing this one, and the PNG.
+/// The mark therefore stays a single drawing — the window, the menu and the
+/// shortcut cannot come to show three different ones.
+///
+/// `file(1)` reports the result as `-128x-128`: it prints the side as a signed
+/// byte, and 128 is `0x80`. The field is unsigned in the format's own
+/// definition, and Pillow and ImageMagick both read 128 by 128 off this very
+/// file. Nothing to fix, and nothing to "fix".
+#[must_use]
+pub fn ico(image: &Image) -> Vec<u8> {
+    let body = png(image);
+
+    let mut out = Vec::with_capacity(ICO_HEADER + body.len());
+    // Reserved, then the type — 1 is an icon, 2 a cursor — then how many
+    // images follow. One: every size a desktop asks for is a scale down of
+    // the largest, and Windows scales as well as a second drawing would.
+    out.extend_from_slice(&0_u16.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes());
+
+    // A side is one byte, and 256 is written as zero — the one value the
+    // field cannot hold is the one the format grew into. `SIDE` is 128 and
+    // this stays right if it is ever raised to 256.
+    let side = u8::try_from(image.side % 256).unwrap_or(0);
+    out.push(side);
+    out.push(side);
+    // No colour table, and the byte after it is reserved.
+    out.push(0);
+    out.push(0);
+    // One plane, thirty-two bits a pixel. Both are read from the PNG itself
+    // where one is embedded, so these say what it holds rather than deciding
+    // it.
+    out.extend_from_slice(&1_u16.to_le_bytes());
+    out.extend_from_slice(&32_u16.to_le_bytes());
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "an icon is tens of kilobytes, and the field is four bytes"
+    )]
+    let length = body.len() as u32;
+    // Little-endian, all of it: this is a Windows structure, unlike PNG's own
+    // fields two functions up, which are big-endian.
+    out.extend_from_slice(&length.to_le_bytes());
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the header is twenty-two bytes"
+    )]
+    let offset = ICO_HEADER as u32;
+    out.extend_from_slice(&offset.to_le_bytes());
+
+    out.extend_from_slice(&body);
+    out
+}
+
+/// What an `.ico` of one image puts before it: six bytes of directory and one
+/// sixteen-byte entry.
+const ICO_HEADER: usize = 22;
+
+/// The image as a macOS `.icns`, or `None` for a side the format cannot name.
+///
+/// The Dock reads a bundle's icon out of an `.icns`, and that is the last
+/// thing between a downloaded Desdec and a mark of its own on macOS. Like the
+/// `.ico` it is a container rather than a second drawing: `icns`, the length
+/// of the whole file, then one entry — a four-byte type, the length of the
+/// entry including those eight bytes, and the PNG.
+///
+/// **The type is the size.** An `.icns` does not carry the dimensions of what
+/// it holds anywhere; the four letters *are* the statement of them, and a
+/// 128-pixel image filed under `ic08` is a 256-pixel icon as far as the Dock
+/// is concerned. So a side the format has no name for gets `None` rather than
+/// the nearest type, which would be a lie about the pixels that follow.
+#[must_use]
+pub fn icns(image: &Image) -> Option<Vec<u8>> {
+    // Every one of these takes a PNG. The three `icp` names are the small
+    // sizes and the `ic` numbers the large ones, which is the format's own
+    // history showing rather than a pattern to extend by guessing.
+    let kind: &[u8; 4] = match image.side {
+        16 => b"icp4",
+        32 => b"icp5",
+        64 => b"icp6",
+        128 => b"ic07",
+        256 => b"ic08",
+        512 => b"ic09",
+        1024 => b"ic10",
+        _ => return None,
+    };
+
+    let body = png(image);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "an icon is tens of kilobytes, and the fields are four bytes"
+    )]
+    let entry = (ICNS_ENTRY_HEADER + body.len()) as u32;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "an icon is tens of kilobytes, and the fields are four bytes"
+    )]
+    let total = (ICNS_FILE_HEADER + ICNS_ENTRY_HEADER + body.len()) as u32;
+
+    let mut out = Vec::with_capacity(total as usize);
+    out.extend_from_slice(b"icns");
+    // Big-endian, unlike the `.ico` above: this is a Macintosh structure, and
+    // that one is a Windows structure.
+    out.extend_from_slice(&total.to_be_bytes());
+    out.extend_from_slice(kind);
+    // The length an entry declares counts its own eight bytes of header. A
+    // reader walks the file by adding it to where the entry began, so a
+    // length measuring the payload alone puts the next entry eight bytes
+    // early — and there is no next entry here, which is exactly why getting
+    // it wrong would be easy to miss.
+    out.extend_from_slice(&entry.to_be_bytes());
+    out.extend_from_slice(&body);
+    Some(out)
+}
+
+/// `icns` and the length of the whole file.
+const ICNS_FILE_HEADER: usize = 8;
+
+/// An entry's own type and length, which its length counts.
+const ICNS_ENTRY_HEADER: usize = 8;
+
 /// One PNG chunk: its length, its name, its body, and the check over the two
 /// of them that a reader compares.
 fn chunk(out: &mut Vec<u8>, name: [u8; 4], body: &[u8]) {
@@ -469,6 +599,85 @@ mod tests {
         assert_eq!(file[24], 8, "eight bits a channel");
         assert_eq!(file[25], 6, "truecolour with alpha");
         assert_eq!(&file[file.len() - 8..file.len() - 4], b"IEND");
+    }
+
+    /// The `.ico` is one Windows would show, and it holds the very PNG.
+    ///
+    /// Read the way Windows reads it — the directory says where the image is
+    /// and how long, so the check follows those two numbers rather than
+    /// assuming the layout this encoder happens to write.
+    #[test]
+    fn the_ico_carries_the_png_where_its_directory_says() {
+        let image = render(16);
+        let file = ico(&image);
+
+        assert_eq!(&file[0..2], &0_u16.to_le_bytes(), "reserved");
+        assert_eq!(&file[2..4], &1_u16.to_le_bytes(), "an icon, not a cursor");
+        assert_eq!(&file[4..6], &1_u16.to_le_bytes(), "one image");
+        assert_eq!(file[6], 16, "the width");
+        assert_eq!(file[7], 16, "the height");
+        assert_eq!(&file[10..12], &1_u16.to_le_bytes(), "one plane");
+        assert_eq!(&file[12..14], &32_u16.to_le_bytes(), "32 bits a pixel");
+
+        let length = u32::from_le_bytes(file[14..18].try_into().expect("four bytes"));
+        let offset = u32::from_le_bytes(file[18..22].try_into().expect("four bytes"));
+        let at = offset as usize;
+        let held = &file[at..at + length as usize];
+
+        assert_eq!(held, png(&image), "the image the directory points at");
+        assert_eq!(
+            at + length as usize,
+            file.len(),
+            "nothing trails the image it declares"
+        );
+    }
+
+    /// A 256-pixel icon writes its side as zero, which is the one value the
+    /// field cannot hold and the one the format grew into. Raising `SIDE`
+    /// must not quietly produce an icon Windows reads as zero by zero.
+    #[test]
+    fn a_side_of_256_is_written_as_the_zero_the_format_asks_for() {
+        let image = Image {
+            side: 256,
+            rgba: vec![0; 256 * 256 * 4],
+        };
+        let file = ico(&image);
+        assert_eq!(file[6], 0, "the width");
+        assert_eq!(file[7], 0, "the height");
+    }
+
+    /// The `.icns` is walked the way a reader walks it: from the lengths it
+    /// declares, not from the layout this encoder happens to write.
+    #[test]
+    fn the_icns_declares_the_lengths_a_reader_walks_it_by() {
+        let image = render(128);
+        let file = icns(&image).expect("128 is a side the format names");
+
+        assert_eq!(&file[0..4], b"icns", "the magic");
+        let total = u32::from_be_bytes(file[4..8].try_into().expect("four bytes"));
+        assert_eq!(total as usize, file.len(), "the length of the whole file");
+
+        assert_eq!(&file[8..12], b"ic07", "128 by 128, as a PNG");
+        let entry = u32::from_be_bytes(file[12..16].try_into().expect("four bytes"));
+        assert_eq!(
+            entry as usize,
+            8 + png(&image).len(),
+            "an entry counts its own header"
+        );
+        assert_eq!(&file[16..], png(&image), "the image the entry holds");
+    }
+
+    /// A side the format has no four-letter name for is refused. Filing it
+    /// under the nearest type would state a size the pixels do not have, and
+    /// the Dock believes the type.
+    #[test]
+    fn a_side_the_icns_cannot_name_is_refused() {
+        let image = Image {
+            side: 100,
+            rgba: vec![0; 100 * 100 * 4],
+        };
+        assert!(icns(&image).is_none());
+        assert!(icns(&render(16)).is_some(), "16 is one it does name");
     }
 
     /// The two checks a PNG carries, against values computed by hand.
