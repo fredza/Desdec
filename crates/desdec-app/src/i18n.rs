@@ -74,6 +74,14 @@ translations! {
     ExternalAnalyzerNoReport => ["Aucun rapport externe pour ce binaire.", "No external report for this binary.", "No hay informe externo para este binario."],
     ShowExternalReport => ["Afficher le rapport JSON", "Show JSON report", "Mostrar informe JSON"],
     About => ["À propos de Desdec", "About Desdec", "Acerca de Desdec"],
+    // Searched in the command palette, never drawn: what a reader types when
+    // they want the version, the licence or the build this copy came from —
+    // none of which the name "About Desdec" contains.
+    AboutSearchWords => [
+        "version build licence numéro de version",
+        "version build licence release number",
+        "versión compilación licencia número de versión",
+    ],
     CollapseMenu => ["Réduire le menu", "Collapse menu", "Contraer menú"],
     NarrowMenu => [
         "Réduire le menu aux icônes",
@@ -1293,13 +1301,31 @@ translations! {
         "unavailable: the file was only read in part",
         "no disponible: el archivo se leyó solo en parte",
     ],
-    // "Durcissement", not "Protections": the overview now also reports whether
-    // the file was packed or protected by a product, and two cards a column
-    // apart both headed "Protections" would be asking the reader to work out
-    // which protection is meant. This one is what the compiler and the linker
-    // did to make the program harder to exploit — the word the README has
-    // always used for it.
-    Hardening => ["Durcissement", "Hardening", "Endurecimiento"],
+    // One card headed "Protection", holding both meanings of the word rather
+    // than sending the reader between two of them: what the file was put
+    // through — packed, protected, watching for a debugger — and what the
+    // compiler and the linker did to make it harder to exploit. It was
+    // "Durcissement" for the second sense alone, which named the technique
+    // instead of the question the reader is asking.
+    Hardening => ["Protection", "Protection", "Protección"],
+    // The two halves of the card, so neither reading is taken for the other.
+    ProtectionApplied => [
+        "Ce que le fichier a subi",
+        "What was done to the file",
+        "Lo que se le hizo al archivo",
+    ],
+    ProtectionBuilt => [
+        "Ce que la compilation a mis dedans",
+        "What the build put in",
+        "Lo que la compilación puso dentro",
+    ],
+    PackingRow => ["Empaquetage", "Packing", "Empaquetado"],
+    AntiDebugRow => ["Anti-débogage", "Anti-debug", "Antidepuración"],
+    NoPackingMarker => ["aucun marqueur", "no marker", "ningún marcador"],
+    NoAntiDebugMarker => ["aucun indice", "no lead", "ningún indicio"],
+    ProtectionCertain => ["certain", "certain", "seguro"],
+    ProtectionLikely => ["probable", "likely", "probable"],
+    ProtectionPossible => ["indice", "lead", "indicio"],
     LinkedLibraries => ["Bibliothèques liées", "Linked libraries", "Bibliotecas enlazadas"],
     NoLinkedLibraries => [
         "Aucune : le binaire est autonome ou lie tout statiquement.",
@@ -1375,9 +1401,23 @@ translations! {
     DataExecutionPrevention => ["Prévention d’exécution des données (DEP)", "Data execution prevention (DEP)", "Prevención de ejecución de datos (DEP)"],
     ControlFlowGuard => ["Protection du flot de contrôle (CFG)", "Control flow guard (CFG)", "Protección del flujo de control (CFG)"],
     SignedImage => ["Signature intégrée", "Embedded signature", "Firma incrustada"],
-    Present => ["oui", "yes", "sí"],
-    Absent => ["non", "no", "no"],
-    NotApplicable => ["non applicable", "not applicable", "no aplicable"],
+    // "oui" and "non" answered a question the row does not ask: the row is a
+    // protection, so the answer is whether it is there. And an unknown is not
+    // a missing protection — it is this format having no way to say, which is
+    // what the reader needs to be told instead of "not applicable".
+    Present => ["présente", "present", "presente"],
+    Absent => ["absente", "absent", "ausente"],
+    NotApplicable => [
+        "ce format ne l’exprime pas",
+        "this format does not express it",
+        "este formato no lo expresa",
+    ],
+    // RELRO is not a yes or a no, and "full" was neither translated nor
+    // explained. Partial protection still leaves the PLT writable, which is
+    // the whole reason the degree is shown at all.
+    RelroFull => ["complet", "full", "completo"],
+    RelroPartial => ["partiel : la PLT reste inscriptible", "partial: the PLT stays writable", "parcial: la PLT sigue siendo escribible"],
+    RelroNone => ["aucun", "none", "ninguno"],
     StackCanaryHint => [
         "Déduit des symboles présents dans le binaire : c’est un indice, pas une preuve.",
         "Inferred from the symbols present in the binary: an indication, not proof.",
@@ -2167,6 +2207,7 @@ translations! {
     KindObfuscator => ["obscurcisseur", "obfuscator", "ofuscador"],
     KindBundler => ["empaqueteur", "bundler", "empaquetador"],
     KindUnidentified => ["forme suspecte", "suspect shape", "forma sospechosa"],
+    KindAntiDebug => ["anti-débogage", "anti-debug", "antidepuración"],
 
     // --- Jumping from the overview to where a thing lives ---
     GoToSection => [

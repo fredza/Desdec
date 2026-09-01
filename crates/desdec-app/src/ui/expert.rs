@@ -6,12 +6,12 @@
 //! The pieces are exposed one by one rather than as a single block, so
 //! [`crate::ui::views`] can place them across its two-column layout.
 
-use desdec_core::{Analysis, Confidence, Hardening, Relro, hash};
+use desdec_core::{Analysis, Confidence, Hardening, Protection, ProtectionKind, Relro, hash};
 use eframe::egui;
 
 use crate::{
     i18n::{Language, Text, text},
-    ui::{ERROR, MUTED, card, format_size, monospace_value},
+    ui::{ERROR, FOUND, MUTED, card, format_size, monospace_value},
 };
 
 /// Extra identity rows, added to the file card already open in a `Grid`.
@@ -226,7 +226,12 @@ enum State {
     Unknown,
 }
 
-pub fn hardening_card(ui: &mut egui::Ui, hardening: Hardening, language: Language) {
+pub fn hardening_card(
+    ui: &mut egui::Ui,
+    hardening: Hardening,
+    protections: &[Protection],
+    language: Language,
+) {
     let yes = text(language, Text::Present).to_owned();
     let no = text(language, Text::Absent).to_owned();
     let state = |value: Option<bool>| match value {
@@ -250,11 +255,15 @@ pub fn hardening_card(ui: &mut egui::Ui, hardening: Hardening, language: Languag
             label: Text::RelroLabel,
             // RELRO is not a yes/no: partial protection still leaves the PLT
             // writable, so the degree is what matters.
+            // Said in the reader's language, and said fully: `full` was
+            // neither translated nor explained, and `partial` is the answer
+            // that needs explaining — it still leaves the PLT writable.
             state: match hardening.relro {
-                Some(Relro::Full) => State::Enabled(Relro::Full.label().to_owned()),
-                Some(degree @ (Relro::Partial | Relro::None)) => {
-                    State::Disabled(degree.label().to_owned())
+                Some(Relro::Full) => State::Enabled(text(language, Text::RelroFull).to_owned()),
+                Some(Relro::Partial) => {
+                    State::Disabled(text(language, Text::RelroPartial).to_owned())
                 }
+                Some(Relro::None) => State::Disabled(text(language, Text::RelroNone).to_owned()),
                 None => State::Unknown,
             },
             hint: None,
@@ -287,6 +296,20 @@ pub fn hardening_card(ui: &mut egui::Ui, hardening: Hardening, language: Languag
     ];
 
     card(ui, text(language, Text::Hardening), |ui| {
+        // Two questions under one heading, because "protection" means both and
+        // a reader asking about one has to be told which they are reading.
+        // What was done to the file comes first: it decides how to read
+        // everything else, the listing included.
+        ui.strong(text(language, Text::ProtectionApplied));
+        egui::Grid::new("expert_protection_applied")
+            .num_columns(2)
+            .spacing([24.0, 8.0])
+            .show(ui, |ui| {
+                applied_rows(ui, protections, language);
+            });
+
+        ui.add_space(10.0);
+        ui.strong(text(language, Text::ProtectionBuilt));
         egui::Grid::new("expert_hardening")
             .num_columns(2)
             .spacing([24.0, 8.0])
@@ -299,6 +322,88 @@ pub fn hardening_card(ui: &mut egui::Ui, hardening: Hardening, language: Languag
     });
 }
 
+/// Packing and anti-debug, answered whether or not anything was found.
+///
+/// Both rows are always drawn. A card that only mentions a packer when there
+/// is one leaves the reader unable to tell "this file is not packed" from
+/// "nobody looked" — and those are the two things they most need told apart
+/// before they trust a listing.
+fn applied_rows(ui: &mut egui::Ui, protections: &[Protection], language: Language) {
+    let mut rows = [
+        (Text::PackingRow, Text::NoPackingMarker, Vec::new()),
+        (Text::AntiDebugRow, Text::NoAntiDebugMarker, Vec::new()),
+    ];
+    for found in protections {
+        let row = match found.kind {
+            ProtectionKind::AntiDebug => 1,
+            _ => 0,
+        };
+        // The product where one is named, and the kind where none is: an
+        // unidentified lead has a shape and no culprit, and printing an empty
+        // name would leave a row saying nothing at all.
+        let said = if found.names_a_product() {
+            format!("{} ({})", found.name, kind_word(found.kind, language))
+        } else {
+            kind_word(found.kind, language).to_owned()
+        };
+        rows[row].2.push((said, found.evidence.clone(), found.confidence));
+    }
+
+    for (label, empty, findings) in &rows {
+        ui.strong(text(language, *label));
+        if findings.is_empty() {
+            ui.label(
+                egui::RichText::new(text(language, *empty))
+                    .color(MUTED)
+                    .italics(),
+            );
+        } else {
+            ui.vertical(|ui| {
+                for (said, evidence, confidence) in findings {
+                    // The finding in green — it is an answer, not a fault —
+                    // and how firmly it stands beside it, because a lead and a
+                    // certainty must not read the same.
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(said).color(FOUND).strong())
+                            .on_hover_text(evidence);
+                        ui.label(
+                            egui::RichText::new(text(language, strength(*confidence)))
+                                .small()
+                                .color(MUTED),
+                        );
+                    });
+                }
+            });
+        }
+        ui.end_row();
+    }
+}
+
+/// What a product does, in the reader's own language.
+pub const fn kind_word(kind: ProtectionKind, language: Language) -> &'static str {
+    text(
+        language,
+        match kind {
+            ProtectionKind::Packer => Text::KindPacker,
+            ProtectionKind::Protector => Text::KindProtector,
+            ProtectionKind::Virtualiser => Text::KindVirtualiser,
+            ProtectionKind::Obfuscator => Text::KindObfuscator,
+            ProtectionKind::Bundler => Text::KindBundler,
+            ProtectionKind::AntiDebug => Text::KindAntiDebug,
+            ProtectionKind::Unidentified => Text::KindUnidentified,
+        },
+    )
+}
+
+/// How firmly a finding stands, in the reader's language.
+const fn strength(confidence: Confidence) -> Text {
+    match confidence {
+        Confidence::Certain => Text::ProtectionCertain,
+        Confidence::Likely => Text::ProtectionLikely,
+        Confidence::Possible => Text::ProtectionPossible,
+    }
+}
+
 fn mitigation_row(ui: &mut egui::Ui, mitigation: &Mitigation, language: Language) {
     let label = ui.strong(text(language, mitigation.label));
     if let Some(hint) = mitigation.hint {
@@ -306,8 +411,11 @@ fn mitigation_row(ui: &mut egui::Ui, mitigation: &Mitigation, language: Language
     }
 
     match &mitigation.state {
+        // Green: a protection the build put in is the good answer on this
+        // half of the card, and drawing it in the ordinary text colour left
+        // the eye with only the red ones to land on.
         State::Enabled(value) => {
-            ui.label(value);
+            ui.label(egui::RichText::new(value).color(FOUND));
         }
         State::Disabled(value) => {
             ui.colored_label(ERROR, value);

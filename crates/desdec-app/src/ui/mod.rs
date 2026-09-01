@@ -50,6 +50,14 @@ pub const MUTED: egui::Color32 = egui::Color32::from_rgb(145, 155, 178);
 /// Reserved for messages the user must not miss.
 pub const ERROR: egui::Color32 = egui::Color32::from_rgb(232, 119, 91);
 
+/// Something the analysis found and can name.
+///
+/// Green, and deliberately not the red beside it: a protection the file
+/// carries is an answer, not a fault. Red is for what a reader is being warned
+/// about — a mitigation the file does *not* have — and using it for both would
+/// make the card read as though every line were bad news.
+pub const FOUND: egui::Color32 = egui::Color32::from_rgb(122, 190, 130);
+
 /// Section heading of a side panel: small, muted and uppercase.
 pub fn section_title(label: &str) -> egui::RichText {
     egui::RichText::new(label).color(MUTED).small().strong()

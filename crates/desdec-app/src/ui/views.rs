@@ -1,4 +1,4 @@
-use desdec_core::{Analysis, Confidence, NetworkUse, Protection, ProtectionKind, entropy};
+use desdec_core::{Analysis, Confidence, NetworkUse, Protection, entropy};
 use eframe::egui;
 
 use crate::{
@@ -6,7 +6,7 @@ use crate::{
     i18n::{Language, Text, text},
     preferences::accent,
     ui::{
-        ERROR, MUTED, assistant, card, classes, columns, compare, decompile, disassembly, dump,
+        ERROR, FOUND, MUTED, assistant, card, classes, columns, compare, decompile, disassembly, dump,
         expert, format_size, functions, graph, machine, monospace_value, patches_view, segments,
         strings, symbols, types, warning_sign, yara,
     },
@@ -417,7 +417,7 @@ fn expert_layout(
         |ui| {
             file_card(ui, analysis, language);
             ui.add_space(12.0);
-            expert::hardening_card(ui, analysis.details.hardening, language);
+            expert::hardening_card(ui, analysis.details.hardening, &analysis.protections, language);
         },
         |ui| {
             let found = findings_card(ui, analysis, language);
@@ -514,22 +514,28 @@ fn protection_alert(ui: &mut egui::Ui, analysis: &Analysis, language: Language) 
         ui.vertical(|ui| {
             // `horizontal`, never `horizontal_wrapped`: a wrapped row draws
             // every one of its parts at the same place in egui 0.31.
+            // Green, not red. Naming what a file was put through is an
+            // answer, and a good one: the reader now knows the listing below
+            // is the stub rather than the program. Red is for what they are
+            // being warned about — a mitigation the build left out — and
+            // spending it here made a successful identification look like a
+            // fault in the file.
             ui.horizontal(|ui| {
-                warning_sign(ui, ERROR);
+                warning_sign(ui, FOUND);
                 ui.label(
                     egui::RichText::new(text(language, Text::ProtectedBinary))
-                        .color(ERROR)
+                        .color(FOUND)
                         .strong(),
                 );
                 for (position, found) in named.iter().enumerate() {
                     if position > 0 {
-                        ui.label(egui::RichText::new("·").color(ERROR));
+                        ui.label(egui::RichText::new("·").color(FOUND));
                     }
-                    ui.label(egui::RichText::new(&found.name).color(ERROR).strong())
+                    ui.label(egui::RichText::new(&found.name).color(FOUND).strong())
                         .on_hover_text(&found.evidence);
                     ui.label(
-                        egui::RichText::new(format!("({})", kind_word(found.kind, language)))
-                            .color(ERROR),
+                        egui::RichText::new(format!("({})", expert::kind_word(found.kind, language)))
+                            .color(FOUND),
                     );
                 }
             });
@@ -575,7 +581,7 @@ fn suspicion_card(ui: &mut egui::Ui, leads: &[Protection], language: Language) {
                 // than one that probably does. The distinction is the whole
                 // reason these are not in the red banner above.
                 let colour = if lead.confidence >= Confidence::Likely {
-                    ERROR
+                    FOUND
                 } else {
                     MUTED
                 };
@@ -587,21 +593,6 @@ fn suspicion_card(ui: &mut egui::Ui, leads: &[Protection], language: Language) {
             });
         }
     });
-}
-
-/// What a product does, in the reader's own language.
-const fn kind_word(kind: ProtectionKind, language: Language) -> &'static str {
-    text(
-        language,
-        match kind {
-            ProtectionKind::Packer => Text::KindPacker,
-            ProtectionKind::Protector => Text::KindProtector,
-            ProtectionKind::Virtualiser => Text::KindVirtualiser,
-            ProtectionKind::Obfuscator => Text::KindObfuscator,
-            ProtectionKind::Bundler => Text::KindBundler,
-            ProtectionKind::Unidentified => Text::KindUnidentified,
-        },
-    )
 }
 
 /// The red flag: this file can reach the network.
@@ -868,7 +859,7 @@ mod tests {
     use desdec_core::{NetworkName, NetworkUse, Reach};
     use eframe::egui;
 
-    use super::{ERROR, code_may_be_obfuscated};
+    use super::{ERROR, FOUND, code_may_be_obfuscated};
     use crate::{
         i18n::{Language, Text, text},
         testing::{drawn, drawn_in_colour, window_input},
@@ -1008,7 +999,8 @@ mod tests {
     }
 
     /// A packed file's listing is its stub's, so the overview says so before
-    /// it says anything else — and names what it read that from.
+    /// it says anything else — names what it read that from, and says it in
+    /// green: it is an answer, not a fault.
     #[test]
     fn a_packed_file_is_flagged_by_name_and_by_evidence() {
         use desdec_core::{Confidence, Protection, ProtectionKind};
@@ -1041,13 +1033,23 @@ mod tests {
             said.contains("section UPX1"),
             "the finding is shown so the reader can check it: {said}"
         );
+        // Green, and the point of the assertion is that it is *not* red.
+        // Naming what a file was put through is an answer, and a good one —
+        // the reader now knows the listing below is the stub rather than the
+        // program. Red is what they are warned about: a protection the build
+        // left out. Spending it here made a successful identification read as
+        // a fault in the file, which is what this test used to require.
         assert!(
             painted
                 .iter()
-                .filter(|(_, colour)| *colour == ERROR)
+                .filter(|(_, colour)| *colour == FOUND)
                 .count()
                 >= 2,
-            "the mark and the product are both red: {painted:?}"
+            "the mark and the product are both green: {painted:?}"
+        );
+        assert!(
+            !painted.iter().any(|(_, colour)| *colour == ERROR),
+            "nothing here is red: {painted:?}"
         );
     }
 

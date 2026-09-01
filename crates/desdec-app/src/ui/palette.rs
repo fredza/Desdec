@@ -158,14 +158,24 @@ fn matching_recent(app: &DesdecApp) -> Vec<PathBuf> {
 
 fn matching_commands(app: &DesdecApp) -> Vec<Command> {
     let query = app.palette.query.to_lowercase();
+    let language = app.preferences.language;
     Command::ALL
         .iter()
         .copied()
         .filter(|command| {
-            command
-                .label(app.preferences.language)
-                .to_lowercase()
-                .contains(&query)
+            if command.label(language).to_lowercase().contains(&query) {
+                return true;
+            }
+            // The words a reader might type that the name does not contain —
+            // `version` for the About box. They are searched and never shown:
+            // an entry is known by its name, and a list where some rows carry
+            // a tail of synonyms reads as though those rows were different in
+            // kind.
+            command.search_words().is_some_and(|words| {
+                crate::i18n::text(language, words)
+                    .to_lowercase()
+                    .contains(&query)
+            })
         })
         .collect()
 }
@@ -374,6 +384,31 @@ mod tests {
 
     /// The palette is the one place the whole application is visible, so an
     /// empty query must list every command there is — no hidden entries.
+    /// A reader after the version types `version`, and the entry that answers
+    /// is called "About Desdec". The palette matched on the label alone, so it
+    /// answered nothing at all — and the name is no longer in the toolbar
+    /// either.
+    #[test]
+    fn typing_version_finds_the_about_box() {
+        let ctx = egui::Context::default();
+        for query in ["version", "licence", "build"] {
+            let app = searching(&ctx, query);
+            let matches = matching_commands(&app);
+            assert!(
+                matches.contains(&Command::About),
+                "{query:?} does not find About: {matches:?}"
+            );
+        }
+
+        // And the synonyms are searched, never drawn: the entry keeps its own
+        // name in the list.
+        let app = searching(&ctx, "version");
+        assert_eq!(
+            Command::About.label(app.preferences.language),
+            crate::i18n::text(app.preferences.language, crate::i18n::Text::About)
+        );
+    }
+
     #[test]
     fn recent_binaries_are_searchable_from_the_palette() {
         let mut app = DesdecApp::for_test(None, WorkspaceView::Overview);

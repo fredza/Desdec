@@ -63,13 +63,14 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                 }
 
                 ui.separator();
-                // The name is the way to About: an application's own identity
-                // is where a reader looks for its version, its source and its
-                // licence, and it was previously only reachable through the
-                // menu or a function key.
-                if name(app, ui).clicked() {
-                    app.dialogs.open(Dialog::About);
-                }
+                // The application's own name is not in this bar. It was the
+                // way to About, and it cost a permanent inch of a row that is
+                // otherwise entirely about the file being read — a program
+                // does not need to tell its reader what program it is, on
+                // every frame, in the place where the file's own name goes.
+                // About is on F1, in the menu, and in the command palette
+                // under `version`.
+                //
                 // The open file, and the way to close it. Closing used to live
                 // only in the collapsed side menu, which made it look as if a
                 // binary could not be closed at all.
@@ -81,35 +82,6 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                 }
             });
         });
-}
-
-/// The mark and the name, as one button: two labels side by side would be two
-/// things to click, one of which would do nothing.
-fn name(app: &DesdecApp, ui: &mut egui::Ui) -> egui::Response {
-    let mut job = egui::text::LayoutJob::default();
-    let colour = ui.visuals().text_color();
-    job.append(
-        "D",
-        0.0,
-        egui::TextFormat {
-            font_id: egui::FontId::proportional(20.0),
-            color: accent(app.preferences.theme),
-            ..egui::TextFormat::default()
-        },
-    );
-    job.append(
-        " Desdec",
-        0.0,
-        egui::TextFormat {
-            font_id: egui::TextStyle::Body.resolve(ui.style()),
-            color: colour,
-            ..egui::TextFormat::default()
-        },
-    );
-    let response = ui
-        .add(egui::Button::new(job).frame(false))
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    app.tooltip(response, app.t(Text::About))
 }
 
 /// Longest file name shown in full.
@@ -209,10 +181,15 @@ fn toolbar(app: &mut DesdecApp, ctx: &egui::Context, ui: &mut egui::Ui) {
 
     // The condition flags of the selected instruction, following the listing
     // row by row. Drawn in the bar's own direction rather than among the
-    // right-aligned actions, where they would have come out back to front, and
-    // only while there is room for them and for the actions after them: the
-    // bar is one fixed row, and a narrow window must not lose the calculator.
-    if ui.available_width() > flags::NEEDED_WIDTH {
+    // right-aligned actions, where they would have come out back to front.
+    //
+    // Only in the disassembly view: they answer a question about the selected
+    // *instruction*, and there is no selected instruction to speak of while
+    // the reader is looking at strings, at sections or at a call graph — six
+    // greyed letters there say nothing and take the room the calculator and
+    // the other actions need. And only while there is room for them: the bar
+    // is one fixed row.
+    if app.active_view == WorkspaceView::Disassembly && ui.available_width() > flags::NEEDED_WIDTH {
         ui.separator();
         flags::show(app, ui);
     }
@@ -258,48 +235,29 @@ mod tests {
         }
     }
 
-    /// Clicking the application's own name opens About — where its version,
-    /// its source and its licence are. That is where a reader looks for them,
-    /// and they were otherwise a menu entry or a function key away.
+    /// The bar does not name the application.
+    ///
+    /// It did, as a button opening About, and that cost a permanent inch of a
+    /// row otherwise entirely about the file being read. About is on F1, in
+    /// the menu, and in the palette under `version`; a program does not have
+    /// to tell its reader which program it is on every frame.
     #[test]
-    fn clicking_the_name_opens_about() {
+    fn the_bar_is_about_the_file_and_not_about_the_program() {
         let ctx = egui::Context::default();
         let mut app = opened_app(WorkspaceView::Overview);
-        assert!(!app.dialogs.is_open(Dialog::About));
+        app.preferences.show_toolbar = true;
 
-        // A first frame to find out where the name landed, then a click on it.
         let output = ctx.run(window_input(), |ctx| show(&mut app, ctx));
-        let (_, at) = crate::testing::drawn(&output.shapes)
-            .into_iter()
-            .find(|(text, _)| text.contains("Desdec"))
-            .expect("the bar draws the application's name");
-        let at = at + egui::vec2(20.0, 8.0);
-        let mut input = window_input();
-        input.events = vec![
-            egui::Event::PointerMoved(at),
-            egui::Event::PointerButton {
-                pos: at,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::default(),
-            },
-            egui::Event::PointerButton {
-                pos: at,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::default(),
-            },
-        ];
-        let _ = ctx.run(input, |ctx| show(&mut app, ctx));
 
+        let drawn = crate::testing::drawn_text(&output.shapes);
         assert!(
-            app.dialogs.is_open(Dialog::About),
-            "the name must be the way to About"
+            !drawn.contains("Desdec"),
+            "the bar still names the application: {drawn:?}"
         );
     }
 
-    /// With a binary open and the toolbar on, the bar still draws: the name of
-    /// the file, the way to close it, and the actions.
+    /// With a binary open and the toolbar on, the bar draws what it is for:
+    /// the name of the file, the way to close it, and the actions.
     #[test]
     fn the_bar_draws_with_a_binary_open() {
         let ctx = egui::Context::default();
@@ -308,8 +266,27 @@ mod tests {
 
         let output = ctx.run(window_input(), |ctx| show(&mut app, ctx));
 
+        // Taken from the file that was actually opened rather than written
+        // here: the suite analyses the runner's own executable, and
+        // `DESDEC_REFERENCE` points it at another one on the platforms that
+        // need it.
+        let opened = app
+            .analysis
+            .as_ref()
+            .expect("a binary is open")
+            .summary
+            .path
+            .file_name()
+            .expect("the open file has a name")
+            .to_string_lossy()
+            .chars()
+            .take(10)
+            .collect::<String>();
         let drawn = crate::testing::drawn_text(&output.shapes);
-        assert!(drawn.contains("Desdec"), "the bar names the application");
+        assert!(
+            drawn.contains(&opened),
+            "the bar does not name the open file {opened:?}: {drawn:?}"
+        );
         assert!(
             !output.shapes.is_empty(),
             "the bar must draw with a binary open"

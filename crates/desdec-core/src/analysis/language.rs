@@ -38,6 +38,9 @@ pub enum SourceLanguage {
     /// A Python program with an interpreter bundled around it, which is what
     /// a "compiled" Python file always is.
     Python,
+    /// Written in assembly and put together by an assembler, with no compiler
+    /// and no runtime in between.
+    Assembly,
 }
 
 impl SourceLanguage {
@@ -60,6 +63,7 @@ impl SourceLanguage {
             Self::OCaml => "OCaml",
             Self::Ada => "Ada",
             Self::Python => "Python",
+            Self::Assembly => "Assembly",
         }
     }
 }
@@ -113,6 +117,7 @@ pub fn detect(
     from_sections(file, sections, &mut found);
     from_producer_strings(file, &mut found);
     from_symbols(symbols, &mut found);
+    from_untyped_symbols(symbols, &mut found);
     from_runtime_names(symbols, &mut found);
     from_libraries(details, &mut found);
     from_imported_functions(details, &mut found);
@@ -187,6 +192,12 @@ fn producer(text: &str) -> Option<LanguageEvidence> {
         (SourceLanguage::Fortran, Confidence::Certain)
     } else if lower.starts_with("ghc ") || lower.contains("glasgow haskell") {
         (SourceLanguage::Haskell, Confidence::Certain)
+    } else if lower.starts_with("the netwide assembler") || lower.starts_with("nasm ") {
+        // NASM writes its banner into `.comment`, which is a product naming
+        // itself — the strongest kind of evidence this module has.
+        (SourceLanguage::Assembly, Confidence::Certain)
+    } else if lower.starts_with("yasm ") {
+        (SourceLanguage::Assembly, Confidence::Certain)
     } else if lower.starts_with("gcc:") || lower.starts_with("clang version") {
         // A C compiler also builds C++, and links the runtime of Rust, Go and
         // the rest — so it names the toolchain without settling the language.
@@ -200,6 +211,50 @@ fn producer(text: &str) -> Option<LanguageEvidence> {
         evidence: text.to_owned(),
         toolchain: Some(text.to_owned()),
     })
+}
+
+/// A file nothing typed, which is what an assembler leaves behind.
+///
+/// This module infers nothing from absence — that rule is what keeps it from
+/// answering "C" whenever it recognises nothing — and this is not an
+/// exception to it. `STT_NOTYPE` is a statement the symbol table makes about
+/// every name it holds, and it is a statement no compiler makes: `gcc`,
+/// `clang`, `rustc` and the rest emit `.type` for each function and object
+/// they define, because the linker and the debugger need it. An assembler
+/// emits it only where the author wrote the directive by hand.
+///
+/// So: names, all of them defined, none of them typed. A stripped binary has
+/// no names and gets no finding, which is right — it says nothing about how it
+/// was built. Reported as `Likely` rather than `Certain` because a hand-written
+/// `.type` in one file of a program would take it away, and because a compiler
+/// output stripped down to a couple of untyped labels could reach it.
+fn from_untyped_symbols(symbols: &[Symbol], found: &mut Vec<LanguageEvidence>) {
+    /// Below this a file says too little. Two labels are what a linker script
+    /// or a partially stripped object can leave behind on their own.
+    const ENOUGH: usize = 3;
+
+    let defined: Vec<&Symbol> = symbols
+        .iter()
+        .filter(|symbol| !symbol.imported && symbol.address.is_some())
+        .collect();
+    if defined.len() < ENOUGH {
+        return;
+    }
+    if defined
+        .iter()
+        .any(|symbol| symbol.kind != crate::analysis::SymbolKind::Untyped)
+    {
+        return;
+    }
+    found.push(LanguageEvidence {
+        language: SourceLanguage::Assembly,
+        confidence: Confidence::Likely,
+        evidence: format!(
+            "{} defined names, none of them typed: a compiler emits .type for every one",
+            defined.len()
+        ),
+        toolchain: None,
+    });
 }
 
 /// Markers left in the raw bytes, which is what a stripped binary still has.
@@ -642,6 +697,51 @@ mod tests {
             imported: false,
             ..Symbol::default()
         }
+    }
+
+    /// A binary an assembler produced answers "Assembly", where it used to
+    /// answer nothing at all.
+    ///
+    /// Reported from what the symbol table *states* — `STT_NOTYPE` on every
+    /// defined name — and not from the absence of a compiler marker, which is
+    /// the rule this module is built on. Checked against a real one: `nasm -f
+    /// elf64` and `ld` produce a file whose five defined names are all
+    /// untyped, and Desdec's own binary, whose names are typed, gets no such
+    /// finding.
+    #[test]
+    fn a_file_nothing_typed_is_reported_as_assembly() {
+        let untyped = |name: &str| Symbol {
+            kind: crate::analysis::SymbolKind::Untyped,
+            ..symbol(name)
+        };
+        let hand_written = [
+            untyped("_start"),
+            untyped("msg"),
+            untyped("msglen"),
+            untyped("__bss_start"),
+        ];
+        let mut found = Vec::new();
+        from_untyped_symbols(&hand_written, &mut found);
+        assert_eq!(
+            found
+                .iter()
+                .map(|evidence| (evidence.language, evidence.confidence))
+                .collect::<Vec<_>>(),
+            vec![(SourceLanguage::Assembly, Confidence::Likely)]
+        );
+
+        // One name a compiler typed is enough to say a compiler was there.
+        let mut compiled = hand_written.clone();
+        compiled[1].kind = crate::analysis::SymbolKind::Function;
+        let mut found = Vec::new();
+        from_untyped_symbols(&compiled, &mut found);
+        assert!(found.is_empty(), "{found:?}");
+
+        // And a file with almost no names says nothing about how it was
+        // built — a stripped binary must not come out as hand-written.
+        let mut found = Vec::new();
+        from_untyped_symbols(&hand_written[..2], &mut found);
+        assert!(found.is_empty(), "{found:?}");
     }
 
     fn named_section(name: &str) -> Section {

@@ -36,9 +36,16 @@ use super::{Section, Symbol, details::BinaryDetails, entropy, language::Confiden
 pub enum ProtectionKind {
     /// Compresses the program and unpacks it at run time.
     Packer,
-    /// Defends the program against being read or altered: anti-debug,
-    /// licensing, integrity checks.
+    /// Defends the program against being read or altered: licensing,
+    /// integrity checks, a stub that refuses to run under a debugger.
     Protector,
+    /// The program watches for a debugger.
+    ///
+    /// Its own kind rather than a `Protector`, because it is the one finding
+    /// here that an ordinary program makes innocently — a crash reporter asks
+    /// the same question — and because it is the first thing a reader wants
+    /// listed separately: it says what will happen when they attach.
+    AntiDebug,
     /// Rewrites the code into a form that decodes to something else, usually
     /// a virtual machine of the product's own.
     Virtualiser,
@@ -57,6 +64,7 @@ impl ProtectionKind {
         match self {
             Self::Packer => "packer",
             Self::Protector => "protector",
+            Self::AntiDebug => "anti-debug",
             Self::Virtualiser => "virtualiser",
             Self::Obfuscator => "obfuscator",
             Self::Bundler => "bundler",
@@ -477,6 +485,15 @@ static ANTI_DEBUG_IMPORTS: &[ImportMarker] = &[
         name: &masked(b"OutputDebugStringA"),
         reason: &masked(b"is used as a debugger-presence probe"),
     },
+    // The Unix half, which was missing entirely: a program that asks to be
+    // traced by its own parent cannot then be traced by anyone else, and that
+    // one call is how nearly every Linux anti-debug check begins. It is also
+    // what a debugger, `strace` and a crash handler call, so it says no more
+    // than the Windows names beside it do.
+    ImportMarker {
+        name: &masked(b"ptrace"),
+        reason: &masked(b"can ask to be traced by its own parent, which locks a debugger out"),
+    },
 ];
 
 /// Most bytes scanned for markers, at each end of the file.
@@ -600,7 +617,7 @@ fn from_imports(details: &BinaryDetails, found: &mut Vec<Protection>) {
     for marker in seen {
         found.push(Protection {
             name: String::new(),
-            kind: ProtectionKind::Protector,
+            kind: ProtectionKind::AntiDebug,
             // A check is a check, not a product: an ordinary program may make
             // the same call, so this points without settling anything.
             confidence: Confidence::Possible,

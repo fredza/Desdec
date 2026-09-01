@@ -172,10 +172,17 @@ commands! {
     // and starts another program, and a reader should have chosen the key that
     // does that.
     SendToAsmStudio => [Disassembly, SendToAsmStudio], None,
-    // Setting this binary beside another one. No default key: it opens a file
-    // dialog, and a keystroke that puts a dialog on the screen is one the
-    // reader should have chosen.
-    Compare => [Compare], None,
+    // Setting this binary beside another one. `Ctrl+Shift+K` because the view
+    // was the one thing here a reader could not reach by key — every other
+    // view has had one since they were numbered — and because K is the only
+    // letter of the word that no other shortcut had taken. Like every key in
+    // this table it is a default and not a fixture: Preferences reassigns it.
+    //
+    // The command opens the *view* and nothing else. Choosing the other file
+    // keeps no key of its own, deliberately: it puts a file dialog on the
+    // screen, and a keystroke that does that is one the reader should have
+    // chosen for themselves.
+    Compare => [Compare], Some(Shortcut::ctrl_shift(KeyName::K)),
     CompareChooseOther => [Compare, CompareChooseOther], None,
     CompareForget => [Compare, CompareForget], None,
     Yara => [Yara], None,
@@ -191,6 +198,23 @@ impl Command {
             .map(|item| text(language, *item))
             .collect::<Vec<_>>()
             .join(": ")
+    }
+
+    /// Words a reader may search the palette for that the label does not hold.
+    ///
+    /// The palette matches on the label, which is the command's name — and a
+    /// name is not always what someone types. Asked for the version of the
+    /// program, a reader types `version`; the entry that answers is called
+    /// "About Desdec", and until this existed the palette had nothing for
+    /// them. Kept to the few commands whose name genuinely answers to another
+    /// word: a table of synonyms for everything would make every query match
+    /// half the list.
+    #[must_use]
+    pub const fn search_words(self) -> Option<crate::i18n::Text> {
+        match self {
+            Self::About => Some(crate::i18n::Text::AboutSearchWords),
+            _ => None,
+        }
     }
 
     /// Whether a key combination can be assigned to this command.
