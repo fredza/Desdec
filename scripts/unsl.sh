@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Takes back out what `insl.sh` put in: the binary, the icon, the menu entry,
-# and the one PATH line it appended to your shell profile.
+# and the one PATH line it appended to your shell profile. On a Mac it takes
+# out the application bundle `install.sh` and `install-local.sh` write, which
+# is what a menu entry is on that side.
 #
 #   scripts/unsl.sh                     # remove ~/.local/bin/desdec and its desktop files
 #   scripts/unsl.sh --dry-run           # say what would go, remove nothing
@@ -21,8 +23,8 @@
 # What it will not do is delete something it cannot identify. The binary is
 # read, not run: a version too old to answer `--version` would open a window
 # instead of answering, and a Desdec too broken to start is exactly the one
-# you want to be able to remove. It is removed if it is a 64-bit ELF carrying
-# the application's own name, and refused otherwise — `--name ls --prefix
+# you want to be able to remove. It is removed if it is a 64-bit ELF or Mach-O
+# carrying the application's own name, and refused otherwise — `--name ls --prefix
 # /usr/bin` takes nothing out.
 #
 # The reader's own files are kept unless you ask for them by name: notes,
@@ -56,8 +58,8 @@ Usage: unsl.sh [options]
   --keep-path      Do not touch the PATH line in your shell profile
   -h, --help       Show this message
 
-DESDEC_PREFIX, XDG_DATA_HOME and XDG_CONFIG_HOME say where to look, the same
-way they do for insl.sh.
+DESDEC_PREFIX, XDG_DATA_HOME, XDG_CONFIG_HOME and DESDEC_APPLICATIONS say
+where to look, the same way they do for insl.sh and install.sh.
 USAGE
 }
 
@@ -98,8 +100,10 @@ drop() {
 
 if [ "$name" = "$DEFAULT_NAME" ]; then
     desktop_file="Desdec.desktop"
+    app_label="Desdec"
 else
     desktop_file="$name.desktop"
+    app_label="Desdec ($name)"
 fi
 
 # The binary — read to be sure of what it is, never executed.
@@ -108,16 +112,48 @@ if [ ! -e "$binary" ]; then
     say "no $binary — nothing installed there under that name"
     kept=$((kept + 1))
 else
+    # A 64-bit ELF here, a 64-bit Mach-O on a Mac: `cffaedfe` is `MH_MAGIC_64`
+    # as it is written down, little-endian, which is every Mac this program is
+    # built for. A universal binary (`cafebabe`) is not accepted — Desdec
+    # publishes none, and what one holds cannot be told from four bytes.
     magic="$(head -c 5 -- "$binary" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
-    if [ "$magic" != "7f454c4602" ]; then
-        die "$binary is not a 64-bit ELF — refusing to remove it"
-    fi
+    case "$magic" in
+        7f454c4602*) ;;
+        cffaedfe*)   ;;
+        *) die "$binary is not a 64-bit ELF or Mach-O — refusing to remove it" ;;
+    esac
     # Its own application id, which every build carries and which nothing else
     # on a prefix is likely to. Cheaper and surer than trusting the file name.
     if ! grep -qa 'Desdec' -- "$binary"; then
         die "$binary does not look like Desdec — refusing to remove it"
     fi
     drop "$binary"
+fi
+
+# The macOS application bundle, if it is the one belonging to what was just
+# removed.
+#
+# It cannot be matched by a path the way the desktop entry is: a bundle holds a
+# *copy* of the binary rather than a line naming one. What ties it to this
+# install is its `CFBundleExecutable`, which is the install name — and that is
+# checked, along with the copy really being Desdec, before anything recursive
+# happens to a directory. A bundle that answers otherwise is left alone and
+# said so: it belongs to another install, and taking it out would leave that
+# one without a way into the Dock.
+app="${DESDEC_APPLICATIONS:-$HOME/Applications}/$app_label.app"
+if [ -d "$app" ]; then
+    plist="$app/Contents/Info.plist"
+    inside="$app/Contents/MacOS/$name"
+    # Read out of the plist as a string rather than with a parser: `plutil` is
+    # on a Mac and nowhere else, and this file was written by `install.sh` or
+    # `install-local.sh` on one line each.
+    executable="$(sed -n 's|.*<key>CFBundleExecutable</key><string>\([^<]*\)</string>.*|\1|p' "$plist" 2>/dev/null | head -1)"
+    if [ "$executable" = "$name" ] && [ -f "$inside" ] && grep -qa 'Desdec' -- "$inside"; then
+        drop "$app"
+    else
+        warn "$app is not the bundle of $binary — left as it is"
+        kept=$((kept + 1))
+    fi
 fi
 
 # The icon, in every size a past install may have written it at: v0.4.1 writes

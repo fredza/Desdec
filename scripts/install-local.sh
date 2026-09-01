@@ -8,8 +8,10 @@
 #
 # On Linux it also puts Desdec in the desktop menu: the entry from
 # `packaging/`, and the icon asked of the binary that was just installed, both
-# under the user's own data directory. Nothing there needs root either, and
-# `--no-desktop` skips the whole of it.
+# under the user's own data directory. On macOS it writes the application
+# bundle that does the same job there — `~/Applications/Desdec.app`, with the
+# icon asked of the same binary. Nothing there needs root either, and
+# `--no-desktop` skips whichever of the two this machine would have got.
 #
 # No network, no release, no checksum — there is nothing to check, because
 # nothing was downloaded. The binary comes out of the sources in front of you,
@@ -47,7 +49,7 @@ Usage: install-local.sh [options]
 
   --prefix <dir>   Install into this directory (default: ~/.local/bin)
   --name <name>    Install under this name (default: desdec)
-  --no-desktop     Do not add the menu entry and its icon (Linux only)
+  --no-desktop     Do not add the menu entry, its icon or the macOS bundle
   -h, --help       Show this message
 
 The environment variable DESDEC_PREFIX sets the default prefix, and
@@ -167,8 +169,94 @@ else
     menu_name="Desdec ($name)"
 fi
 
+# The macOS application bundle, which is what a menu entry is on that side:
+# a binary in `~/.local/bin` is reachable from a terminal and from nowhere
+# else, and macOS puts a program in the Dock, in Spotlight and in Launchpad by
+# way of a bundle. The same one `install.sh` writes for a downloaded release,
+# from the binary this checkout just built.
+install_app_bundle() {
+    local label="$menu_name"
+    local identifier="io.github.fredza.desdec"
+    if [ "$name" != "$DEFAULT_NAME" ]; then
+        # macOS identifies an application by its bundle identifier and by
+        # nothing else, so a side install needs one of its own or Launch
+        # Services may open either for the other. Anything an identifier may
+        # not hold becomes a dash.
+        identifier="io.github.fredza.$(printf '%s' "$name" | tr -c 'A-Za-z0-9-' '-')"
+    fi
+    local app="${DESDEC_APPLICATIONS:-$HOME/Applications}/$label.app"
+    local contents="$app/Contents"
+
+    mkdir -p "$contents/MacOS" "$contents/Resources" || {
+        warn "cannot write $app — skipping the application bundle"
+        return 0
+    }
+
+    # Asked of the binary itself, as an `.icns`, which is the only kind of file
+    # the Dock reads. A Desdec from before 2026-09-01 writes a PNG whatever the
+    # extension, and a bundle carrying one shows the blank sheet macOS uses for
+    # an application with no icon — so the four bytes are read back, and the
+    # bundle goes without an icon rather than with a wrong one.
+    local icon="$contents/Resources/$name.icns"
+    local icon_key=""
+    if "$target" --write-icon "$icon" 2>/dev/null && [ "$(head -c 4 "$icon" 2>/dev/null)" = "icns" ]; then
+        icon_key="    <key>CFBundleIconFile</key><string>$name</string>"
+    else
+        rm -f "$icon"
+        warn "$target could not write an .icns — the bundle goes without an icon"
+    fi
+
+    # The version the binary announces, not the one the checkout's Cargo.toml
+    # says: it is this binary that will be launched. Absent when `--version`
+    # was not asked or did not answer, rather than guessed at.
+    local version_keys=""
+    case "$reported" in
+        desdec\ v*)
+            local version="${reported#desdec v}"
+            version="${version%% *}"
+            version_keys="    <key>CFBundleShortVersionString</key><string>$version</string>
+    <key>CFBundleVersion</key><string>$version</string>"
+            ;;
+    esac
+
+    # Copied in rather than symlinked out: a bundle whose executable points
+    # outside itself is not what any part of macOS expects to find, and a
+    # rebuilt checkout would otherwise change what the Dock launches without
+    # anyone asking it to.
+    cp "$target" "$contents/MacOS/$name" || {
+        warn "cannot copy the binary into $app — skipping the application bundle"
+        return 0
+    }
+    chmod +x "$contents/MacOS/$name"
+
+    cat > "$contents/Info.plist" <<PLIST || { warn "cannot write $contents/Info.plist"; return 0; }
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>$label</string>
+    <key>CFBundleDisplayName</key><string>$label</string>
+    <key>CFBundleIdentifier</key><string>$identifier</string>
+    <key>CFBundleExecutable</key><string>$name</string>
+$icon_key
+$version_keys
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
+
+    # The Finder notices a bundle whose directory changed; without this it can
+    # keep showing the previous icon until it is asked again.
+    touch "$app" 2>/dev/null || true
+    say "Added the application $app"
+}
+
 if [ "$desktop" = yes ] && [ "$(uname -s)" = Linux ]; then
     install_desktop_entry
+elif [ "$desktop" = yes ] && [ "$(uname -s)" = Darwin ]; then
+    install_app_bundle
 fi
 
 case ":$PATH:" in
