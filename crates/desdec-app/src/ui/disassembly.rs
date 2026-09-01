@@ -142,7 +142,7 @@ struct Listing<'a> {
     hints: bool,
     /// How wide each column is held, in pixels, so the listing does not walk
     /// sideways as the reader scrolls; see [`Columns`].
-    columns: [f32; 4],
+    columns: [f32; 5],
     /// The emulated run, when one has been started: where it stands now, and
     /// which rows the reader has put a breakpoint on.
     ///
@@ -666,64 +666,126 @@ fn two_readings(
         offset: 0.0,
     };
     let ordinary_spacing = ui.spacing().item_spacing;
-    ui.spacing_mut().item_spacing.x = PSEUDOCODE_GUTTER;
-    ui.columns(2, |columns| {
-        // `columns` inherits the spacing used for its gutter. Restore the
-        // usual compact spacing inside each column itself.
-        columns[0].spacing_mut().item_spacing = ordinary_spacing;
-        columns[1].spacing_mut().item_spacing = ordinary_spacing;
-        // The listing goes first, and the pseudo-code follows the offset it
-        // ends up at. It is the one that answers a jump to an address and the
-        // one the overview ruler reports, so it decides where the pair stands;
-        // drawing it second would leave the panel beside it holding last
-        // frame's position.
-        drawn = instructions(
-            &mut columns[0],
-            analysis,
-            state.selected_instruction,
-            scroll_target,
-            state.pending_scroll,
-            attention,
-            listing,
-            *state.scrolled_from_pseudocode,
-        );
+    let full_width = ui.available_width();
+    let listing_width = listing_share(ui, listing.columns, full_width, PSEUDOCODE_GUTTER);
+    let pseudocode_width = (full_width - PSEUDOCODE_GUTTER - listing_width).max(0.0);
+    let top_left = ui.cursor().min;
+    // Filled by the right-hand column below. An `Option` rather than a default
+    // standing in for it: a panel that reported an offset of zero without
+    // having been drawn would read as the reader having scrolled to the top.
+    let mut pseudocode: Option<decompile::PanelOutput> = None;
 
-        // Clicking a pseudo-code line here only moves the selection: the
-        // assembly it stands for is already in the left column, so the address
-        // it reports has no window to open.
-        let panel = decompile::panel(
-            &mut columns[1],
-            analysis,
-            state.selected_instruction,
-            scroll_target,
-            state.pending_scroll,
-            attention,
-            &decompile::PanelLayout {
+    // Placed here rather than by `Ui::columns`, which halves the width
+    // whatever the two sides hold. Half is the wrong answer twice over: the
+    // listing's own scroll area then cut every instruction longer than it at
+    // the middle of the window — `je 0x00000000000` and no more — while a
+    // file of short instructions left that half empty and squeezed the
+    // pseudo-code for nothing. See `listing_share`.
+    let heights = [
+        crate::ui::column(ui, top_left, listing_width, |ui| {
+            ui.spacing_mut().item_spacing = ordinary_spacing;
+            // The listing goes first, and the pseudo-code follows the offset
+            // it ends up at. It is the one that answers a jump to an address
+            // and the one the overview ruler reports, so it decides where the
+            // pair stands; drawing it second would leave the panel beside it
+            // holding last frame's position.
+            drawn = instructions(
+                ui,
+                analysis,
+                state.selected_instruction,
+                scroll_target,
+                state.pending_scroll,
+                attention,
+                listing,
+                *state.scrolled_from_pseudocode,
+            );
+        }),
+        crate::ui::column(
+            ui,
+            top_left + egui::vec2(listing_width + PSEUDOCODE_GUTTER, 0.0),
+            pseudocode_width,
+            |ui| {
+                ui.spacing_mut().item_spacing = ordinary_spacing;
+                // Clicking a pseudo-code line here only moves the selection:
+                // the assembly it stands for is already in the left column, so
+                // the address it reports has no window to open.
+                pseudocode = Some(decompile::panel(
+                    ui,
+                    analysis,
+                    state.selected_instruction,
+                    scroll_target,
+                    state.pending_scroll,
+                    attention,
+                    &decompile::PanelLayout {
                 // The same rows the listing draws, headings included, so the
                 // two columns say the same thing on the same line all the way
                 // down.
-                sections: listing.sections,
-                // No address column: the listing beside it carries the same
-                // address on the same row.
-                with_addresses: false,
-                follow: Some(drawn.offset),
-                // Inside the panel, on row zero, opposite the listing's own
-                // column headings — never above it; see `PanelLayout::title`.
-                title: Some(decompile::PanelTitle {
-                    label: text(language, Text::PseudoCode),
-                    help: text(language, Text::PseudoCodeHelp),
-                }),
+                        sections: listing.sections,
+                        // No address column: the listing beside it carries the
+                        // same address on the same row.
+                        with_addresses: false,
+                        follow: Some(drawn.offset),
+                        // Inside the panel, on row zero, opposite the
+                        // listing's own column headings — never above it; see
+                        // `PanelLayout::title`.
+                        title: Some(decompile::PanelTitle {
+                            label: text(language, Text::PseudoCode),
+                            help: text(language, Text::PseudoCodeHelp),
+                        }),
+                    },
+                ));
             },
-        );
-        // The wheel over this panel scrolled it away from the listing. Held
-        // for the next frame rather than acted on now — the listing has
-        // already been drawn — which is one frame of the pair standing apart,
-        // and the price of letting the reader scroll from either side.
-        *state.scrolled_from_pseudocode =
-            ((panel.offset - drawn.offset).abs() > LINKED_SLACK).then_some(panel.offset);
-    });
-    ui.spacing_mut().item_spacing = ordinary_spacing;
+        ),
+    ];
+    // The wheel over the panel scrolled it away from the listing. Held for the
+    // next frame rather than acted on now — the listing has already been drawn
+    // — which is one frame of the pair standing apart, and the price of
+    // letting the reader scroll from either side.
+    if let Some(pseudocode) = pseudocode {
+        *state.scrolled_from_pseudocode = ((pseudocode.offset - drawn.offset).abs()
+            > LINKED_SLACK)
+            .then_some(pseudocode.offset);
+    }
+
+    // The row takes the width it was given and the height of its taller side,
+    // never the width its contents asked for.
+    ui.allocate_rect(
+        egui::Rect::from_min_size(
+            top_left,
+            egui::vec2(full_width, heights[0].max(heights[1])),
+        ),
+        egui::Sense::hover(),
+    );
     drawn
+}
+
+/// How much of the width the listing takes, the pseudo-code getting the rest.
+///
+/// Halving it is what the view did, and it is the wrong answer in both
+/// directions: on a file whose longest line is `mov %rax,%rbx` the pseudo-code
+/// went short while half the listing stood empty, and on one holding
+/// `movsd 0x1234(%rip),%xmm0` the instruction ran under the pseudo-code beside
+/// it.
+///
+/// So the listing asks for what a whole line of it needs, and gets it — up to
+/// the point where the pseudo-code would be narrower than [`PSEUDOCODE_FLOOR`]
+/// characters, which is where a reading of the code stops being one. It is
+/// never given less than half, so no window is worse off than before. Past
+/// that, the listing's own horizontal scrollbar carries the rest: it is the
+/// one thing that does not lose a single character of the instruction.
+fn listing_share(ui: &egui::Ui, columns: [f32; 5], full: f32, gutter: f32) -> f32 {
+    /// Below this the pseudo-code says nothing a reader can use: `goto
+    /// label_0x0000000000000390;` alone is twenty-nine characters, and the
+    /// panel is there to be read, not to prove it exists.
+    const PSEUDOCODE_FLOOR: usize = 32;
+
+    let spacing = ui.spacing().item_spacing.x;
+    // Its five columns, the gutter cell the jump arrows are drawn in, and the
+    // space the grid puts between the six.
+    let wanted: f32 = columns.iter().sum::<f32>() + GUTTER_WIDTH + spacing * 6.0;
+    let half = ((full - gutter) / 2.0).max(0.0);
+    let most = (full - gutter - text_width(ui, PSEUDOCODE_FLOOR)).max(half);
+    wanted.clamp(half, most)
 }
 
 fn instructions(
@@ -751,6 +813,14 @@ fn instructions(
     let target_row = scroll_target
         .and_then(|address| analysis.instruction_index(address))
         .map(|index| row_of(listing.sections, LEADING, index));
+    // A listing scrolls sideways for a reason the panels of this application
+    // do not: an instruction is one line that cannot be wrapped, cannot be
+    // shortened, and is the thing the reader came for. egui's floating
+    // scrollbars are two pixels tall until the pointer is over them, which is
+    // right for a bar nobody needs and wrong for a bar that carries the end of
+    // every long line. Here it is a real bar, held open whenever the listing
+    // is wider than the room it was given.
+    ui.spacing_mut().scroll.floating = false;
     let area = decompile::listing_area_at_row(
         egui::ScrollArea::both().id_salt("instructions"),
         ui,
@@ -786,13 +856,13 @@ fn instructions(
                             // are their own legend, and a word here would be read
                             // as a column of data.
                             gutter_cell(ui);
-                            let [address, bytes, section, stack] = listing.columns;
+                            let [address, bytes, section, stack, instruction] = listing.columns;
                             for (title, width) in [
                                 (Text::Address, address),
                                 (Text::Bytes, bytes),
                                 (Text::Section, section),
                                 (Text::Stack, stack),
-                                (Text::Instruction, 0.0),
+                                (Text::Instruction, instruction),
                             ] {
                                 sized_cell(ui, width, |ui| ui.strong(text(language, title)));
                             }
@@ -1235,6 +1305,15 @@ pub struct Columns {
     pub bytes: usize,
     pub section: usize,
     pub stack: usize,
+    /// The widest line of assembly the file holds.
+    ///
+    /// Measured like the others, and for a second reason on top of theirs:
+    /// it is what the view divides its width by, so that a whole instruction
+    /// is readable without dragging. It counts the decoder's own text — the
+    /// reader's label and comment ride past the end of the line, and a column
+    /// sized to hold them would be mostly empty on every row that carries
+    /// neither.
+    pub instruction: usize,
 }
 
 impl Columns {
@@ -1246,7 +1325,7 @@ impl Columns {
     /// whose heading was wider than its data grew by exactly that much on the
     /// one screenful where the heading is visible, which put it a pixel to the
     /// right of where every other screenful had it.
-    fn pixels(self, ui: &egui::Ui, language: Language) -> [f32; 4] {
+    fn pixels(self, ui: &egui::Ui, language: Language) -> [f32; 5] {
         let heading = |title: Text| {
             let text = text(language, title).to_owned();
             let font = egui::TextStyle::Body.resolve(ui.style());
@@ -1262,6 +1341,7 @@ impl Columns {
             (self.bytes, Text::Bytes),
             (self.section, Text::Section),
             (self.stack, Text::Stack),
+            (self.instruction, Text::Instruction),
         ]
         .map(|(characters, title)| text_width(ui, characters).max(heading(title)))
     }
@@ -1277,9 +1357,11 @@ impl Columns {
         let address = 18;
         let mut bytes = 1;
         let mut section = 1;
+        let mut instruction_text = 1;
         for instruction in &analysis.instructions {
             bytes = bytes.max(instruction.bytes.as_slice().len());
             section = section.max(instruction.section.chars().count());
+            instruction_text = instruction_text.max(instruction.text.chars().count());
         }
         let mut stack_width = 1;
         for index in 0..analysis.instructions.len() {
@@ -1295,6 +1377,7 @@ impl Columns {
             bytes: bytes * 3 - 1 + 2,
             section,
             stack: stack_width,
+            instruction: instruction_text,
         }
     }
 }
@@ -2225,6 +2308,63 @@ mod tests {
     /// column right of the bytes — sixty-three pixels, measured on the
     /// reference binary. Drawn at two scroll positions here, and every column
     /// has to land in the same place in both.
+    /// The listing gets the width a whole line of it needs, and the
+    /// pseudo-code keeps a floor.
+    ///
+    /// Halving it — which is what `Ui::columns` did — is wrong in both
+    /// directions: a file whose longest line is `mov %rax,%rbx` left half the
+    /// listing empty while the pseudo-code went short, and one holding
+    /// `movsd 0x1234(%rip),%xmm0` had its instructions cut off mid-operand at
+    /// the middle of the window. Cut off rather than painted over: the scroll
+    /// area clips its own contents, which is why nothing about this was
+    /// visible in a rendered sheet — that draws every shape, clipped or not.
+    #[test]
+    fn the_listing_is_given_the_width_a_line_of_it_needs() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(window_input(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                // Address, bytes, section, stack, instruction — a file whose
+                // longest line is wide, and one whose longest line is short.
+                let wide = [200.0, 300.0, 60.0, 40.0, 400.0];
+                let narrow = [200.0, 300.0, 60.0, 40.0, 40.0];
+                let gutter = 36.0;
+                let spacing = ui.spacing().item_spacing.x;
+                let wanted =
+                    |columns: [f32; 5]| columns.iter().sum::<f32>() + super::GUTTER_WIDTH + spacing * 6.0;
+
+                // Room for everything: the listing takes what it asked for and
+                // not a pixel more, so the pseudo-code keeps the rest.
+                let plenty = wanted(wide) + 800.0;
+                assert!(
+                    (super::listing_share(ui, wide, plenty, gutter) - wanted(wide)).abs() < 0.5,
+                    "with room to spare the listing should take exactly what it needs"
+                );
+
+                // A short listing never gives away more than half, so no
+                // window is worse off than it was before this split existed.
+                assert!(
+                    super::listing_share(ui, narrow, plenty, gutter) >= (plenty - gutter) / 2.0 - 0.5,
+                    "the listing is never narrower than the half it used to get"
+                );
+
+                // Too little room for both: the pseudo-code keeps a floor, and
+                // what the listing cannot show goes to its horizontal
+                // scrollbar rather than off the end of the panel.
+                let tight = 700.0;
+                let share = super::listing_share(ui, wide, tight, gutter);
+                let left_over = tight - gutter - share;
+                assert!(
+                    left_over > 0.0,
+                    "the pseudo-code is left {left_over} pixels of a {tight} pixel window"
+                );
+                assert!(
+                    share >= (tight - gutter) / 2.0 - 0.5,
+                    "and the listing still gets its half"
+                );
+            });
+        });
+    }
+
     #[test]
     fn the_columns_stay_where_they_are_as_the_listing_scrolls() {
         fn column_positions(at: Option<u64>) -> Vec<f32> {
@@ -2308,7 +2448,7 @@ mod tests {
                     notes: &app.annotations,
                     members: &app.member_names,
                     hints: false,
-                    columns: [0.0; 4],
+                    columns: [0.0; 5],
                     machine: app.machine.as_ref(),
                     nasm: None,
                     language: Language::English,

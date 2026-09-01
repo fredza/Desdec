@@ -274,7 +274,9 @@ pub fn columns_over<T>(
 /// One column of [`columns`], held to its width whatever it is asked to draw.
 ///
 /// Returns how tall what it drew turned out to be.
-fn column(
+/// One column of a hand-placed row: a `Ui` of exactly this width, clipped to
+/// it.
+pub(crate) fn column(
     ui: &mut egui::Ui,
     top_left: egui::Pos2,
     width: f32,
