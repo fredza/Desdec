@@ -15,6 +15,11 @@ on:
   # standard runners are not billed. It was not, while it was private — one
   # full run cost 315 billed minutes of the 2 000 a month included, Linux
   # counting once, Windows twice and macOS ten times.
+  # Pushing the branch and the tag in one request — `git push origin main
+  # vX.Y.Z` — is worth the habit: the two are separate events otherwise, and
+  # the branch's run can be created before the tag exists, which is the one
+  # case where the check below cannot see it. GitHub built them one second
+  # apart, in that order, at v0.4.69.
   push:
     branches:
       - main
@@ -55,8 +60,15 @@ jobs:
   version:
     name: Tag matches the crate version
     runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The tags, which the default shallow checkout does not fetch and
+          # which the step below has to read.
+          fetch-tags: true
+          fetch-depth: 0
       # Every tag, not just the ones spelled with a `v`. Guarded on `v` alone,
       # this check waved through exactly the tags that most needed it: a
       # release named `0.4.14` skipped it entirely and could have shipped a
@@ -75,9 +87,51 @@ jobs:
           fi
           echo "tag $GITHUB_REF_NAME and crate v$crate agree"
 
+      # Whether there is anything to build, which for a push to `main` means:
+      # is a tag already pointing at this very commit?
+      #
+      # Pushing `main` and a tag builds the same commit twice — three
+      # platforms each, on the same runners, for bytes that can only be
+      # identical. On GitHub's runners that is merely wasteful; on a
+      # self-hosted one there is a single machine, so the two runs queue, and
+      # the tag's own Linux job waited fifty-six minutes behind the branch's
+      # at both v0.4.67 and v0.4.68 — which is exactly the half hour that
+      # publishing in two steps had just won back.
+      #
+      # The tag's run always builds: it is the one that publishes. The
+      # branch's run stands down when a tag has already claimed the commit,
+      # and the tag's run answers for it.
+      #
+      # There is a race here and it is worth naming: a push of the branch and
+      # a push of the tag are two events, and the branch's run can start
+      # before the tag exists — GitHub created them one second apart, in the
+      # other order, at v0.4.69. `git push origin main vX.Y.Z` sends both refs
+      # in one request and settles it; where that is not done, the worst case
+      # is the duplicate build this avoids, never a missing one.
+      - name: Is this commit already tagged?
+        id: decide
+        run: |
+          case "$GITHUB_REF" in refs/tags/*)
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "a tag's own run always builds"
+            exit 0
+            ;;
+          esac
+          tags="$(git tag --points-at HEAD)"
+          if [ -n "$tags" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$GITHUB_SHA is already tagged ($(echo "$tags" | tr '\n' ' ')); its own run builds it."
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "no tag points at this commit"
+          fi
+
   linux-x86_64:
     name: Linux x86_64
     needs: version
+    if: needs.version.outputs.build == 'true'
+    if: needs.version.outputs.build == 'true'
+    if: needs.version.outputs.build == 'true'
     # Where this job runs, and how to move it without editing this file.
     #
     # `LINUX_RUNNER` is a repository variable. Unset — which it is until
@@ -172,6 +226,7 @@ jobs:
   windows-x86_64:
     name: Windows x86_64
     needs: version
+    if: needs.version.outputs.build == 'true'
     runs-on: windows-2025
     env:
       SCCACHE_GHA_ENABLED: "true"
@@ -223,6 +278,7 @@ jobs:
   macos-arm64:
     name: macOS ARM64
     needs: version
+    if: needs.version.outputs.build == 'true'
     runs-on: macos-15
     env:
       SCCACHE_GHA_ENABLED: "true"
