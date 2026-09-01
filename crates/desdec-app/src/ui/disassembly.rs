@@ -143,6 +143,9 @@ struct Listing<'a> {
     /// How wide each column is held, in pixels, so the listing does not walk
     /// sideways as the reader scrolls; see [`Columns`].
     columns: [f32; 5],
+    /// How wide an address is written here, `0x` included — see
+    /// [`Columns::of`], which reads it off the file rather than fixing it.
+    address_width: usize,
     /// The emulated run, when one has been started: where it stands now, and
     /// which rows the reader has put a breakpoint on.
     ///
@@ -198,7 +201,8 @@ pub fn show(app: &mut DesdecApp, ui: &mut egui::Ui) -> Action {
         // The general switch still governs: a reader who turned the tooltips
         // off asked for a listing and nothing else.
         hints: app.preferences.show_tooltips && app.preferences.show_operand_hints,
-        columns: app.listing_columns.pixels(ui, language),
+        columns: app.listing_columns.pixels(ui, language, nasm.is_some()),
+        address_width: app.listing_columns.address,
         machine: app.machine.as_ref(),
         nasm: nasm.as_ref(),
         language,
@@ -681,6 +685,13 @@ fn two_readings(
     // the middle of the window — `je 0x00000000000` and no more — while a
     // file of short instructions left that half empty and squeezed the
     // pseudo-code for nothing. See `listing_share`.
+    // The columns as they will actually be drawn: narrowed where the listing
+    // was given less than they asked for, so that what is on screen fits on
+    // screen and no horizontal scrollbar is needed to read an instruction.
+    let listing = &Listing {
+        columns: fit_columns(ui, listing.columns, listing_width),
+        ..*listing
+    };
     let heights = [
         crate::ui::column(ui, top_left, listing_width, |ui| {
             ui.spacing_mut().item_spacing = ordinary_spacing;
@@ -787,19 +798,57 @@ fn two_readings(
 /// to be usable. Past that cap the listing scrolls too, which is the case
 /// nothing can fix — the window is simply narrower than one instruction.
 fn listing_share(ui: &egui::Ui, columns: [f32; 5], full: f32, gutter: f32) -> f32 {
-    /// What the pseudo-code keeps whatever the listing asks for.
-    ///
-    /// Small, because this panel scrolls sideways: it needs enough width to
-    /// be recognised and to be dragged, not enough to hold its longest line.
-    /// Sixteen characters shows `stack_push(0x2` and the bar under it.
-    const PSEUDOCODE_FLOOR: usize = 16;
-
     let spacing = ui.spacing().item_spacing.x;
-    // Its five columns, the gutter cell the jump arrows are drawn in, and the
-    // space the grid puts between the six.
-    let wanted: f32 = columns.iter().sum::<f32>() + GUTTER_WIDTH + spacing * 6.0;
+    let wanted = listing_extent(columns, spacing);
     let most = (full - gutter - text_width(ui, PSEUDOCODE_FLOOR)).max(0.0);
     wanted.min(most)
+}
+
+/// What the pseudo-code keeps whatever the listing asks for.
+///
+/// Small, because this panel scrolls sideways: it needs enough width to be
+/// recognised and to be dragged, not enough to hold its longest line.
+/// Sixteen characters shows `stack_push(0x2` and the bar under it.
+const PSEUDOCODE_FLOOR: usize = 16;
+
+/// The width five columns take, gutter and spacing included.
+fn listing_extent(columns: [f32; 5], spacing: f32) -> f32 {
+    columns.iter().sum::<f32>() + GUTTER_WIDTH + spacing * 6.0
+}
+
+/// The five columns, narrowed until they fit the width the listing was given.
+///
+/// A listing that does not fit gets a horizontal scrollbar, and dragging to
+/// finish reading an instruction is a cost paid on every line. So the columns
+/// give way instead, in the order of what a reader can most afford to lose:
+///
+/// 1. **The bytes.** Widest of the four after the address, and the one the
+///    file states most plainly elsewhere — the Dump view is nothing but bytes.
+///    Down to four characters, which still shows the opcode.
+/// 2. **The section**, which repeats on every row of a run and is named again
+///    in the heading above that run.
+/// 3. **The stack depth**, which is a reading rather than a fact.
+///
+/// The address and the instruction never give way: one is what the reader
+/// navigates by, the other is what they came for. What a narrowed cell cannot
+/// show is one hover away, never lost.
+fn fit_columns(ui: &egui::Ui, mut columns: [f32; 5], available: f32) -> [f32; 5] {
+    let spacing = ui.spacing().item_spacing.x;
+    let mut over = listing_extent(columns, spacing) - available;
+    if over <= 0.0 {
+        return columns;
+    }
+    // Index into `columns`, and the least each may be narrowed to.
+    for (column, floor) in [(1, 4), (2, 3), (3, 2)] {
+        let floor = text_width(ui, floor);
+        let given = (columns[column] - floor).max(0.0).min(over);
+        columns[column] -= given;
+        over -= given;
+        if over <= 0.0 {
+            break;
+        }
+    }
+    columns
 }
 
 fn instructions(
@@ -827,16 +876,15 @@ fn instructions(
     let target_row = scroll_target
         .and_then(|address| analysis.instruction_index(address))
         .map(|index| row_of(listing.sections, LEADING, index));
-    // A listing scrolls sideways for a reason the panels of this application
-    // do not: an instruction is one line that cannot be wrapped, cannot be
-    // shortened, and is the thing the reader came for. egui's floating
-    // scrollbars are two pixels tall until the pointer is over them, which is
-    // right for a bar nobody needs and wrong for a bar that carries the end of
-    // every long line. Here it is a real bar, held open whenever the listing
-    // is wider than the room it was given.
-    ui.spacing_mut().scroll.floating = false;
+    // Vertical only. The listing has no horizontal scrollbar because it never
+    // needs one: `fit_columns` narrows the bytes, the section and the stack
+    // until the row fits the width the view gave it, and the address and the
+    // instruction — the one a reader navigates by and the one they came for —
+    // are never touched. Dragging sideways to finish reading an instruction is
+    // a cost paid on every line, and the answer is to make the line fit rather
+    // than to offer a way to chase it.
     let area = decompile::listing_area_at_row(
-        egui::ScrollArea::both().id_salt("instructions"),
+        egui::ScrollArea::vertical().id_salt("instructions"),
         ui,
         target_row,
     );
@@ -1319,15 +1367,19 @@ pub struct Columns {
     pub bytes: usize,
     pub section: usize,
     pub stack: usize,
-    /// The widest line of assembly the file holds.
+    /// The widest line of assembly the file holds, in each spelling.
     ///
-    /// Measured like the others, and for a second reason on top of theirs:
-    /// it is what the view divides its width by, so that a whole instruction
-    /// is readable without dragging. It counts the decoder's own text — the
-    /// reader's label and comment ride past the end of the line, and a column
-    /// sized to hold them would be mostly empty on every row that carries
-    /// neither.
+    /// Two numbers, because the listing has two spellings and they are not the
+    /// same length: `jmpq *0x2f8e(%rip)` is eighteen characters where NASM
+    /// writes `jmp qword [rel 0x3ff8]` in twenty-two. Measuring only the one
+    /// the decoder produced left the column too narrow the moment the reader
+    /// ticked NASM, and the instruction ran off the end of the listing.
+    ///
+    /// Both count the decoder's own text and nothing else: the reader's label
+    /// and comment ride past the end of the line, and a column sized to hold
+    /// them would be mostly empty on every row that carries neither.
     pub instruction: usize,
+    pub instruction_nasm: usize,
 }
 
 impl Columns {
@@ -1339,7 +1391,7 @@ impl Columns {
     /// whose heading was wider than its data grew by exactly that much on the
     /// one screenful where the heading is visible, which put it a pixel to the
     /// right of where every other screenful had it.
-    fn pixels(self, ui: &egui::Ui, language: Language) -> [f32; 5] {
+    fn pixels(self, ui: &egui::Ui, language: Language, nasm: bool) -> [f32; 5] {
         let heading = |title: Text| {
             let text = text(language, title).to_owned();
             let font = egui::TextStyle::Body.resolve(ui.style());
@@ -1355,7 +1407,14 @@ impl Columns {
             (self.bytes, Text::Bytes),
             (self.section, Text::Section),
             (self.stack, Text::Stack),
-            (self.instruction, Text::Instruction),
+            (
+                if nasm {
+                    self.instruction_nasm
+                } else {
+                    self.instruction
+                },
+                Text::Instruction,
+            ),
         ]
         .map(|(characters, title)| text_width(ui, characters).max(heading(title)))
     }
@@ -1367,8 +1426,23 @@ impl Columns {
     /// and this is not frame work.
     #[must_use]
     pub fn of(analysis: &Analysis, stack: &Trace) -> Self {
-        // `{:#018x}`, which every address is written as, whatever it is.
-        let address = 18;
+        // As many digits as the file's highest address needs, and not one
+        // more. Every address used to be written `{:#018x}` — sixteen digits,
+        // whatever the file — so a program loaded at `0x400000` spent eight
+        // characters of every row on zeros nobody reads, which is a third of
+        // the listing's width given away before the instruction gets any.
+        //
+        // Still a fixed width, and still in pairs: the column stays aligned
+        // down the whole file, which is what lets an address be read at a
+        // glance, and a hexadecimal number is read in bytes. Eight digits at
+        // the least, which is what a reader expects to see even where fewer
+        // would do.
+        let highest = analysis
+            .instructions
+            .last()
+            .map_or(0, |instruction| instruction.address);
+        let digits = (16 - usize::try_from((highest | 1).leading_zeros() / 4).unwrap_or(0)).max(8);
+        let address = digits + digits % 2 + 2;
         let mut bytes = 1;
         let mut section = 1;
         let mut instruction_text = 1;
@@ -1376,6 +1450,22 @@ impl Columns {
             bytes = bytes.max(instruction.bytes.as_slice().len());
             section = section.max(instruction.section.chars().count());
             instruction_text = instruction_text.max(instruction.text.chars().count());
+        }
+
+        // The same measurement in the other spelling, which costs decoding
+        // each instruction a second time — and is bounded, because a large
+        // shared library holds eighteen million of them and this is a column
+        // width, not an analysis. Past the bound the widest line seen so far
+        // stands, and the listing's own scrollbar carries whatever a later
+        // line needs: a rare drag, against a second full decode of the file.
+        const MEASURED_IN_NASM: usize = 200_000;
+        let mut instruction_nasm = instruction_text;
+        if let Some(mut speller) = Nasm::for_architecture(analysis.summary.architecture) {
+            for instruction in analysis.instructions.iter().take(MEASURED_IN_NASM) {
+                if let Some(spelled) = speller.spell(instruction) {
+                    instruction_nasm = instruction_nasm.max(spelled.chars().count());
+                }
+            }
         }
         let mut stack_width = 1;
         for index in 0..analysis.instructions.len() {
@@ -1392,6 +1482,7 @@ impl Columns {
             section,
             stack: stack_width,
             instruction: instruction_text,
+            instruction_nasm,
         }
     }
 }
@@ -1408,6 +1499,17 @@ fn text_width(ui: &egui::Ui, characters: usize) -> f32 {
     advance * f32::from(u16::try_from(characters).unwrap_or(u16::MAX))
 }
 
+/// An address as the listing writes it.
+///
+/// One function rather than a `format!` at each call site, because the width
+/// is no longer a constant: it comes from the file's highest address, and a
+/// test that spelled `{:#018x}` by hand was testing a format the view had
+/// stopped using. Anything that needs to find an address on screen asks here.
+#[must_use]
+pub fn address_text(width: usize, address: u64) -> String {
+    format!("{address:#0width$x}")
+}
+
 /// Draws a cell held to a column's width.
 ///
 /// The width is a floor rather than a ceiling: it is computed from the widest
@@ -1420,6 +1522,13 @@ pub fn sized_cell(
 ) -> egui::Response {
     ui.scope(|ui| {
         ui.set_min_width(width);
+        // And no wider. The width is a floor for the content the file can
+        // produce, but on a narrow window the columns are narrowed below what
+        // they asked for — see `fit_columns` — and a cell that then took the
+        // room its text wanted would push the instruction off the end of the
+        // listing, which is the whole thing this arrangement exists to keep on
+        // screen.
+        ui.set_max_width(width);
         contents(ui)
     })
     .inner
@@ -1582,7 +1691,7 @@ fn instruction_row(
         ui.add(
             egui::Label::new(syntax::dim(
                 ui,
-                &format!("{:#018x}", instruction.address),
+                &address_text(listing.address_width, instruction.address),
                 address_fill,
             ))
             .sense(egui::Sense::click()),
@@ -1609,14 +1718,23 @@ fn instruction_row(
                 text(language, Text::OriginalBytes),
                 hex(&patch.original)
             )),
-        None => ui.label(syntax::dim(ui, &bytes, egui::Color32::TRANSPARENT)),
+        // Truncated rather than allowed to overflow: `fit_columns` narrows
+        // this column first on a window too small for everything, and the
+        // whole of it is one hover away.
+        None => ui
+            .add(egui::Label::new(syntax::dim(ui, &bytes, egui::Color32::TRANSPARENT)).truncate())
+            .on_hover_text(&bytes),
     });
     sized_cell(ui, listing.columns[2], |ui| {
-        ui.label(syntax::dim(
-            ui,
-            &instruction.section,
-            egui::Color32::TRANSPARENT,
-        ))
+        ui.add(
+            egui::Label::new(syntax::dim(
+                ui,
+                &instruction.section,
+                egui::Color32::TRANSPARENT,
+            ))
+            .truncate(),
+        )
+        .on_hover_text(&*instruction.section)
     });
     // The stack as it stands *before* this instruction runs, which is what a
     // reader stopped on it would see. Looked up by address rather than by row:
@@ -2339,6 +2457,21 @@ mod tests {
     /// instruction is never cut at the middle of the window. Halving the
     /// width, which is what `Ui::columns` did, was wrong in both of those
     /// directions at once.
+    /// An address as the listing writes it for this file.
+    ///
+    /// Asked of the same function the view uses, with the same width: the
+    /// number of digits comes from the file's highest address, so a test that
+    /// spelled sixteen of them by hand was looking for a string the view had
+    /// stopped drawing.
+    fn address_of(app: &crate::app::DesdecApp, address: u64) -> String {
+        super::address_text(app.listing_columns.address, address)
+    }
+
+    /// The same, where only the width is at hand.
+    fn address_at_width(width: usize, address: u64) -> String {
+        super::address_text(width, address)
+    }
+
     #[test]
     fn the_listing_is_given_the_width_a_line_of_it_needs() {
         let ctx = egui::Context::default();
@@ -2475,6 +2608,7 @@ mod tests {
                     members: &app.member_names,
                     hints: false,
                     columns: [0.0; 5],
+                    address_width: 18,
                     machine: app.machine.as_ref(),
                     nasm: None,
                     language: Language::English,
@@ -2558,6 +2692,7 @@ mod tests {
     /// Where a row's assembly was drawn, given the address beside it.
     fn assembly_position(
         shapes: &[egui::epaint::ClippedShape],
+        width: usize,
         address: u64,
         assembly: &str,
     ) -> Option<egui::Pos2> {
@@ -2566,7 +2701,7 @@ mod tests {
         // the one where the assembly was drawn beside it.
         let rows: Vec<f32> = drawn
             .iter()
-            .filter(|(text, _)| *text == format!("{address:#018x}"))
+            .filter(|(text, _)| *text == address_at_width(width, address))
             .map(|(_, position)| position.y)
             .collect();
         drawn
@@ -2722,7 +2857,7 @@ mod tests {
         });
 
         assert!(
-            drawn_text(&output.shapes).contains(&format!("{second:#018x}")),
+            drawn_text(&output.shapes).contains(&address_of(&app, second)),
             "the row stepped onto must be drawn"
         );
     }
@@ -2840,7 +2975,7 @@ mod tests {
             let placed = ctx.run(listing_window_input(), |ctx| {
                 views::show_central_panel(&mut app, ctx);
             });
-            let position = assembly_position(&placed.shapes, address, &assembly)
+            let position = assembly_position(&placed.shapes, app.listing_columns.address, address, &assembly)
                 .expect("the row must have been drawn");
 
             // The pointer rests on the row while the clock runs on, which is
@@ -3161,7 +3296,7 @@ mod tests {
 
         let drawn = drawn_text(&output.shapes);
         assert_eq!(
-            drawn.matches(&format!("{address:#018x}")).count(),
+            drawn.matches(&address_of(&app, address)).count(),
             1,
             "the listing must scroll to the instruction, and say its address once"
         );
@@ -3336,7 +3471,7 @@ mod tests {
 
         let mut checked = 0;
         for instruction in &analysis.instructions {
-            let Some(at) = once(&format!("{:#018x}", instruction.address)) else {
+            let Some(at) = once(&address_of(&app, instruction.address)) else {
                 continue; // Scrolled away from, or not the only one of its kind.
             };
             let code = crate::ui::decompile::pseudo_c(&instruction.text);
