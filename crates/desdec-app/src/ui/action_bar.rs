@@ -62,14 +62,17 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
                     app.navigation_open = !app.navigation_open;
                 }
 
-                ui.separator();
-                // The application's own name is not in this bar. It was the
-                // way to About, and it cost a permanent inch of a row that is
-                // otherwise entirely about the file being read — a program
-                // does not need to tell its reader what program it is, on
-                // every frame, in the place where the file's own name goes.
-                // About is on F1, in the menu, and in the command palette
-                // under `version`.
+                // No separator here. There was one, and it existed to detach
+                // the application's own name from the hamburger — a name this
+                // bar no longer carries: it was the way to About, and it cost
+                // a permanent inch of a row that is otherwise entirely about
+                // the file being read. About is on F1, in the menu, and in the
+                // palette under `version`.
+                //
+                // Left in place it drew a second line hard against the one
+                // below, since each of the two things that follow opens with a
+                // separator of its own. Two rules with nothing between them
+                // separate nothing.
                 //
                 // The open file, and the way to close it. Closing used to live
                 // only in the collapsed side menu, which made it look as if a
@@ -232,6 +235,82 @@ mod tests {
                 command.opens_view().is_none(),
                 "{command:?} opens a view, and the toolbar already lists those"
             );
+        }
+    }
+
+    /// No two rules stand side by side with nothing between them.
+    ///
+    /// The bar used to carry the application's own name, with a separator in
+    /// front of it. Taking the name out left that separator hard against the
+    /// one belonging to whatever came next — two lines a few pixels apart,
+    /// separating nothing. No assertion about text catches it: a separator
+    /// says nothing.
+    ///
+    /// Checked in both states, because they draw different things: with a
+    /// binary open the file's name and the toolbar each open with a rule of
+    /// their own, and with none the toolbar's is the only one that should be
+    /// there.
+    #[test]
+    fn no_two_separators_are_drawn_against_each_other() {
+        for open in [false, true] {
+            let ctx = egui::Context::default();
+            let mut app = if open {
+                opened_app(WorkspaceView::Overview)
+            } else {
+                crate::app::DesdecApp::for_test(None, WorkspaceView::Overview)
+            };
+            app.preferences.show_toolbar = true;
+
+            let _ = ctx.run(window_input(), |ctx| show(&mut app, ctx));
+            let output = ctx.run(window_input(), |ctx| show(&mut app, ctx));
+
+            // A separator is a rule: far taller than it is wide, and the only
+            // thing in this bar shaped that way.
+            let mut rules: Vec<f32> = Vec::new();
+            for clipped in &output.shapes {
+                collect_rules(&clipped.shape, &mut rules);
+            }
+            rules.sort_by(f32::total_cmp);
+
+            // Measured rather than guessed at. With the defect the two rules
+            // stood at 53 and 67 — fourteen pixels, which is the bar's own
+            // item spacing and nothing else. Without it they are at 53 and
+            // 298, with the file's name between them. The smallest thing this
+            // bar can legitimately put between two rules is one icon button,
+            // which is twenty-eight pixels wide.
+            const ROOM_FOR_SOMETHING: f32 = 24.0;
+            for pair in rules.windows(2) {
+                assert!(
+                    pair[1] - pair[0] > ROOM_FOR_SOMETHING,
+                    "rules at {} and {} with nothing between them (binary open: {open})",
+                    pair[0],
+                    pair[1]
+                );
+            }
+        }
+    }
+
+    /// Where each vertical rule was drawn.
+    fn collect_rules(shape: &egui::Shape, out: &mut Vec<f32>) {
+        match shape {
+            egui::Shape::Rect(rect) => {
+                let at = rect.rect;
+                if at.width() <= 3.0 && at.height() >= 12.0 {
+                    out.push(at.center().x);
+                }
+            }
+            egui::Shape::LineSegment { points, .. } => {
+                let [from, to] = points;
+                if (from.x - to.x).abs() <= 1.0 && (from.y - to.y).abs() >= 12.0 {
+                    out.push(from.x);
+                }
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_rules(shape, out);
+                }
+            }
+            _ => {}
         }
     }
 

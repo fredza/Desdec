@@ -706,6 +706,12 @@ fn two_readings(
             pseudocode_width,
             |ui| {
                 ui.spacing_mut().item_spacing = ordinary_spacing;
+                // This is the side that gives way now, so its scrollbar is the
+                // one that has to be seen: egui draws a floating bar two
+                // pixels tall until the pointer is over it, and a panel whose
+                // lines run past its edge with no visible way to follow them
+                // reads as a panel that lost them.
+                ui.spacing_mut().scroll.floating = false;
                 // Clicking a pseudo-code line here only moves the selection:
                 // the assembly it stands for is already in the left column, so
                 // the address it reports has no window to open.
@@ -761,31 +767,39 @@ fn two_readings(
 
 /// How much of the width the listing takes, the pseudo-code getting the rest.
 ///
-/// Halving it is what the view did, and it is the wrong answer in both
-/// directions: on a file whose longest line is `mov %rax,%rbx` the pseudo-code
-/// went short while half the listing stood empty, and on one holding
-/// `movsd 0x1234(%rip),%xmm0` the instruction ran under the pseudo-code beside
-/// it.
+/// **The listing is served first, and to the character.** It asks for what one
+/// whole line of it needs and gets exactly that — no more, so a file of short
+/// instructions leaves the rest to the pseudo-code, and no less, so an
+/// instruction is never cut in half at the middle of the window. Halving the
+/// width, which is what `Ui::columns` did, was wrong in both of those
+/// directions at once.
 ///
-/// So the listing asks for what a whole line of it needs, and gets it — up to
-/// the point where the pseudo-code would be narrower than [`PSEUDOCODE_FLOOR`]
-/// characters, which is where a reading of the code stops being one. It is
-/// never given less than half, so no window is worse off than before. Past
-/// that, the listing's own horizontal scrollbar carries the rest: it is the
-/// one thing that does not lose a single character of the instruction.
+/// The two sides are not alike, and that is why the listing wins. An
+/// instruction is one line that cannot be wrapped, cannot be shortened and is
+/// what the reader came for; scrolling sideways to finish reading `movsd
+/// 0x1234(%rip),%xmm0` is a real cost, paid on every line. The pseudo-code
+/// wraps nothing either, but a `goto` or an assignment that runs long is one
+/// line among many, and its panel carries a horizontal scrollbar of its own —
+/// so what it cannot show is a drag away rather than gone.
+///
+/// The listing is capped only where the pseudo-code would stop being a panel
+/// at all: [`PSEUDOCODE_FLOOR`] characters, which is what its scrollbar needs
+/// to be usable. Past that cap the listing scrolls too, which is the case
+/// nothing can fix — the window is simply narrower than one instruction.
 fn listing_share(ui: &egui::Ui, columns: [f32; 5], full: f32, gutter: f32) -> f32 {
-    /// Below this the pseudo-code says nothing a reader can use: `goto
-    /// label_0x0000000000000390;` alone is twenty-nine characters, and the
-    /// panel is there to be read, not to prove it exists.
-    const PSEUDOCODE_FLOOR: usize = 32;
+    /// What the pseudo-code keeps whatever the listing asks for.
+    ///
+    /// Small, because this panel scrolls sideways: it needs enough width to
+    /// be recognised and to be dragged, not enough to hold its longest line.
+    /// Sixteen characters shows `stack_push(0x2` and the bar under it.
+    const PSEUDOCODE_FLOOR: usize = 16;
 
     let spacing = ui.spacing().item_spacing.x;
     // Its five columns, the gutter cell the jump arrows are drawn in, and the
     // space the grid puts between the six.
     let wanted: f32 = columns.iter().sum::<f32>() + GUTTER_WIDTH + spacing * 6.0;
-    let half = ((full - gutter) / 2.0).max(0.0);
-    let most = (full - gutter - text_width(ui, PSEUDOCODE_FLOOR)).max(half);
-    wanted.clamp(half, most)
+    let most = (full - gutter - text_width(ui, PSEUDOCODE_FLOOR)).max(0.0);
+    wanted.min(most)
 }
 
 fn instructions(
@@ -2318,6 +2332,13 @@ mod tests {
     /// the middle of the window. Cut off rather than painted over: the scroll
     /// area clips its own contents, which is why nothing about this was
     /// visible in a rendered sheet — that draws every shape, clipped or not.
+    /// The listing is served first, and to the character.
+    ///
+    /// It gets exactly what one whole line of it needs — no more, so a file of
+    /// short instructions leaves the rest to the pseudo-code; no less, so an
+    /// instruction is never cut at the middle of the window. Halving the
+    /// width, which is what `Ui::columns` did, was wrong in both of those
+    /// directions at once.
     #[test]
     fn the_listing_is_given_the_width_a_line_of_it_needs() {
         let ctx = egui::Context::default();
@@ -2332,24 +2353,29 @@ mod tests {
                 let wanted =
                     |columns: [f32; 5]| columns.iter().sum::<f32>() + super::GUTTER_WIDTH + spacing * 6.0;
 
-                // Room for everything: the listing takes what it asked for and
-                // not a pixel more, so the pseudo-code keeps the rest.
+                // Room for everything: exactly what it asked for.
                 let plenty = wanted(wide) + 800.0;
                 assert!(
                     (super::listing_share(ui, wide, plenty, gutter) - wanted(wide)).abs() < 0.5,
                     "with room to spare the listing should take exactly what it needs"
                 );
 
-                // A short listing never gives away more than half, so no
-                // window is worse off than it was before this split existed.
+                // A file of short instructions does not hold on to half the
+                // window: what it does not need goes to the pseudo-code.
+                let short = super::listing_share(ui, narrow, plenty, gutter);
                 assert!(
-                    super::listing_share(ui, narrow, plenty, gutter) >= (plenty - gutter) / 2.0 - 0.5,
-                    "the listing is never narrower than the half it used to get"
+                    (short - wanted(narrow)).abs() < 0.5,
+                    "a short listing takes {short} where it needs {}",
+                    wanted(narrow)
+                );
+                assert!(
+                    short < (plenty - gutter) / 2.0,
+                    "and leaves the pseudo-code more than half the window"
                 );
 
-                // Too little room for both: the pseudo-code keeps a floor, and
-                // what the listing cannot show goes to its horizontal
-                // scrollbar rather than off the end of the panel.
+                // Too little room for both: the listing still gets everything
+                // it can, and the pseudo-code keeps just enough to be a panel
+                // with a scrollbar. It is the side that gives way now.
                 let tight = 700.0;
                 let share = super::listing_share(ui, wide, tight, gutter);
                 let left_over = tight - gutter - share;
@@ -2358,8 +2384,8 @@ mod tests {
                     "the pseudo-code is left {left_over} pixels of a {tight} pixel window"
                 );
                 assert!(
-                    share >= (tight - gutter) / 2.0 - 0.5,
-                    "and the listing still gets its half"
+                    share > (tight - gutter) / 2.0,
+                    "a long listing takes more than half when it needs more than half"
                 );
             });
         });
