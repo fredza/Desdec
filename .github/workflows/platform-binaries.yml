@@ -145,9 +145,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo build --locked --release -p desdec-app --target x86_64-unknown-linux-gnu
+      # The desktop entry travels with the binary. `scripts/install.sh` had no
+      # way to give a downloaded Desdec an icon and a menu entry: it does not
+      # have the repository in front of it, and the archive did not carry the
+      # one file it needed. It now reads `Desdec.desktop` out of the archive,
+      # and falls back to fetching it at the installed tag for the releases
+      # published before this line existed.
+      #
+      # The second `-C` is absolute on purpose: tar reads each of them
+      # relative to where the previous one left it, so a relative path here
+      # would be looked for under `target/`.
       - name: Archive release executable and checksum
         run: |
-          tar -C target/x86_64-unknown-linux-gnu/release -czf desdec-linux-x86_64-release.tar.gz desdec-app
+          tar -czf desdec-linux-x86_64-release.tar.gz \
+            -C target/x86_64-unknown-linux-gnu/release desdec-app \
+            -C "$GITHUB_WORKSPACE/packaging" Desdec.desktop
           sha256sum desdec-linux-x86_64-release.tar.gz > desdec-linux-x86_64-release.tar.gz.sha256
       - uses: actions/upload-artifact@v7
         with:

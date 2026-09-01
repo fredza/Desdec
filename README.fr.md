@@ -107,6 +107,9 @@ less install.sh   # il est court, et vous allez l'exécuter
 bash install.sh   # installe dans ~/.local/bin
 ```
 
+Sous Linux, il pose aussi l'icône et une entrée de menu qu'un dock peut
+épingler, sous `~/.local/share` ; `--no-desktop` n'installe que le binaire.
+
 Sur Windows (x86-64), le même script en PowerShell — aucun shell POSIX requis :
 
 ```powershell
@@ -115,7 +118,7 @@ notepad install.ps1   # il est court, et vous allez l'exécuter
 .\install.ps1        # installe dans %LOCALAPPDATA%\Programs\Desdec
 ```
 
-Les deux acceptent `--version` / `-Version v0.3.36` pour une version précise,
+Les deux acceptent `--version` / `-Version v0.4.65` pour une version précise,
 `--prefix` / `-Prefix` pour installer ailleurs, et `--from-source` /
 `-FromSource` pour compiler sur place ; `--help` et `Get-Help .\install.ps1`
 donnent le reste. Une version dont la somme ne correspond pas est jetée, et

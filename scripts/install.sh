@@ -2,9 +2,16 @@
 # Installs Desdec from a published release, or builds it from source.
 #
 #   scripts/install.sh                    # the latest release, into ~/.local/bin
-#   scripts/install.sh --version v0.3.36  # a particular one
+#   scripts/install.sh --version v0.4.65  # a particular one
 #   scripts/install.sh --prefix /usr/local/bin
 #   scripts/install.sh --from-source      # build it here instead
+#   scripts/install.sh --no-desktop       # the binary alone, no menu entry
+#
+# On Linux it also puts Desdec in the desktop menu, with the icon the binary
+# writes itself — the same three things `insl.sh` gives a checkout. macOS and
+# Windows get the binary alone: a menu entry there is a bundle and a shortcut,
+# neither of which this script knows how to write, and saying so is better
+# than half of one.
 #
 # It downloads the archive for this machine, checks its SHA-256, and only then
 # puts the binary anywhere. A release whose checksum does not match is thrown
@@ -29,6 +36,19 @@ name="$DEFAULT_NAME"
 tag=""
 from_source=0
 allow_prerelease=0
+desktop=yes
+# Where a desktop looks for menu entries and icons, as the XDG base directory
+# specification names it.
+data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+# The checkout this script was run from, when it was run from one. It is also
+# fetched on its own and piped to a shell, and then there is no `packaging/`
+# next to it — hence the two other ways of finding the menu entry below.
+script_dir=""
+# Set by install_desktop_entry when it wrote one, and read by the last message.
+menu_entry_added=""
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || script_dir=""
+fi
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
@@ -43,9 +63,11 @@ Usage: install.sh [options]
   --prefix <dir>    Install into this directory (default: ~/.local/bin)
   --name <name>     Install under this name (default: desdec)
   --from-source     Build from source with cargo instead of downloading
+  --no-desktop      Do not add the menu entry and its icon (Linux only)
   -h, --help        Show this message
 
-The environment variable DESDEC_PREFIX sets the default prefix.
+DESDEC_PREFIX sets the default prefix, XDG_DATA_HOME the directory the icon
+and the menu entry are written under.
 USAGE
 }
 
@@ -56,6 +78,7 @@ while [ $# -gt 0 ]; do
         --name)    name="${2:-}"; [ -n "$name" ] || die "--name needs a name"; shift 2 ;;
         --pre)     allow_prerelease=1; shift ;;
         --from-source) from_source=1; shift ;;
+        --no-desktop) desktop=no; shift ;;
         # Accepted and ignored: it was the way to install an unsigned release
         # back when a missing signature stopped the script. Nothing is signed
         # now, so a command that still carries it keeps working rather than
@@ -173,6 +196,116 @@ install_binary() {
     esac
 }
 
+# The menu entry, from the closest place that has one, and nothing written
+# into this script.
+#
+# Three sources, in the order of how surely each matches the binary just
+# installed: the archive itself, which carries `Desdec.desktop` from the first
+# release built after 2026-09-01; the checkout this script was run from; and,
+# failing both, the copy the repository publishes **at the tag that was
+# installed** — not at `main`, whose entry may already describe a Desdec this
+# machine does not have.
+#
+# Spelling the entry out here instead would be a second copy of
+# `packaging/Desdec.desktop`, and the two would drift apart with nobody
+# noticing: the file carries the application id a Wayland compositor pairs the
+# window by, the MIME types, and three languages of its own.
+desktop_entry_source() {
+    local candidate
+    for candidate in "$@"; do
+        if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+
+    [ -n "$tag" ] || return 1
+    fetch "https://raw.githubusercontent.com/$REPO/$tag/packaging/Desdec.desktop" \
+        "$workspace/Desdec.desktop" 2>/dev/null || return 1
+    # It has to look like one. A tag whose tree has no `packaging/` answers
+    # with a page rather than nothing at all on some mirrors, and a menu given
+    # that file shows an entry that does nothing, without a word anywhere.
+    grep -q '^\[Desktop Entry\]' "$workspace/Desdec.desktop" 2>/dev/null || return 1
+    printf '%s' "$workspace/Desdec.desktop"
+}
+
+# The icon and the entry that names it, on Linux and nowhere else.
+#
+# The icon is asked of the binary that was just installed rather than carried
+# beside the entry: it is the only arrangement in which the menu cannot come
+# to show an older mark than the window. Every failure here is a warning —
+# the binary is installed and runs, and a desktop that would not take the
+# entry is no reason to call the install failed.
+install_desktop_entry() {
+    [ "$desktop" = yes ] || return 0
+    [ "$(uname -s)" = Linux ] || return 0
+
+    local entry
+    entry="$(desktop_entry_source "$@")" || {
+        warn ""
+        warn "No menu entry: this release carries no Desdec.desktop and none could be"
+        warn "fetched. The binary is installed; re-run from a checkout, or use"
+        warn "scripts/insl.sh, to get the icon and the entry as well."
+        return 0
+    }
+
+    # The file's own name is what a Wayland compositor matches against the
+    # window's application id, which is `Desdec`: the ordinary install must
+    # therefore be `Desdec.desktop`, or the window opens under a generic icon
+    # and the dock pins a second, empty tile beside the running one. An
+    # install under another name gets a file and a menu name of its own so it
+    # does not overwrite the ordinary one.
+    local desktop_file menu_name
+    if [ "$name" = "$DEFAULT_NAME" ]; then
+        desktop_file="Desdec.desktop"
+        menu_name="Desdec"
+    else
+        desktop_file="$name.desktop"
+        menu_name="Desdec ($name)"
+    fi
+
+    local target="$prefix/$name"
+    local applications="$data_home/applications"
+    local icons="$data_home/icons/hicolor/128x128/apps"
+    mkdir -p "$applications" "$icons" || { warn "cannot write under $data_home"; return 0; }
+
+    if ! "$target" --write-icon "$icons/$name.png" 2>/dev/null; then
+        warn "$target could not write its icon — skipping the menu entry"
+        warn "    (a Desdec older than v0.4.1 does not know --write-icon)"
+        return 0
+    fi
+
+    # `Exec` and `TryExec` point at what was actually installed, by absolute
+    # path: a dock launches an entry without a login shell, so a prefix this
+    # script has only just told you to add to your profile is not on the PATH
+    # there — and would not be for a pinned tile until the next login. `Icon`
+    # follows the install name too, so `--name desdec-dev` does not overwrite
+    # the release's icon.
+    local written="$applications/$desktop_file"
+    sed -e "s|^Exec=.*|Exec=$target %f|" \
+        -e "s|^TryExec=.*|TryExec=$target|" \
+        -e "s|^Icon=.*|Icon=$name|" \
+        -e "s|^Name=Desdec$|Name=$menu_name|" \
+        "$entry" > "$written" || { warn "cannot write $written"; return 0; }
+
+    # A dock silently ignores an entry it considers malformed, which is the
+    # hardest failure here to guess at from the outside. If the validator is
+    # installed, let it say so.
+    if command -v desktop-file-validate >/dev/null 2>&1; then
+        desktop-file-validate "$written" >&2 || warn "$written did not validate — the dock may ignore it"
+    fi
+
+    # Best effort, and quiet: a desktop that keeps no such cache is the common
+    # case, and saying so every time would be noise.
+    command -v update-desktop-database >/dev/null 2>&1 &&
+        update-desktop-database "$applications" >/dev/null 2>&1 || true
+    command -v gtk-update-icon-cache >/dev/null 2>&1 &&
+        gtk-update-icon-cache -qtf "$data_home/icons/hicolor" >/dev/null 2>&1 || true
+
+    say "Added the icon $icons/$name.png and the menu entry $written"
+    menu_entry_added="$menu_name"
+}
+
 build_from_source() {
     need cargo
     need git
@@ -194,6 +327,9 @@ build_from_source() {
     say "Building with cargo — this takes a few minutes"
     ( cd "$source_dir" && cargo build --locked --release -p "$BINARY" )
     install_binary "$source_dir/target/release/$BINARY"
+    # The tree it just built is right here, so its own entry is the one that
+    # matches the binary exactly — no download, whatever the tag says.
+    install_desktop_entry "$source_dir/packaging/Desdec.desktop"
 }
 
 install_from_release() {
@@ -265,6 +401,12 @@ install_from_release() {
         # wrote, so removing it is a no-op when curl fetched the archive.
         xattr -d com.apple.quarantine "$prefix/$name" 2>/dev/null || true
     fi
+
+    # The archive first — a release that carries the entry needs no second
+    # request — then the checkout this script may be sitting in.
+    install_desktop_entry \
+        "$(find "$unpacked" -type f -name 'Desdec.desktop' -print -quit)" \
+        "${script_dir:+$script_dir/packaging/Desdec.desktop}"
 }
 
 if [ "$from_source" -eq 1 ]; then
@@ -276,3 +418,10 @@ fi
 say ""
 say "Run it with:  $name              # open the window"
 say "              $name /bin/ls      # or analyse a file straight away"
+
+if [ -n "$menu_entry_added" ]; then
+    say ""
+    say "To pin it: open $menu_entry_added from the menu, then right-click its icon in"
+    say "the dock and choose to pin it. Some desktops read new entries only after"
+    say "a log out and back in."
+fi

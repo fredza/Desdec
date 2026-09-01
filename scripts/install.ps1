@@ -17,10 +17,16 @@
     Nothing is written outside the prefix. The user PATH is left alone unless
     -AddToPath is given, and then only that one entry is appended.
 
+    No Start menu shortcut is written, where install.sh gives a Linux install
+    an icon and a menu entry. Two things are missing for it and neither is a
+    line of PowerShell: desdec-app.exe embeds no icon resource, so a shortcut
+    to it would carry the generic one, and `--write-icon` writes a PNG, which
+    a shortcut cannot use. Saying so is better than a tile with no mark on it.
+
 .EXAMPLE
     .\install.ps1
 .EXAMPLE
-    .\install.ps1 -Version v0.3.36 -Prefix C:\Tools
+    .\install.ps1 -Version v0.4.65 -Prefix C:\Tools
 .EXAMPLE
     .\install.ps1 -FromSource
 #>

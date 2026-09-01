@@ -107,6 +107,9 @@ less install.sh   # it is short, and you are about to run it
 bash install.sh   # installs into ~/.local/bin
 ```
 
+On Linux it also adds the icon and a menu entry a dock can pin, both under
+`~/.local/share`; `--no-desktop` installs the binary alone.
+
 On Windows (x86-64), the same script in PowerShell — no POSIX shell needed:
 
 ```powershell
@@ -115,7 +118,7 @@ notepad install.ps1   # it is short, and you are about to run it
 .\install.ps1        # installs into %LOCALAPPDATA%\Programs\Desdec
 ```
 
-Both take `--version` / `-Version v0.3.36` for a particular release,
+Both take `--version` / `-Version v0.4.65` for a particular release,
 `--prefix` / `-Prefix` for somewhere else, and `--from-source` / `-FromSource`
 to build it here instead; `--help` and `Get-Help .\install.ps1` list the rest.
 A release whose checksum does not match is discarded rather than installed
