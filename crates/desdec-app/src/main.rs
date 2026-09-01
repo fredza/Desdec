@@ -101,6 +101,15 @@ fn main() -> eframe::Result<()> {
     // stamped with it. See [`journal::capture_local_offset`].
     journal::capture_local_offset();
 
+    // The copy a previous update replaced, cleared now that it is certainly
+    // not the running program. On Windows that is the only moment it can be:
+    // a running `.exe` cannot be deleted, so the update renames it and this is
+    // what finishes the job at the next start. Silent, and best effort — a
+    // leftover file is nothing to open a window about.
+    if let Ok(binary) = desdec_core::update::install::running_binary() {
+        desdec_core::update::install::forget_replaced(&binary);
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(INITIAL_SIZE)

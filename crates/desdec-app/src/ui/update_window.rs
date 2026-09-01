@@ -163,6 +163,9 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
             UpdateState::Downloaded { release, file } => {
                 downloaded(ui, release, file, language, tint, &mut act);
             }
+            UpdateState::Installed { release, replaced } => {
+                installed(ui, release, replaced, language, tint, &mut act);
+            }
             UpdateState::Failed(error) => {
                 status_card(
                     ui,
@@ -187,8 +190,43 @@ pub fn show(app: &mut DesdecApp, ctx: &egui::Context) {
         Some(Act::Skip) => app.skip_offered_update(),
         Some(Act::OpenPage) => open_page(app, ctx),
         Some(Act::ShowFile) => show_file(app, ctx),
+        Some(Act::Install) => app.install_downloaded_update(),
+        Some(Act::Restart) => app.restart_into_installed_update(ctx),
         None => {}
     }
+}
+
+/// The version is on disk; what is left is to start it.
+///
+/// Where the replaced copy went is said, and not in passing: it is the answer
+/// to "the new one does not start", and a reader who has to go looking for it
+/// is a reader who has to trust that it exists.
+fn installed(
+    ui: &mut egui::Ui,
+    release: &update::Release,
+    replaced: &std::path::Path,
+    language: Language,
+    tint: egui::Color32,
+    act: &mut Option<Act>,
+) {
+    banner(ui, release, language, tint);
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new(text(language, Text::UpdateInstalled))
+            .color(egui::Color32::from_rgb(120, 196, 132)),
+    );
+    ui.add_space(8.0);
+    ui.small(egui::RichText::new(text(language, Text::UpdateReplacedKept)).color(MUTED));
+    ui.monospace(replaced.display().to_string());
+    ui.add_space(12.0);
+    ui.horizontal(|ui| {
+        if accented_button(ui, text(language, Text::UpdateRestartNow), tint).clicked() {
+            *act = Some(Act::Restart);
+        }
+        if ui.button(text(language, Text::UpdateLater)).clicked() {
+            *act = Some(Act::Later);
+        }
+    });
 }
 
 /// A small coloured card for the states that would otherwise be one line of
@@ -260,6 +298,8 @@ enum Act {
     Skip,
     OpenPage,
     ShowFile,
+    Install,
+    Restart,
 }
 
 /// How much of the archive has arrived, as a fraction a bar can be drawn from.
@@ -328,12 +368,31 @@ fn downloaded(
     ui.add_space(4.0);
     ui.monospace(file.display().to_string());
     ui.add_space(8.0);
-    ui.label(text(language, Text::UpdateInstallYourself));
+
+    // Whether Desdec can write where it lives is asked *now*, before the
+    // button is drawn, rather than found out when it is pressed: an install
+    // under `/usr/local/bin` needs rights this process does not have, and a
+    // button that fails is worse than a sentence saying why there is none.
+    let replaceable = update::install::running_binary()
+        .as_deref()
+        .map(update::install::can_replace)
+        .unwrap_or(false);
+    if replaceable {
+        ui.label(text(language, Text::UpdateInstallExplained));
+        ui.add_space(8.0);
+        if accented_button(ui, text(language, Text::UpdateInstallNow), tint).clicked() {
+            *act = Some(Act::Install);
+        }
+        ui.add_space(8.0);
+        ui.small(egui::RichText::new(text(language, Text::UpdateInstallYourself)).color(MUTED));
+    } else {
+        ui.label(text(language, Text::UpdateCannotInstallHere));
+    }
     ui.add_space(4.0);
     ui.small(egui::RichText::new(text(language, Text::UpdateChecksumNote)).color(MUTED));
     ui.add_space(12.0);
     ui.horizontal(|ui| {
-        if accented_button(ui, text(language, Text::UpdateShowFile), tint).clicked() {
+        if ui.button(text(language, Text::UpdateShowFile)).clicked() {
             *act = Some(Act::ShowFile);
         }
         if ui.button(text(language, Text::CopyPath)).clicked() {

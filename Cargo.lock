@@ -892,6 +892,7 @@ name = "desdec-core"
 version = "0.4.68"
 dependencies = [
  "capstone",
+ "flate2",
  "iced-x86",
  "serde_json",
  "ureq",

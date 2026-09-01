@@ -544,6 +544,17 @@ pub enum UpdateState {
         release: Box<update::Release>,
         file: PathBuf,
     },
+    /// Its executable is now the one on disk, and the copy it replaced is
+    /// kept at `replaced`.
+    ///
+    /// A state of its own rather than a flag on `Downloaded`, because what the
+    /// window has to say changes entirely: the reader is no longer being
+    /// offered anything, they are being told what happened and asked whether
+    /// to restart into it.
+    Installed {
+        release: Box<update::Release>,
+        replaced: PathBuf,
+    },
     /// Something did not work, said in the reader's own language by the view.
     Failed(update::Error),
 }
@@ -555,7 +566,8 @@ impl UpdateState {
         match self {
             Self::Offered(release)
             | Self::Downloading { release, .. }
-            | Self::Downloaded { release, .. } => Some(release),
+            | Self::Downloaded { release, .. }
+            | Self::Installed { release, .. } => Some(release),
             _ => None,
         }
     }
@@ -2736,6 +2748,64 @@ impl DesdecApp {
             .map(PathBuf::from)
             .or_else(dirs_download)
             .unwrap_or_else(std::env::temp_dir)
+    }
+
+    /// Puts the downloaded release in place of the running program.
+    ///
+    /// Only ever from a press on the button that says so, on an archive whose
+    /// checksum has already been checked, for a version the reader has seen
+    /// the number and the notes of. Nothing here is reached by a copy that
+    /// merely started up.
+    ///
+    /// Done on the frame thread rather than in a worker: it is a rename and a
+    /// write of ten megabytes, which is milliseconds, and a half-done
+    /// replacement is not a thing to leave running beside a window the reader
+    /// can close.
+    pub fn install_downloaded_update(&mut self) {
+        let (release, archive) = match &self.update {
+            UpdateState::Downloaded { release, file } => (release.clone(), file.clone()),
+            _ => return,
+        };
+        let binary = match update::install::running_binary() {
+            Ok(binary) => binary,
+            Err(error) => {
+                self.update = UpdateState::Failed(error);
+                return;
+            }
+        };
+        match update::install::replace(&archive, &binary) {
+            Ok(replaced) => {
+                let said = self.t(Text::UpdateInstalled).to_owned();
+                self.note(crate::journal::Level::Note, said);
+                self.update = UpdateState::Installed { release, replaced };
+            }
+            Err(error) => self.update = UpdateState::Failed(error),
+        }
+    }
+
+    /// Starts the copy that was just installed and leaves.
+    ///
+    /// The new program is started before this one closes rather than after,
+    /// because after is not a thing a process gets to do. What the reader sees
+    /// is the window they were looking at going away and the new one arriving.
+    ///
+    /// Notes, preferences and the library catalogue live in the reader's own
+    /// directories and are not touched by any of this — the new copy opens on
+    /// everything the old one knew.
+    pub fn restart_into_installed_update(&mut self, ctx: &egui::Context) {
+        let Ok(binary) = update::install::running_binary() else {
+            return;
+        };
+        // The file being analysed is handed on, so a restart lands where the
+        // reader was rather than on an empty window.
+        let mut command = std::process::Command::new(binary);
+        if let Some(analysis) = self.analysis.as_ref() {
+            command.arg(&analysis.summary.path);
+        }
+        match command.spawn() {
+            Ok(_) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Err(why) => self.update = UpdateState::Failed(update::Error::Storage(why.to_string())),
+        }
     }
 
     /// The reader says they do not want this one. Offered again only when

@@ -20,3 +20,8 @@ capstone = { version = "0.14", default-features = false, features = ["std", "ful
 iced-x86 = { version = "1.21", features = ["decoder", "encoder", "code_asm", "gas", "nasm"] }
 serde_json = "1.0.151"
 ureq = { version = "3.4.0", default-features = false, features = ["json", "rustls", "gzip"] }
+# For unpacking a release archive, and for nothing else. Already in the tree —
+# `ureq`'s own `gzip` pulls it — so declaring it downloads nothing new; the
+# alternative was a DEFLATE decoder of several hundred lines, which is where
+# writing a format by hand stops being cheaper than depending on one.
+flate2 = "1.1"

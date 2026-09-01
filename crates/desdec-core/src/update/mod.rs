@@ -5,6 +5,12 @@
 //! it is a thing they do, knowing they are doing it. And it never reaches the
 //! network unasked — the caller decides when to look, because a tool that
 //! quietly tells a server it was started is a tool that reports on its reader.
+//! (It replaced nothing at all until 2026-09-02; see [`install`] for what
+//! changed and what did not.)
+//!
+//! Installing is [`install`], and it is not an exception to either rule: it
+//! runs only after the reader has said yes to a version they were shown, and
+//! it replaces the running program rather than reaching for anything else.
 //!
 //! What it does do is finish the job a download starts. A release publishes a
 //! `.sha256` beside each archive; this reads it, hashes what arrived, and
@@ -22,6 +28,8 @@ use std::{
 };
 
 use crate::analysis::hash;
+
+pub mod install;
 
 /// Where releases are published. Not configurable: an update that could be
 /// pointed at another repository is a way of installing something else.

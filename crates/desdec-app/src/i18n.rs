@@ -1997,9 +1997,39 @@ translations! {
         "Descargado y verificado: la huella SHA-256 es la que publica la release.",
     ],
     UpdateInstallYourself => [
-        "Desdec n’installe rien et ne se remplace pas lui-même. L’archive est là ; à vous de l’ouvrir quand vous le voudrez.",
-        "Desdec installs nothing and does not replace itself. The archive is there; opening it is yours to do, when you want to.",
-        "Desdec no instala nada ni se reemplaza a sí mismo. El archivo está ahí; abrirlo es cosa suya, cuando quiera.",
+        "Ou ouvrez l’archive vous-même : elle est là, vérifiée, et rien ne vous oblige à passer par le bouton.",
+        "Or open the archive yourself: it is there, checked, and nothing obliges you to use the button.",
+        "O abra el archivo usted mismo: está ahí, verificado, y nada le obliga a usar el botón.",
+    ],
+    // The button that replaces the running program, and the sentence beside
+    // it. Both say plainly what will happen: a reader agreeing to an update
+    // should not have to find out afterwards that it replaced anything.
+    UpdateInstallNow => [
+        "Installer et redémarrer",
+        "Install and restart",
+        "Instalar y reiniciar",
+    ],
+    UpdateInstallExplained => [
+        "Remplace le programme en cours par cette version. L’ancienne copie est gardée à côté, sous « .old », et vos notes ne sont pas touchées.",
+        "Replaces the running program with this version. The copy it replaces is kept beside it, as `.old`, and your notes are left alone.",
+        "Reemplaza el programa en ejecución por esta versión. La copia reemplazada se conserva al lado, como «.old», y sus notas no se tocan.",
+    ],
+    UpdateInstalled => [
+        "Installée. Redémarrez pour l’utiliser.",
+        "Installed. Restart to use it.",
+        "Instalada. Reinicie para usarla.",
+    ],
+    UpdateRestartNow => ["Redémarrer maintenant", "Restart now", "Reiniciar ahora"],
+    UpdateReplacedKept => [
+        "La version précédente est gardée ici, au cas où :",
+        "The previous version is kept here, just in case:",
+        "La versión anterior se conserva aquí, por si acaso:",
+    ],
+    // Said instead of the button, where Desdec cannot write where it lives.
+    UpdateCannotInstallHere => [
+        "Desdec ne peut pas s’écrire à l’endroit où il est installé — il y faudrait des droits qu’il n’a pas. L’archive vérifiée est là ; installez-la comme vous l’avez fait la première fois.",
+        "Desdec cannot write where it is installed — that would need rights it does not have. The checked archive is there; install it the way you did the first time.",
+        "Desdec no puede escribir donde está instalado: haría falta permisos que no tiene. El archivo verificado está ahí; instálelo como lo hizo la primera vez.",
     ],
     UpdateShowFile => ["Ouvrir le dossier", "Open the folder", "Abrir la carpeta"],
     UpdateChecksumNote => [
