@@ -379,10 +379,90 @@ jobs:
             desdec-linux-x86_64-release.tar.gz
             desdec-linux-x86_64-release.tar.gz.sha256
 
+  # Reading the other two platforms' binaries, here, on Linux.
+  #
+  # The suite analyses its own executable, so a run on Linux exercises ELF and
+  # x86-64 and nothing else. A defect in the reading of another format is
+  # therefore invisible until the runner carrying it gets there — two and a
+  # half hours after the tag, on macOS.
+  #
+  # That is not a hypothetical. v0.4.69 sat as a Linux-only pre-release for
+  # eleven hours: the listing widened its address column on any file whose
+  # section is named `__TEXT,__text` rather than `.text`, so the columns walked
+  # sideways as the reader scrolled — the very defect that release existed to
+  # fix — and only macOS could say so. Eleven hours to learn something a Linux
+  # machine could have said in twenty minutes.
+  #
+  # `DESDEC_REFERENCE` already points the suite at any binary; it was written
+  # for exactly this and was being used by hand. Pointed at the last complete
+  # release's own macOS and Windows archives, it reads a real Mach-O and a real
+  # PE — on every push, before any tag exists.
+  #
+  # Borrowed rather than built: cross-compiling would produce a binary, but not
+  # one anybody runs, and the formats this reads are what a real toolchain
+  # emitted. The binaries are one release behind by construction, which is the
+  # point — they are known good, and what changed since is the code under test.
+  cross-format:
+    name: Read the other platforms' binaries
+    needs: version
+    if: needs.version.outputs.build == 'true'
+    # GitHub's runner and not the self-hosted one: there is a single machine
+    # behind `LINUX_RUNNER`, and a second job on it would queue behind the one
+    # that publishes. This is free on a public repository and delays nothing.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Borrow the last complete release's binaries
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/references"
+          cd "$RUNNER_TEMP/references"
+          # `/releases/latest/` follows the last release that is *not* a
+          # pre-release, which is what "known good" means here: the two-step
+          # publication leaves a half-published release flagged, and this
+          # walks past it on its own. No token and no `gh` — the repository
+          # is public, and this asks nothing of the forge that a browser
+          # could not ask.
+          base="https://github.com/$GITHUB_REPOSITORY/releases/latest/download"
+          for name in desdec-linux-x86_64-release.tar.gz \
+                      desdec-macos-aarch64-release.zip \
+                      desdec-windows-x86_64-release.zip; do
+            curl --proto '=https' --tlsv1.2 --fail --location --silent \
+              --show-error --retry 3 --output "$name" "$base/$name"
+          done
+          unzip -q -o desdec-macos-aarch64-release.zip
+          unzip -q -o desdec-windows-x86_64-release.zip
+          # `ditto --keepParent` puts the macOS executable under `release/`.
+          test -f release/desdec-app
+          test -f desdec-app.exe
+      - name: Read a real Mach-O
+        env:
+          DESDEC_REFERENCE: ${{ runner.temp }}/references/release/desdec-app
+        run: cargo test --locked -p desdec-app
+      - name: Read a real PE
+        env:
+          DESDEC_REFERENCE: ${{ runner.temp }}/references/desdec-app.exe
+        run: cargo test --locked -p desdec-app
+      # And the archives themselves, read by the updater that installs them —
+      # a GNU tar, a `Compress-Archive` zip and a `ditto` zip, which agree
+      # about very little. These tests skip themselves without the variable,
+      # so this is the only place they run.
+      - name: Read the published archives
+        env:
+          DESDEC_ARCHIVES: ${{ runner.temp }}/references
+        run: cargo test --locked -p desdec-core update::install
+
   github-release:
     name: Publish GitHub release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    needs: [linux-x86_64, windows-x86_64, macos-arm64]
+    # `cross-format` is in here, so a defect only another platform's binary
+    # can reveal stops the release rather than being noticed after it. The
+    # Linux pre-release above does not wait on it: what is published early is
+    # published early, and it is the promotion to a complete release that this
+    # holds back.
+    needs: [linux-x86_64, windows-x86_64, macos-arm64, cross-format]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
