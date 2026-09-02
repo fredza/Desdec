@@ -1276,14 +1276,25 @@ mod tests {
     fn a_named_function_keeps_its_name_and_says_so() {
         let analysis = crate::testing::reference_analysis();
         let found = all(analysis);
-        if analysis.symbols.iter().all(|symbol| symbol.imported) {
-            return; // This host's own binary names nothing.
-        }
         let named: Vec<&Function> = found
             .iter()
             .filter(|function| function.found_by.is_none())
             .collect();
-        assert!(!named.is_empty(), "the host binary names some");
+        if named.is_empty() {
+            // Nothing named, which is a fact about the file and not about the
+            // code that reads it. The guard used to ask whether every symbol
+            // was imported; a stripped Mach-O keeps a few that are not — it
+            // names its own header — so the question was answered "no" on a
+            // file that still names no function, and the assertion below then
+            // failed on the release binaries `DESDEC_REFERENCE` exists to
+            // point at. Only the suite's own executable is promised to name
+            // some of what it holds.
+            assert!(
+                !crate::testing::reference_is_the_test_binary(),
+                "the host binary names some"
+            );
+            return;
+        }
         assert!(
             named
                 .iter()

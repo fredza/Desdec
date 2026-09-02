@@ -40,6 +40,19 @@ pub fn reference_path() -> &'static Path {
     })
 }
 
+/// Whether the reference is this suite's own executable rather than a file
+/// `DESDEC_REFERENCE` named.
+///
+/// A few tests demand of the host's binary what cannot be demanded of any
+/// binary — that it names some of its functions, say. Pointed at a release
+/// build, which is stripped, such a demand fails on a file that is simply not
+/// the one it was written about, and the failure says nothing about the code.
+/// Those tests ask this first and stay silent rather than lie.
+#[must_use]
+pub fn reference_is_the_test_binary() -> bool {
+    std::env::var_os("DESDEC_REFERENCE").is_none()
+}
+
 /// Its bytes, read once.
 pub fn reference_bytes() -> &'static [u8] {
     static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
