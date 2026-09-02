@@ -1280,19 +1280,19 @@ mod tests {
             .iter()
             .filter(|function| function.found_by.is_none())
             .collect();
+        // Nothing named is a fact about the file, never about the code that
+        // reads it, and **no** binary is promised to name anything: a PE
+        // carries imports and no symbol table of its own, so the suite's own
+        // executable names nothing on Windows. Two guards have been wrong
+        // here, in opposite directions. Asking whether every symbol was
+        // imported let a stripped Mach-O through — it keeps a few that are
+        // not, naming its own header — and the run then failed on the very
+        // binaries `DESDEC_REFERENCE` exists to point at. Asking instead that
+        // the test binary name some restored a claim about the host, which is
+        // the thing this whole line of work is about not doing, and failed on
+        // the Windows runner. What is left is the only question this test can
+        // answer: where the file names functions, they keep their names.
         if named.is_empty() {
-            // Nothing named, which is a fact about the file and not about the
-            // code that reads it. The guard used to ask whether every symbol
-            // was imported; a stripped Mach-O keeps a few that are not — it
-            // names its own header — so the question was answered "no" on a
-            // file that still names no function, and the assertion below then
-            // failed on the release binaries `DESDEC_REFERENCE` exists to
-            // point at. Only the suite's own executable is promised to name
-            // some of what it holds.
-            assert!(
-                !crate::testing::reference_is_the_test_binary(),
-                "the host binary names some"
-            );
             return;
         }
         assert!(
