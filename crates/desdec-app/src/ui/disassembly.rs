@@ -1625,11 +1625,27 @@ fn section_heading(
         rect.top() - 1.0,
         egui::Stroke::new(1.0_f32, listing.accent.gamma_multiply(0.4)),
     );
-    ui.label(
-        egui::RichText::new(&*first.section)
-            .monospace()
-            .strong()
-            .color(listing.accent),
+    // The name is painted rather than laid out, and the cell under it is
+    // allocated to the address column's width and no more. Laid out it was a
+    // cell like any other, and a section name is not held to any column's
+    // width: `__TEXT,__text` is wider than a Mach-O address, so the address
+    // column grew by the difference on every screenful a section began on and
+    // shrank again on the next one — the sideways walk this whole arrangement
+    // exists to stop, seen on macOS and not here, where sections are called
+    // `.text`. The three cells beside this one are empty, so a long name has
+    // the room to run into and nothing is lost by not measuring it.
+    let name = ui
+        .allocate_exact_size(
+            egui::vec2(listing.columns[0], ROW_HEIGHT),
+            egui::Sense::hover(),
+        )
+        .0;
+    ui.painter().text(
+        name.left_center(),
+        egui::Align2::LEFT_CENTER,
+        &*first.section,
+        egui::TextStyle::Monospace.resolve(ui.style()),
+        listing.accent,
     );
     // The columns between are left empty: a heading names a run of rows, it
     // does not describe one.
