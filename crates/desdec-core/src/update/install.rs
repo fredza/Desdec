@@ -484,6 +484,25 @@ mod tests {
         encoder.finish().expect("finish the gzip")
     }
 
+    /// A body [`accept`] takes on the host this suite runs on.
+    ///
+    /// The archive is Linux's, but `unpack` reads one by its extension while
+    /// `accept` reads its contents by the platform it was compiled for — so a
+    /// fixture with an ELF head in it passed here and failed on the Windows
+    /// and macOS runners, on a test about `tar` and not about either.
+    fn host_executable() -> Vec<u8> {
+        let head: &[u8] = if cfg!(target_os = "macos") {
+            &[0xcf, 0xfa, 0xed, 0xfe, 0]
+        } else if cfg!(windows) {
+            &[b'M', b'Z', 0, 0, 0]
+        } else {
+            &[0x7f, b'E', b'L', b'F', 2]
+        };
+        let mut bytes = head.to_vec();
+        bytes.extend(std::iter::repeat_n(0_u8, 600));
+        bytes
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let at = std::env::temp_dir().join(format!("desdec-install-{}-{name}", std::process::id()));
         let _ = fs::create_dir_all(&at);
@@ -576,23 +595,22 @@ mod tests {
     /// none published after.
     #[test]
     fn the_executable_comes_out_of_a_tar_that_holds_more_than_it() {
-        let elf = {
-            let mut bytes = vec![0x7f, b'E', b'L', b'F', 2];
-            bytes.extend(std::iter::repeat_n(0_u8, 600));
-            bytes
-        };
+        let executable = host_executable();
         let archive = scratch("tar").join("desdec-linux-x86_64-release.tar.gz");
         fs::write(
             &archive,
             tar_gz(&[
                 ("Desdec.desktop", b"[Desktop Entry]\n"),
-                ("desdec-app", &elf),
+                ("desdec-app", &executable),
             ]),
         )
         .expect("write the archive");
 
         let found = unpack(&archive).expect("the executable");
-        assert_eq!(found, elf, "the bytes are the entry's, not the desktop file's");
+        assert_eq!(
+            found, executable,
+            "the bytes are the entry's, not the desktop file's"
+        );
         assert!(accept(&found).is_ok());
     }
 
